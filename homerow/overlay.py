@@ -63,7 +63,12 @@ class Overlay:
         self.elements = elements
         self.labels = labels
         self.filter = ""
-        self.names = {}
+        # Names are read in the background. Reading them inside the key handler
+        # meant the first filter keystroke did one D-Bus round trip per hint --
+        # a visible freeze on a busy page, which reads as hint mode being
+        # broken rather than slow.
+        self.names = [None] * len(self.all_elements)
+        self.indexed = 0
         self.on_choose = on_choose
         # Standalone runs own a Gtk main loop and quit it here; the daemon
         # keeps one loop for its whole lifetime and passes nothing.
@@ -128,6 +133,23 @@ class Overlay:
         if gdk_window is not None:
             gdk_window.raise_()
         GLib.idle_add(self._grab)
+        if config.HINT_FILTER:
+            GLib.idle_add(self._index_chunk)
+
+    def _index_chunk(self):
+        """Read a few names per idle tick so filtering is instant when used."""
+        end = min(self.indexed + config.SEARCH_INDEX_CHUNK,
+                  len(self.all_elements))
+        for index in range(self.indexed, end):
+            element = self.all_elements[index]
+            try:
+                self.names[index] = f"{element.name} {element.role}".lower()
+            except Exception:
+                self.names[index] = ""
+        self.indexed = end
+        if self.filter and self.indexed >= len(self.all_elements):
+            self._apply_filter()
+        return self.indexed < len(self.all_elements)
 
     # -- input ----------------------------------------------------------
 
@@ -225,18 +247,12 @@ class Overlay:
             self.elements = list(self.all_elements)
         else:
             needle = self.filter.lower()
-            kept = []
-            for element in self.all_elements:
-                name = self.names.get(id(element))
-                if name is None:
-                    try:
-                        name = f"{element.name} {element.role}".lower()
-                    except Exception:
-                        name = ""
-                    self.names[id(element)] = name
-                if needle in name:
-                    kept.append(element)
-            self.elements = kept
+            # Entries not indexed yet simply do not match; the indexer calls
+            # back when it finishes so nothing is lost.
+            self.elements = [
+                element for index, element in enumerate(self.all_elements)
+                if self.names[index] and needle in self.names[index]
+            ]
         self.labels = hints.assign(self.elements) if self.elements else []
         self.window.queue_draw()
 

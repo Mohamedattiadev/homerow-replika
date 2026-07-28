@@ -46,6 +46,11 @@ Labels two kinds of target at once:
 |---|---|
 | `a`–`l` (home row) | type a label to click it, or switch to that window |
 | any other letter | **filter** — narrows the hints and relabels the survivors |
+
+Filtering reads element names, which are lazy D-Bus round trips, so they are
+read in the background from the moment hints appear. Type immediately and the
+filter resolves as soon as indexing catches up; doing it inside the key handler
+instead froze the first keystroke on a busy page.
 | `Shift` + label | shift-click (opens links in a new tab) |
 | `Ctrl` + label | ctrl-click (new background tab) |
 | `,` then label | right-click |

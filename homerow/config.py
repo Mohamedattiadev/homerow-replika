@@ -166,6 +166,10 @@ SCROLL_CLICK_DELAY = 6
 # Upper bound on a count prefix, so a mistyped 999j cannot hang the session.
 SCROLL_MAX_COUNT = 50
 
+# Scroll overlay styling.
+SCROLL_BORDER = 2
+SCROLL_RADIUS = 6
+
 # When nothing reports itself as scrollable, scroll the focused window anyway
 # rather than refusing. Wheel events do not need accessibility to work, so a
 # missing region usually means the app under-reports, not that it cannot

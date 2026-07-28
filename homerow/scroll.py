@@ -342,11 +342,28 @@ class ScrollSession:
             cr.translate(-origin_x, -origin_y)
 
         region = self.region
-        accent = "chip_matched"
-        # Outline only -- the region has to stay readable while you scroll it.
-        cr.set_source_rgba(*self.colors[accent])
-        cr.set_line_width(2)
-        cr.rectangle(region.x + 1, region.y + 1, region.w - 2, region.h - 2)
+        colors = self.colors
+
+        # Dim everything except the region, rather than drawing a bare outline
+        # on top of the page. A stroke alone competes with whatever it happens
+        # to land on; a cut-out reads as "this is the thing you are driving"
+        # regardless of what is underneath.
+        if config.DIM_BACKGROUND and self.translucent:
+            cr.save()
+            cr.set_fill_rule(1)  # EVEN_ODD -- the region punches a hole
+            cr.rectangle(0, 0, self.width, self.height)
+            _rounded(cr, region.x, region.y, region.w, region.h,
+                     config.SCROLL_RADIUS)
+            cr.set_source_rgba(*colors["dim"])
+            cr.fill()
+            cr.restore()
+
+        cr.set_source_rgba(*colors["chip_matched"])
+        cr.set_line_width(config.SCROLL_BORDER)
+        half = config.SCROLL_BORDER / 2
+        _rounded(cr, region.x + half, region.y + half,
+                 region.w - config.SCROLL_BORDER,
+                 region.h - config.SCROLL_BORDER, config.SCROLL_RADIUS)
         cr.stroke()
 
         legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
@@ -356,17 +373,35 @@ class ScrollSession:
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
         ext = cr.text_extents(legend)
-        pad = 6
-        w, h = ext.width + pad * 2, config.FONT_SIZE + pad
-        x = region.x + (region.w - w) // 2
-        y = max(region.y - h - 4, 0)
-        cr.set_source_rgba(*self.colors[accent])
-        cr.rectangle(x, y, w, h)
+        pad = 8
+        w, h = ext.width + pad * 2, config.FONT_SIZE + pad + 4
+
+        # Sit the legend just inside the region's top edge, or just below it
+        # when the region starts at the very top of the screen. Hanging it
+        # above a region flush with the screen edge put it off-screen.
+        x = min(max(region.x + (region.w - w) // 2, 0), max(self.width - w, 0))
+        y = region.y - h - 6
+        if y < 0:
+            y = min(region.y + 6, self.height - h)
+
+        _rounded(cr, x, y, w, h, config.SCROLL_RADIUS)
+        cr.set_source_rgba(*colors["chip_matched"])
         cr.fill()
-        cr.set_source_rgba(*self.colors["ink"])
-        cr.move_to(x + pad, y + h - pad + 2)
+        cr.set_source_rgba(*colors["ink"])
+        cr.move_to(x + pad, y + h - pad + 1)
         cr.show_text(legend)
         return True
+
+
+def _rounded(cr, x, y, w, h, radius):
+    import math
+    radius = max(0, min(radius, w / 2, h / 2))
+    cr.new_sub_path()
+    cr.arc(x + w - radius, y + radius, radius, -math.pi / 2, 0)
+    cr.arc(x + w - radius, y + h - radius, radius, 0, math.pi / 2)
+    cr.arc(x + radius, y + h - radius, radius, math.pi / 2, math.pi)
+    cr.arc(x + radius, y + radius, radius, math.pi, 3 * math.pi / 2)
+    cr.close_path()
 
 
 def _pointer_position():
