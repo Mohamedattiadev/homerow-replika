@@ -164,6 +164,25 @@ def _wheel(x, y, button, times):
         pass
 
 
+def best(regions):
+    """The region to act on without asking.
+
+    Under the pointer wins, since that is where you are looking; otherwise the
+    largest, which is the main content pane on essentially every layout.
+    Asking first turned every scroll into pick-a-region-then-scroll.
+    """
+    if not regions:
+        return None
+    position = _pointer_position()
+    if position:
+        px, py = position
+        under = [r for r in regions
+                 if r.x <= px < r.x + r.w and r.y <= py < r.y + r.h]
+        if under:
+            return min(under, key=lambda r: r.w * r.h)
+    return regions[0]
+
+
 def window_region():
     """The focused window as a scroll target, for apps that report none."""
     window = elements.active_window()
@@ -197,13 +216,21 @@ class ScrollSession:
         "edge": config.SCROLL_EDGE_CLICKS,
     }
 
-    def __init__(self, region, on_done=None, on_caret=None):
+    def __init__(self, region, on_done=None, on_caret=None,
+                 regions=None):
         self.region = region
         self.on_done = on_done or (lambda: None)
         # v leaves scrolling and starts a text cursor. It used to run a
         # shift+arrow selection that caret mode replaced, so it became a key
         # that silently did nothing.
         self.on_caret = on_caret
+        # Tab cycles the other candidates, so skipping the picker never means
+        # being stuck with the wrong guess.
+        self.regions = list(regions) if regions else [region]
+        try:
+            self.index = self.regions.index(region)
+        except ValueError:
+            self.index = 0
         self.pending_g = False
         self.count = ""
         self.origin = _pointer_position()
@@ -273,6 +300,14 @@ class ScrollSession:
 
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()
+            return True
+
+        if key in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) \
+                and len(self.regions) > 1:
+            step = -1 if key == Gdk.KEY_ISO_Left_Tab else 1
+            self.index = (self.index + step) % len(self.regions)
+            self.region = self.regions[self.index]
+            self.window.queue_draw()
             return True
 
         if key == Gdk.KEY_v and self.on_caret is not None:
@@ -377,7 +412,10 @@ class ScrollSession:
         cr.stroke()
 
         legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
-                  "3j counts   esc")
+                  "3j counts   v caret   esc")
+        if len(self.regions) > 1:
+            legend = (f"[{self.index + 1}/{len(self.regions)} tab]   "
+                      + legend)
         if self.count:
             legend = f"{self.count}…   " + legend
         cr.select_font_face(config.FONT_FAMILY)

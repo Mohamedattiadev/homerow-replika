@@ -12,12 +12,17 @@ Built and verified against this machine: Arch, X11, qtile 0.36, picom, Python
 
 ## Usage
 
-Everything lives in one qtile chord, **`win+shift+f`** (Hint-Mode, formerly
-Mouse-Mode). Inside it:
+**`alt+space`** is hint mode, directly — no chord. It is the action you take
+constantly, and Homerow's immediacy comes largely from it being one chord-free
+keystroke. (Not `shift+space` like Homerow: grabbing that globally on X11 would
+swallow it everywhere you type.)
+
+The other modes live in the **`win+shift+f`** chord (Hint-Mode, formerly
+Mouse-Mode), where discovering them is worth the extra step:
 
 | Key | Mode |
 |---|---|
-| `h` | **hint** — label every clickable element and every other window |
+| `h` | **hint** — same as `alt+space` |
 | `s` | **scroll** — pick a scrollable region, drive it with vim keys |
 | `f` | **search** — type part of a label, then hint the matches |
 | `n` / `w` | warpd normal / warpd hints, for apps with no accessibility |
@@ -60,8 +65,12 @@ instead froze the first keystroke on a busy page.
 
 ### Scroll mode
 
-Hints the scrollable regions, largest first, and skips the picker when there
-is only one.
+Enters immediately on the best region — the one under the pointer, else the
+largest. `Tab` cycles the others, shown as `[2/3 tab]` in the legend.
+
+There is deliberately no picker. Asking which region first turned every scroll
+into pick-then-scroll, and that extra step is most of what made this feel like
+a dialog rather than a keystroke. A wrong guess costs one `Tab`.
 
 | Key | Action |
 |---|---|

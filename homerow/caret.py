@@ -115,15 +115,39 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
     return found
 
 
+def best(blocks):
+    """The text block to put the caret in without asking."""
+    if not blocks:
+        return None
+    position = _pointer_position()
+    if position:
+        px, py = position
+        under = [b for b in blocks
+                 if b.x <= px < b.x + b.w and b.y <= py < b.y + b.h]
+        if under:
+            return min(under, key=lambda b: b.w * b.h)
+    return blocks[0]
+
+
+def _pointer_position():
+    from . import x11
+    return x11.pointer_position() if x11.available() else None
+
+
 class CaretSession:
     """A vim-style caret over one text element."""
 
-    def __init__(self, element, on_done=None):
+    def __init__(self, element, on_done=None, blocks=None):
         self.element = element
         self.on_done = on_done or (lambda: None)
         self.iface = element.accessible.get_text_iface()
         self.length = self.iface.get_character_count() if self.iface else 0
         self.text = _text_of(self.iface, 0, self.length)
+        self.blocks = list(blocks) if blocks else [element]
+        try:
+            self.index = self.blocks.index(element)
+        except ValueError:
+            self.index = 0
         self.offset = 0
         self.anchor = None          # set when visual mode is on
         self.pending_g = False
@@ -252,6 +276,13 @@ class CaretSession:
                 return True
             self._close()
             return True
+        if key in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) \
+                and len(self.blocks) > 1:
+            step = -1 if key == Gdk.KEY_ISO_Left_Tab else 1
+            self.index = (self.index + step) % len(self.blocks)
+            self._use_block(self.blocks[self.index])
+            return True
+
         if key == Gdk.KEY_v:
             self.anchor = None if self.anchor is not None else self.offset
             self.window.queue_draw()
@@ -296,6 +327,17 @@ class CaretSession:
             self._sync_caret()
             self.window.queue_draw()
         return True
+
+    def _use_block(self, block):
+        """Move the caret into a different block of text."""
+        self.element = block
+        self.iface = block.accessible.get_text_iface()
+        self.length = self.iface.get_character_count() if self.iface else 0
+        self.text = _text_of(self.iface, 0, self.length)
+        self.offset = 0
+        self.anchor = None
+        self._sync_caret()
+        self.window.queue_draw()
 
     def _sync_caret(self):
         """Mirror our offset into the app, so its own cursor follows along."""
@@ -381,6 +423,8 @@ class CaretSession:
         mode = "VISUAL" if self.anchor is not None else "CARET"
         legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
                   f"gg/G doc   v select   y yank   esc")
+        if len(self.blocks) > 1:
+            legend = f"[{self.index + 1}/{len(self.blocks)} tab]   " + legend
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
         text_ext = cr.text_extents(legend)

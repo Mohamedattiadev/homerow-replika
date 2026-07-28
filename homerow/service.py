@@ -279,22 +279,13 @@ class Daemon:
 
         def start(block):
             def go():
-                self.overlay = caret.CaretSession(block, self._finished)
+                self.overlay = caret.CaretSession(
+                    block, self._finished, blocks=blocks)
                 self.overlay.show()
                 return False
             GLib.idle_add(go)
 
-        if len(blocks) == 1:
-            start(blocks[0])
-            return False
-
-        self.overlay = Overlay(
-            blocks, hints.assign(blocks),
-            lambda block, button, modifiers: start(block),
-            self._finished,
-            prompt="caret: pick a block of text",
-        )
-        self.overlay.show()
+        start(caret.best(blocks))
         return False
 
     def _scroll(self):
@@ -326,34 +317,25 @@ class Daemon:
             _notify("Nothing scrollable here.")
             return False
 
-        # One region is not worth asking about -- go straight in.
-        if len(regions) == 1:
-            self._log(f"1 region in "
-                      f"{(time.perf_counter() - started) * 1000:.0f}ms; "
-                      f"entering scroll mode")
-            self._enter_scroll(regions[0])
-            return False
-
-        labels = hints.assign(regions)
-        self._log(f"{len(regions)} scrollable regions in "
-                  f"{(time.perf_counter() - started) * 1000:.0f}ms")
-        self.overlay = Overlay(
-            regions, labels,
-            lambda region, button, modifiers: self._enter_scroll(region),
-            self._finished,
-            prompt="scroll: pick a region",
-        )
-        self.overlay.show()
+        # No picker. Acting on the best candidate immediately is most of what
+        # makes this feel immediate rather than like a dialog; Tab inside the
+        # session reaches the others, so a wrong guess costs one key.
+        chosen = scroll.best(regions)
+        self._log(f"{len(regions)} scrollable region(s) in "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms; "
+                  f"entering scroll mode")
+        self._enter_scroll(chosen, regions)
         return False
 
-    def _enter_scroll(self, region):
+    def _enter_scroll(self, region, regions=None):
         # Deferred: when this comes from the picker, the picker's own on_done
         # runs after on_choose and would clear self.overlay right after we set
         # it, leaving the daemon unable to dismiss the session later.
         def start():
             self.overlay = scroll.ScrollSession(
                 region, self._finished,
-                on_caret=lambda: GLib.idle_add(self._caret))
+                on_caret=lambda: GLib.idle_add(self._caret),
+                regions=regions)
             self.overlay.show()
             return False
         GLib.idle_add(start)
