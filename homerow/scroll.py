@@ -17,7 +17,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
-from . import config, elements, theme  # noqa: E402
+from . import config, elements, theme, x11  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
 
 WHEEL_UP, WHEEL_DOWN = 4, 5
@@ -150,6 +150,9 @@ def _overflows(region):
 
 
 def _wheel(x, y, button, times):
+    if x11.available() and x11.click(button, x, y, times=times,
+                                     delay_ms=config.SCROLL_CLICK_DELAY):
+        return
     argv = [
         "xdotool", "mousemove", "--sync", str(x), str(y),
         "click", "--repeat", str(times),
@@ -427,6 +430,8 @@ class ScrollSession:
 
 def _send_keys(combo):
     """Send a key combination to whatever currently has focus."""
+    if x11.available() and x11.send_combo(combo):
+        return
     try:
         subprocess.run(
             ["xdotool", "key", "--clearmodifiers", combo],

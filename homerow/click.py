@@ -7,7 +7,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
-from . import config  # noqa: E402
+from . import config, x11  # noqa: E402
 
 BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT = 1, 2, 3
 
@@ -50,6 +50,14 @@ def _pointer_click(element, button, modifiers):
     # disturbed by a click the user made with the keyboard.
     origin = _pointer_position()
 
+    if x11.available():
+        # XTest in-process: no subprocess, so the click lands in well under a
+        # millisecond instead of the ~15ms an xdotool spawn costs.
+        if x11.click(button, x, y, modifiers):
+            if origin:
+                x11.warp_pointer(*origin)
+            return "xtest"
+
     cmd = ["xdotool", "mousemove", "--sync", str(x), str(y)]
     for mod in modifiers:
         cmd += ["keydown", mod]
@@ -67,6 +75,10 @@ def _pointer_click(element, button, modifiers):
 
 
 def _pointer_position():
+    if x11.available():
+        position = x11.pointer_position()
+        if position:
+            return position
     try:
         out = subprocess.run(
             ["xdotool", "getmouselocation", "--shell"],

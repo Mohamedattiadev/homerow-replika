@@ -24,7 +24,9 @@ Mouse-Mode). Inside it:
 | `q` / `Esc` | leave the chord |
 
 The chord **stays active** across actions, so you can scroll one region, then
-hint, then scroll another without reopening it. homerow's own keyboard grab
+hint, then scroll another without reopening it. The one exception is clicking
+into a text field: homerow leaves the chord automatically, because `h`/`s`/`f`
+have to be letters again the moment you are typing. Reopen with `win+shift+f`. homerow's own keyboard grab
 outranks qtile's passive key grabs while an overlay is up, so the chord cannot
 steal those keys; once the overlay closes the chord is simply still there.
 `q` or `Esc` leaves.
@@ -132,16 +134,17 @@ Modelled on vim's `/`, not on a picker dialog.
 
 | Key | Action |
 |---|---|
-| any text | filter as you type; current match is highlighted |
-| `Tab` / `Down` | next match |
-| `Shift+Tab` / `Up` | previous match |
+| any letter | filter as you type; matches get numbered labels |
+| `1`–`9` | click that numbered match |
+| `Tab` / `Shift+Tab` | next / previous match |
 | `Enter` | click the current match |
 | `Esc` | cancel |
 
-So the common case — type three letters, press Enter — never involves a second
-phase or a hint label at all. Cycling is bound to Tab and the arrows, never to
-letters: every letter has to stay usable in the query, which is what made an
-earlier "type, then pick a label" version awkward.
+Labels are **digits**, and that is the whole trick. Letters have to stay
+available for the query, so a letter-based label alphabet forces a second
+"now pick" phase — which is what made an earlier version awkward. Digits never
+collide with what you are typing, so filtering and picking share one prompt:
+type a few letters, press the number, done.
 
 Terms are whitespace-separated and all must match, against the accessible name,
 the role, **and the element's visible text** — many web controls carry no name
@@ -321,6 +324,15 @@ Qt toolkit, files hint correctly. Dolphin works too.
 
 Three things were not obvious and are worth keeping in mind before changing
 the code:
+
+**Do not shell out on a hot path.** Every `xdotool` call is a process spawn —
+~11ms before it does anything — and there were several per keypress: one to
+find the active window, three to enumerate windows, one per click. That fixed
+cost dominated everything the daemon exists to avoid. `homerow/x11.py` binds
+the handful of calls actually needed (`_NET_ACTIVE_WINDOW`, `_NET_CLIENT_LIST`,
+window geometry, XTest button and key events) through ctypes, with an xdotool
+fallback if the libraries are missing. Active-window lookup went 11ms → 0.3ms
+and window enumeration 114ms → 1ms.
 
 **Never walk the AT-SPI tree.** Every node access is a D-Bus round trip,
 measured here at ~480 nodes/sec — seconds for a real page.

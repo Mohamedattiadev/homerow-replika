@@ -15,7 +15,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 from gi.repository import Atspi  # noqa: E402
 
-from . import config  # noqa: E402
+from . import config, x11  # noqa: E402
 
 
 @dataclass
@@ -66,10 +66,18 @@ def _roles(names=None):
 def active_window():
     """(pid, x, y, w, h) of the focused X11 window, or None.
 
-    One subprocess call gets both, and the geometry lets us scope results to
-    the focused window without the per-child AT-SPI state probing that
-    frame detection would cost (~127ms).
+    The geometry lets us scope results to the focused window without the
+    per-child AT-SPI state probing that frame detection would cost (~127ms).
     """
+    if x11.available():
+        window = x11.active_window_id()
+        if window:
+            pid = x11.window_pid(window)
+            geometry = x11.window_geometry(window)
+            if pid and geometry:
+                return (pid, *geometry)
+        return None
+
     try:
         out = subprocess.run(
             ["xdotool", "getactivewindow", "getwindowpid",

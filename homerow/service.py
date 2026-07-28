@@ -268,6 +268,31 @@ class Daemon:
     def _choose(self, element, button, modifiers):
         method = click.perform(element, button, modifiers)
         self._log(f"clicked button={button} mods={modifiers} via {method}")
+        self._release_chord_if_typing(element)
+
+    def _release_chord_if_typing(self, element):
+        """Leave the qtile chord when the click lands in a text field.
+
+        The chord stays active between actions so h/s/f keep working, but a
+        focused text field needs those letters to be letters. Clicking into one
+        and then having `h` open hint mode instead of typing `h` is worse than
+        reopening the chord, so this exits it -- and only in that case.
+        """
+        try:
+            role = element.role
+        except Exception:
+            return
+        if role not in config.TEXT_ENTRY_ROLES:
+            return
+        self._log(f"clicked a {role}; leaving the chord so typing works")
+        try:
+            import subprocess
+            subprocess.run(
+                ["qtile", "cmd-obj", "-o", "root", "-f", "ungrab_chord"],
+                timeout=2, check=False, capture_output=True,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     def _finished(self):
         self.overlay = None

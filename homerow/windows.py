@@ -9,7 +9,7 @@ windows are on screen at once.
 import subprocess
 from dataclasses import dataclass
 
-from . import config
+from . import config, x11
 
 
 @dataclass
@@ -117,6 +117,9 @@ def collect(screen_w, screen_h, exclude_id=None):
     if not config.HINT_WINDOWS:
         return []
 
+    if x11.available():
+        return _collect_x11(screen_w, screen_h, exclude_id)
+
     visible = _visible_ids()
     candidates = [
         window_id for window_id in _managed_windows()
@@ -137,6 +140,31 @@ def collect(screen_w, screen_h, exclude_id=None):
             continue
         targets.append(
             WindowTarget(window_id, info.get("name", ""), x, y, w, h)
+        )
+    return targets
+
+
+def _collect_x11(screen_w, screen_h, exclude_id):
+    """Same as collect(), without spawning a process per window.
+
+    window_geometry() returns None for anything not viewable, which also
+    filters out windows sitting on other groups -- no separate visibility
+    query needed.
+    """
+    targets = []
+    for window_id in x11.client_list():
+        if window_id == exclude_id:
+            continue
+        geometry = x11.window_geometry(window_id)
+        if geometry is None:
+            continue
+        x, y, w, h = geometry
+        if w < config.MIN_WINDOW_SIZE or h < config.MIN_WINDOW_SIZE:
+            continue
+        if x + w <= 0 or y + h <= 0 or x >= screen_w or y >= screen_h:
+            continue
+        targets.append(
+            WindowTarget(window_id, x11.window_name(window_id), x, y, w, h)
         )
     return targets
 

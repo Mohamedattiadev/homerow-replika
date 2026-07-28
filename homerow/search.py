@@ -150,10 +150,47 @@ class SearchPrompt:
             return True
 
         point = Gdk.keyval_to_unicode(key)
-        if point and chr(point).isprintable():
-            self.query += chr(point)
+        char = chr(point) if point else ""
+
+        # Digits pick a labelled match outright. Letters have to stay available
+        # for the query, so labels are drawn from digits instead -- that is the
+        # whole reason this works without a second phase.
+        if char and char in config.SEARCH_LABELS and self.query:
+            index = config.SEARCH_LABELS.index(char)
+            if index < len(self.hits):
+                self.current = index
+                self.submitted = True
+                self._close()
+            return True
+
+        if char and char.isprintable():
+            self.query += char
             self._refresh()
         return True
+
+    def _draw_labels(self, cr):
+        """Number the first few matches so one keypress can pick any of them."""
+        cr.select_font_face(config.FONT_FAMILY)
+        cr.set_font_size(config.FONT_SIZE)
+        for index, element in enumerate(self.hits[:len(config.SEARCH_LABELS)]):
+            label = config.SEARCH_LABELS[index]
+            ext = cr.text_extents(label)
+            w = ext.width + config.PAD_X * 2
+            h = config.FONT_SIZE + config.PAD_Y * 2
+            x = element.x - w - config.HINT_GAP
+            y = element.y + (element.h - h) // 2
+            if x < 0:
+                x = element.x + config.HINT_GAP
+            x = min(max(x, 0), max(self.width - w, 0))
+            y = min(max(y, 0), max(self.height - h, 0))
+
+            key = "chip" if index == self.current else "chip_matched"
+            cr.set_source_rgba(*self.colors[key])
+            cr.rectangle(x, y, w, h)
+            cr.fill()
+            cr.set_source_rgba(*self.colors["ink"])
+            cr.move_to(x + config.PAD_X, y + h - config.PAD_Y - 2)
+            cr.show_text(label)
 
     def _index_chunk(self):
         """Read the next few names, then yield back to the main loop."""
@@ -255,6 +292,8 @@ class SearchPrompt:
                 cr.rectangle(element.x, element.y, element.w, element.h)
                 cr.fill()
 
+            self._draw_labels(cr)
+
         label = f"search: {self.query}_"
         if self.hits and self.query:
             count = f"{self.current + 1}/{len(self.hits)}"
@@ -263,7 +302,7 @@ class SearchPrompt:
                 "" if len(self.hits) == 1 else "es")
         if self.indexed < len(self.elements):
             count += f"  (reading {self.indexed}/{len(self.elements)})"
-        text = f"{label}    {count}    tab next · enter click · esc cancel"
+        text = f"{label}    {count}    1-9 pick · tab next · enter click · esc"
         ext = cr.text_extents(text)
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2

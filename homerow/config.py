@@ -36,6 +36,14 @@ CONTAINER_ROLES = [
 
 HINT_ROLES = ACTIONABLE_ROLES + CONTAINER_ROLES
 
+# Clicking one of these focuses somewhere you are about to type, so the qtile
+# chord is released -- otherwise h/s/f would open modes instead of typing.
+# Role *names* as AT-SPI reports them, not Atspi.Role members.
+TEXT_ENTRY_ROLES = {
+    "entry", "password text", "text", "document text", "spin button",
+    "terminal", "paragraph",
+}
+
 # Elements smaller/larger than these are almost always layout artefacts
 # rather than real targets.
 MIN_SIZE = 4
@@ -79,6 +87,11 @@ SEARCH_INDEX_CHUNK = 12
 # Visible text is searched as well as the accessible name, since many web
 # controls have no name but do have text. Capped because it is per element.
 SEARCH_TEXT_CHARS = 60
+
+# Labels shown beside search matches. Digits, so that every letter stays
+# available for the query -- that is what lets filtering and picking share one
+# prompt instead of needing a second phase.
+SEARCH_LABELS = "123456789"
 
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
