@@ -74,7 +74,8 @@ def active_window():
         if window:
             pid = x11.window_pid(window)
             geometry = x11.window_geometry(window)
-            if pid and geometry and _mostly_on_screen(geometry):
+            if pid and geometry and _mostly_on_screen(geometry) \
+                    and not _is_desktop(window):
                 return (pid, *geometry)
         return None
 
@@ -96,6 +97,18 @@ def active_window():
     except (ValueError, KeyError, IndexError, OSError,
             subprocess.SubprocessError):
         return None
+
+
+def _is_desktop(window):
+    """True for the desktop or a panel, which are not app windows.
+
+    pcmanfm draws the desktop as a full-screen window. Treating it as the
+    focused app meant clipping to "the active window" filtered nothing, so
+    elements from that app's *other* windows -- sitting on other groups with
+    stale coordinates -- were all offered, scattered over the wallpaper.
+    """
+    types = x11.window_type(window)
+    return any(t.endswith(("_DESKTOP", "_DOCK")) for t in types)
 
 
 def _mostly_on_screen(geometry):

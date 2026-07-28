@@ -181,7 +181,8 @@ class SearchPrompt:
         # Digits pick a labelled match outright. Letters have to stay available
         # for the query, so labels are drawn from digits instead -- that is the
         # whole reason this works without a second phase.
-        if char and char in config.SEARCH_LABELS and self.query:
+        if char and char in config.SEARCH_LABELS \
+                and len(self.query) >= config.SEARCH_MIN_QUERY:
             index = config.SEARCH_LABELS.index(char)
             if index < len(self.hits):
                 self.current = index
@@ -296,10 +297,10 @@ class SearchPrompt:
         # before committing to hint selection. Nothing is outlined for an empty
         # query: "everything matches" is true but drawing a box round every
         # element just looks like noise.
-        if self.query:
+        if len(self.query) >= config.SEARCH_MIN_QUERY:
             cr.set_line_width(2)
             cr.set_source_rgba(*self.colors["chip_matched"])
-            for index, element in enumerate(self.hits[:config.MAX_ELEMENTS]):
+            for index, element in enumerate(self.hits[:config.SEARCH_MAX_OUTLINES]):
                 if index == self.current:
                     continue
                 cr.rectangle(element.x, element.y, element.w, element.h)

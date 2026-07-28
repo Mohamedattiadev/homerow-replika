@@ -98,6 +98,14 @@ SEARCH_LABELS = "123456789"
 # set nor the caret set and simply cannot be found.
 SEARCH_MIN_CHARS = 2
 
+# Nothing is outlined until the query is this long. One letter matches most of
+# the screen, and outlining seventy things is noise, not help.
+SEARCH_MIN_QUERY = 2
+
+# Only outline what you could actually reach. Drawing every match buried the
+# labelled ones among dozens of identical boxes.
+SEARCH_MAX_OUTLINES = 12
+
 # --- caret mode ------------------------------------------------------------
 # Text elements shorter than this are labels and chrome, not prose worth
 # putting a cursor in.

@@ -104,6 +104,8 @@ def _load():
         x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
         x11.XKeysymToKeycode.restype = ctypes.c_ubyte
         x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XGetAtomName.restype = ctypes.c_void_p
+        x11.XGetAtomName.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         x11.XFlush.argtypes = [ctypes.c_void_p]
         x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
 
@@ -174,6 +176,22 @@ def client_list():
         return []
     root = _x11.XDefaultRootWindow(_display)
     return _property(root, "_NET_CLIENT_LIST")
+
+
+def window_type(window):
+    """The _NET_WM_WINDOW_TYPE atom names for a window."""
+    if not _load():
+        return []
+    names = []
+    for atom in _property(window, "_NET_WM_WINDOW_TYPE"):
+        try:
+            raw = _x11.XGetAtomName(_display, atom)
+            if raw:
+                names.append(ctypes.cast(raw, ctypes.c_char_p).value.decode())
+                _x11.XFree(raw)
+        except Exception:
+            continue
+    return names
 
 
 def window_pid(window):
