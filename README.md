@@ -210,10 +210,20 @@ modules in memory.
 python3 -m unittest discover -s tests
 ```
 
-Covers the pure logic that broke silently during development and needed a
-screenshot to catch: label generation (counts, uniqueness, prefix-freedom,
-ordering), search ranking, nested-hint collapsing, and overflow detection.
-Anything needing a display, D-Bus or a running app is deliberately not here.
+43 tests in two files, split by what they are about:
+
+- `test_pure.py` — the algorithms: label generation (counts, uniqueness,
+  prefix-freedom, ordering), search ranking, nested-hint collapsing, overflow
+  detection.
+- `test_rules.py` — the decisions: which window counts as focused, which is
+  worth offering as a switch target, how a match is graded, and invariants the
+  config has to satisfy (search labels must be digits and must not overlap the
+  hint alphabet, or every keystroke becomes ambiguous).
+
+Both cover bugs that actually shipped: a scratchpad two pixels on screen being
+treated as the focused app, an exact match ranked below a substring, sixteen
+rows in a tall pane counted as scrollable. Anything needing a display, D-Bus or
+a running app is deliberately not here.
 
 ## Logs
 

@@ -197,9 +197,13 @@ class ScrollSession:
         "edge": config.SCROLL_EDGE_CLICKS,
     }
 
-    def __init__(self, region, on_done=None):
+    def __init__(self, region, on_done=None, on_caret=None):
         self.region = region
         self.on_done = on_done or (lambda: None)
+        # v leaves scrolling and starts a text cursor. It used to run a
+        # shift+arrow selection that caret mode replaced, so it became a key
+        # that silently did nothing.
+        self.on_caret = on_caret
         self.pending_g = False
         self.count = ""
         self.origin = _pointer_position()
@@ -269,6 +273,12 @@ class ScrollSession:
 
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()
+            return True
+
+        if key == Gdk.KEY_v and self.on_caret is not None:
+            handoff = self.on_caret
+            self._close()
+            handoff()
             return True
 
         # Digits accumulate into a count, so 3j scrolls three lines. 0 is only

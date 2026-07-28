@@ -144,6 +144,17 @@ def collect(screen_w, screen_h, exclude_id=None):
     return targets
 
 
+def is_offerable(x, y, w, h, screen_w, screen_h):
+    """Whether a window is worth offering as a switch target.
+
+    Pulled out of the collector so the rule can be tested without an X server;
+    it is the same rule that decides whether a window is really on screen.
+    """
+    if w < config.MIN_WINDOW_SIZE or h < config.MIN_WINDOW_SIZE:
+        return False
+    return not (x + w <= 0 or y + h <= 0 or x >= screen_w or y >= screen_h)
+
+
 def _collect_x11(screen_w, screen_h, exclude_id):
     """Same as collect(), without spawning a process per window.
 
@@ -159,9 +170,7 @@ def _collect_x11(screen_w, screen_h, exclude_id):
         if geometry is None:
             continue
         x, y, w, h = geometry
-        if w < config.MIN_WINDOW_SIZE or h < config.MIN_WINDOW_SIZE:
-            continue
-        if x + w <= 0 or y + h <= 0 or x >= screen_w or y >= screen_h:
+        if not is_offerable(x, y, w, h, screen_w, screen_h):
             continue
         targets.append(
             WindowTarget(window_id, x11.window_name(window_id), x, y, w, h)

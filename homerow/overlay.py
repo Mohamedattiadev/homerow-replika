@@ -58,11 +58,15 @@ class Overlay:
     the click lands on the application underneath rather than on us.
     """
 
-    def __init__(self, elements, labels, on_choose, on_done=None):
+    def __init__(self, elements, labels, on_choose, on_done=None,
+                 prompt=None):
         self.all_elements = list(elements)
         self.elements = elements
         self.labels = labels
         self.filter = ""
+        # Shown while picking, so a picker that is not the ordinary hint
+        # overlay says what it is asking for.
+        self.prompt = prompt
         # Names are read in the background. Reading them inside the key handler
         # meant the first filter keystroke did one D-Bus round trip per hint --
         # a visible freeze on a busy page, which reads as hint mode being
@@ -319,7 +323,22 @@ class Overlay:
 
         if self.filter:
             self._draw_filter(cr)
+        elif self.prompt:
+            self._draw_banner(cr, self.prompt)
         return True
+
+    def _draw_banner(self, cr, text):
+        ext = cr.text_extents(text)
+        pad = 8
+        w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
+        x = max((self.width - w) // 2, 0)
+        y = max(self.height - h - 40, 0)
+        cr.set_source_rgba(*self.colors["chip"])
+        cr.rectangle(x, y, w, h)
+        cr.fill()
+        cr.set_source_rgba(*self.colors["ink"])
+        cr.move_to(x + pad, y + h - pad - 2)
+        cr.show_text(text)
 
     def _draw_filter(self, cr):
         """Show what is being filtered on, and how much survived."""

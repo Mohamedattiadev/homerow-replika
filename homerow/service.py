@@ -257,6 +257,9 @@ class Daemon:
         if native:
             self._log(f"handing caret off to the app's own mode ({native})")
             x11.send_combo(native)
+            # Say so: an unannounced handoff looks like the key did nothing,
+            # since the app's own mode looks nothing like ours.
+            _notify("Caret mode: using this app's own vim mode.")
             return False
 
         try:
@@ -289,6 +292,7 @@ class Daemon:
             blocks, hints.assign(blocks),
             lambda block, button, modifiers: start(block),
             self._finished,
+            prompt="caret: pick a block of text",
         )
         self.overlay.show()
         return False
@@ -337,6 +341,7 @@ class Daemon:
             regions, labels,
             lambda region, button, modifiers: self._enter_scroll(region),
             self._finished,
+            prompt="scroll: pick a region",
         )
         self.overlay.show()
         return False
@@ -346,7 +351,9 @@ class Daemon:
         # runs after on_choose and would clear self.overlay right after we set
         # it, leaving the daemon unable to dismiss the session later.
         def start():
-            self.overlay = scroll.ScrollSession(region, self._finished)
+            self.overlay = scroll.ScrollSession(
+                region, self._finished,
+                on_caret=lambda: GLib.idle_add(self._caret))
             self.overlay.show()
             return False
         GLib.idle_add(start)
