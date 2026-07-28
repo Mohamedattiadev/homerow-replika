@@ -147,9 +147,15 @@ collide with what you are typing, so filtering and picking share one prompt:
 type a few letters, press the number, done.
 
 Terms are whitespace-separated and all must match, against the accessible name,
-the role, **and the element's visible text** — many web controls carry no name
-but do have text, and that is what you would search for. `save f` finds "Save
-File"; `button` narrows to buttons.
+the role, and the element's visible text. Text blocks are searched as well as
+clickable elements: restricting the set to hintable things meant the heading or
+list entry you were looking for was often not being searched at all.
+
+Matches are **ranked**, because only the first few get a number — an exact
+match sitting at position twelve is a match you cannot reach. Whole-label hits
+come first, then whole-word, then prefix, then anything containing the query.
+Searching `bg` really does turn up `WebGLBuffer` (we**bg**l), which is why
+ranking rather than filtering is what makes the list usable.
 
 Names are read **in the background**, a chunk per idle tick, and the prompt
 says `reading n/m` while it catches up. Reading them all up front cost ~2s on a

@@ -22,8 +22,30 @@ from . import config, theme  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
 
 
+def _score(haystack, terms):
+    """Lower is better. None means no match.
+
+    Ranking matters more than it looks: only the first few matches get a
+    number, so an exact match buried at position 12 is a match you cannot
+    reach. Whole-word and prefix hits come first for that reason.
+    """
+    if not all(term in haystack for term in terms):
+        return None
+    joined = " ".join(terms)
+    words = haystack.split()
+    if haystack.strip() == joined:
+        return 0                      # the whole label is what you typed
+    if joined in words:
+        return 1                      # a complete word
+    if haystack.startswith(joined):
+        return 2                      # start of the label
+    if any(word.startswith(joined) for word in words):
+        return 3                      # start of some word
+    return 4                          # somewhere inside
+
+
 def matches(elements, query, names=None):
-    """Elements whose name or role contains every whitespace-separated term.
+    """Elements matching every whitespace-separated term, best first.
 
     `names` is an optional precomputed list parallel to `elements`; entries
     that are still None have not been read yet and simply do not match.
@@ -31,7 +53,7 @@ def matches(elements, query, names=None):
     terms = query.lower().split()
     if not terms:
         return list(elements)
-    found = []
+    scored = []
     for index, element in enumerate(elements):
         if names is None:
             haystack = f"{element.name} {element.role}".lower()
@@ -40,9 +62,13 @@ def matches(elements, query, names=None):
             if name is None:
                 continue
             haystack = name
-        if all(term in haystack for term in terms):
-            found.append(element)
-    return found
+        rank = _score(haystack, terms)
+        if rank is not None:
+            # Ties keep document order, so equally good matches stay in the
+            # order they appear on screen rather than jumping around.
+            scored.append((rank, len(haystack), index, element))
+    scored.sort(key=lambda item: item[:3])
+    return [element for _, _, _, element in scored]
 
 
 class SearchPrompt:

@@ -1,6 +1,7 @@
 """Dispatch a click at an element."""
 
 import subprocess
+import time
 
 import gi
 
@@ -53,8 +54,12 @@ def _pointer_click(element, button, modifiers):
     if x11.available():
         # XTest in-process: no subprocess, so the click lands in well under a
         # millisecond instead of the ~15ms an xdotool spawn costs.
-        if x11.click(button, x, y, modifiers):
+        if x11.click(button, x, y, modifiers,
+                     hold_ms=config.CLICK_HOLD_MS):
             if origin:
+                # Let the click be consumed before moving the pointer away.
+                # Warping straight back turns the click into a drag gesture.
+                time.sleep(config.CLICK_SETTLE_MS / 1000)
                 x11.warp_pointer(*origin)
             return "xtest"
 

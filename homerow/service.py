@@ -198,7 +198,23 @@ class Daemon:
                     "tree.")
             return False
 
-        self._log(f"search over {len(found)} elements")
+        # Search covers text blocks as well as clickable elements. Restricting
+        # it to things that can be hinted meant the thing you were looking for
+        # -- a heading, a paragraph, a list entry -- was often not in the set
+        # being searched at all, so an exact match simply never appeared.
+        try:
+            blocks = caret.collect(width, height)
+        except Exception:
+            blocks = []
+        occupied = {(e.x // 6, e.y // 6, e.w // 6, e.h // 6) for e in found}
+        for block in blocks:
+            key = (block.x // 6, block.y // 6, block.w // 6, block.h // 6)
+            if key not in occupied:
+                occupied.add(key)
+                found.append(block)
+
+        self._log(f"search over {len(found)} elements "
+                  f"({len(blocks)} text blocks)")
 
         def on_pick(element):
             self._choose(element, click.BUTTON_LEFT, ())

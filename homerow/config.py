@@ -210,6 +210,13 @@ WM_CLASS = "homerow"
 # warps back -- closer to what Homerow does on macOS.
 CLICK_METHOD = "pointer"
 
+# How long the button stays down, and how long to wait before putting the
+# pointer back. A zero-length press followed by immediate pointer motion is
+# read as the start of a drag -- links were being picked up and dragged
+# instead of followed.
+CLICK_HOLD_MS = 14
+CLICK_SETTLE_MS = 40
+
 # Log every key the overlay receives. Useful when hints appear but typing them
 # does nothing, which usually means the keyboard grab is not exclusive.
 DEBUG_KEYS = False

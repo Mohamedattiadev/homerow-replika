@@ -272,8 +272,15 @@ def send_combo(combo):
     return True
 
 
-def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0):
-    """Click at (x, y), optionally with modifiers held, `times` times."""
+def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
+          hold_ms=0):
+    """Click at (x, y), optionally with modifiers held, `times` times.
+
+    `hold_ms` separates press from release. A zero-length press with the
+    pointer moving immediately afterwards is what a toolkit interprets as the
+    start of a drag -- which is exactly what happened to links: they were
+    picked up and dragged instead of followed.
+    """
     if not _load() or _xtst is None:
         return False
     if x is not None and y is not None:
@@ -282,13 +289,15 @@ def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0):
     for code in codes:
         if code:
             _xtst.XTestFakeKeyEvent(_display, code, True, 0)
-    for _ in range(times):
-        _xtst.XTestFakeButtonEvent(_display, button, True, 0)
-        _xtst.XTestFakeButtonEvent(_display, button, False, delay_ms)
+    # hold_ms separates press from release; delay_ms spaces successive clicks.
+    for index in range(times):
+        _xtst.XTestFakeButtonEvent(
+            _display, button, True, 0 if index == 0 else delay_ms)
+        _xtst.XTestFakeButtonEvent(_display, button, False, hold_ms)
     for code in reversed(codes):
         if code:
             _xtst.XTestFakeKeyEvent(_display, code, False, 0)
-    _x11.XFlush(_display)
+    _x11.XSync(_display, False)
     return True
 
 
