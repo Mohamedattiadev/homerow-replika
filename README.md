@@ -12,13 +12,21 @@ Built and verified against this machine: Arch, X11, qtile 0.36, picom, Python
 
 ## Usage
 
-**`alt+space`** is hint mode, directly — no chord. It is the action you take
-constantly, and Homerow's immediacy comes largely from it being one chord-free
-keystroke. (Not `shift+space` like Homerow: grabbing that globally on X11 would
-swallow it everywhere you type.)
+One key per mode, the way Homerow does it — no chord in the way:
 
-The other modes live in the **`win+shift+f`** chord (Hint-Mode, formerly
-Mouse-Mode), where discovering them is worth the extra step:
+| Key | Mode | Homerow's |
+|---|---|---|
+| `alt+space` | hint / click | `shift+space` |
+| `alt+j` | scroll | `shift+J` |
+| `alt+/` | search | `shift+/` |
+| `alt+c` | caret | — |
+
+`alt` rather than `shift`, because grabbing `shift+<key>` globally on X11 would
+swallow it everywhere you type. Caret is on `alt+c` because `alt+v` is already
+the CopyQ picker.
+
+The **`win+shift+f`** chord still holds all of them, for discovery and for
+chaining several actions without reaching for a modifier each time:
 
 | Key | Mode |
 |---|---|
