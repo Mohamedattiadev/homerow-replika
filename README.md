@@ -45,6 +45,7 @@ Labels two kinds of target at once:
 | Key | Action |
 |---|---|
 | `a`–`l` (home row) | type a label to click it, or switch to that window |
+| any other letter | **filter** — narrows the hints and relabels the survivors |
 | `Shift` + label | shift-click (opens links in a new tab) |
 | `Ctrl` + label | ctrl-click (new background tab) |
 | `,` then label | right-click |
@@ -63,7 +64,7 @@ is only one.
 | `d` / `u` | half page down / up |
 | `gg` / `G` | top / bottom |
 | `h` / `l` | sideways |
-| `v` | visual mode (below) |
+| `3j`, `5k` | count prefixes |
 | `Esc` | leave |
 
 `gg`/`G` mean "all the way", so they overshoot deliberately rather than use a
@@ -198,6 +199,24 @@ retries, so nothing breaks when it is missing.
 Restart the daemon after editing anything under `homerow/` — it holds the old
 modules in memory.
 
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+Covers the pure logic that broke silently during development and needed a
+screenshot to catch: label generation (counts, uniqueness, prefix-freedom,
+ordering), search ranking, nested-hint collapsing, and overflow detection.
+Anything needing a display, D-Bus or a running app is deliberately not here.
+
+## Logs
+
+The daemon always logs to `$XDG_STATE_HOME/homerow/homerow.log`, rotating at
+512KB. `homerow-daemon --log` prints the tail. `--debug` additionally mirrors
+it to stdout. Diagnosing used to mean restarting under `--debug` and hoping
+the problem recurred.
+
 ## Install
 
 Already wired up:
@@ -205,6 +224,17 @@ Already wired up:
 - `alt+shift+f` added at the top of `keys` in `~/.config/qtile/config.py`
 - daemon added to `~/.config/qtile/autostart.sh`, using the same
   `pgrep -f … || …` guard as your other daemons
+
+A systemd user unit is in `contrib/homerow.service` if you would rather have
+restart-on-failure and journal integration:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp contrib/homerow.service ~/.config/systemd/user/
+systemctl --user enable --now homerow
+```
+
+Remove the `autostart.sh` line if you switch, or the two will race.
 
 Reload qtile to pick up the binding. Everything else was already present:
 `at-spi2-core`, `python-gobject`, `xdotool`, `picom`, `openbsd-netcat`.

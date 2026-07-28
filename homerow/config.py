@@ -4,6 +4,12 @@
 # Keep these lowercase and unique.
 HINT_ALPHABET = "asdfghjkl"
 
+# Type text to narrow the hints instead of reading every label. Any character
+# outside HINT_ALPHABET filters by element name; label keys still select. The
+# labels are recomputed over the survivors, so filtering to one thing leaves a
+# single-character label.
+HINT_FILTER = True
+
 # Roles worth hinting. Names map to Atspi.Role members; unknown names are
 # skipped so this list stays portable across atspi versions.
 ACTIONABLE_ROLES = [
@@ -119,7 +125,8 @@ CARET_MIN_CHARS = 12
 # already vim -- h/j/k/l, w/b/e, v to select, y to yank -- and instant.
 # Keyed on the AT-SPI application name, value is the key that enters the mode.
 CARET_NATIVE = {
-    "qutebrowser": "v",
+    "qutebrowser": "v",     # its own caret mode, already vim
+    "firefox": "F7",        # caret browsing; prompts once, then persists
 }
 
 CARET_ROLES = [
@@ -155,6 +162,9 @@ SCROLL_EDGE_CLICKS = 400
 # Repeat delay in ms passed to xdotool for multi-click scrolls. Too low and
 # smooth-scrolling apps coalesce the events into one small jump.
 SCROLL_CLICK_DELAY = 6
+
+# Upper bound on a count prefix, so a mistyped 999j cannot hang the session.
+SCROLL_MAX_COUNT = 50
 
 # When nothing reports itself as scrollable, scroll the focused window anyway
 # rather than refusing. Wheel events do not need accessibility to work, so a
@@ -250,3 +260,7 @@ CLICK_SETTLE_MS = 120
 # Log every key the overlay receives. Useful when hints appear but typing them
 # does nothing, which usually means the keyboard grab is not exclusive.
 DEBUG_KEYS = False
+
+# The daemon always logs to $XDG_STATE_HOME/homerow/homerow.log, rotating at
+# this size. --debug additionally mirrors it to stdout.
+LOG_MAX_BYTES = 512 * 1024

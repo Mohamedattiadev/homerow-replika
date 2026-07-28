@@ -17,7 +17,10 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, theme  # noqa: E402
 
-CANCEL_KEYS = {Gdk.KEY_Escape, Gdk.KEY_q}
+# Only Escape cancels. `q` used to as well, but every letter outside the label
+# alphabet is now a filter character, and a hint set containing "Quit" has to
+# be reachable by typing q.
+CANCEL_KEYS = {Gdk.KEY_Escape}
 BUTTON_PREFIXES = {",": 3, ".": 2}  # right, middle
 
 
@@ -56,8 +59,11 @@ class Overlay:
     """
 
     def __init__(self, elements, labels, on_choose, on_done=None):
+        self.all_elements = list(elements)
         self.elements = elements
         self.labels = labels
+        self.filter = ""
+        self.names = {}
         self.on_choose = on_choose
         # Standalone runs own a Gtk main loop and quit it here; the daemon
         # keeps one loop for its whole lifetime and passes nothing.
@@ -169,14 +175,15 @@ class Overlay:
                   f"{chr(unicode_point) if unicode_point else ''!r} "
                   f"typed={self.typed!r}", flush=True)
 
-        if key in CANCEL_KEYS and not self.typed:
-            self._close()
-            return True
-        if key == Gdk.KEY_Escape:
+        if key in CANCEL_KEYS:
             self._close()
             return True
         if key == Gdk.KEY_BackSpace:
-            self.typed = self.typed[:-1]
+            if self.typed:
+                self.typed = self.typed[:-1]
+            elif self.filter:
+                self.filter = self.filter[:-1]
+                self._apply_filter()
             self.window.queue_draw()
             return True
 
@@ -191,6 +198,12 @@ class Overlay:
             return True
 
         if char not in config.HINT_ALPHABET:
+            # Anything outside the label alphabet narrows the set instead.
+            # Reading names costs a D-Bus round trip each, so it happens here,
+            # on demand, rather than for every hint that is only ever looked at.
+            if config.HINT_FILTER and char.isprintable():
+                self.filter += char
+                self._apply_filter()
             return True
 
         candidate = self.typed + char
@@ -203,6 +216,29 @@ class Overlay:
         else:
             self.window.queue_draw()
         return True
+
+    def _apply_filter(self):
+        """Keep only elements whose name contains the filter, and relabel."""
+        from . import hints
+        self.typed = ""
+        if not self.filter:
+            self.elements = list(self.all_elements)
+        else:
+            needle = self.filter.lower()
+            kept = []
+            for element in self.all_elements:
+                name = self.names.get(id(element))
+                if name is None:
+                    try:
+                        name = f"{element.name} {element.role}".lower()
+                    except Exception:
+                        name = ""
+                    self.names[id(element)] = name
+                if needle in name:
+                    kept.append(element)
+            self.elements = kept
+        self.labels = hints.assign(self.elements) if self.elements else []
+        self.window.queue_draw()
 
     def _choose(self, index, state):
         modifiers = []
@@ -264,7 +300,27 @@ class Overlay:
             if self.typed and not label.startswith(self.typed):
                 continue
             self._draw_hint(cr, element, label)
+
+        if self.filter:
+            self._draw_filter(cr)
         return True
+
+    def _draw_filter(self, cr):
+        """Show what is being filtered on, and how much survived."""
+        count = len(self.elements)
+        text = (f"filter: {self.filter}_    {count} left"
+                if count else f"filter: {self.filter}_    no match")
+        ext = cr.text_extents(text)
+        pad = 8
+        w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
+        x = max((self.width - w) // 2, 0)
+        y = max(self.height - h - 40, 0)
+        cr.set_source_rgba(*self.colors["chip" if count else "chip_window"])
+        cr.rectangle(x, y, w, h)
+        cr.fill()
+        cr.set_source_rgba(*self.colors["ink"])
+        cr.move_to(x + pad, y + h - pad - 2)
+        cr.show_text(text)
 
     def _draw_hint(self, cr, element, label):
         ext = cr.text_extents(label)

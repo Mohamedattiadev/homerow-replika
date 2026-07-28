@@ -201,7 +201,7 @@ class ScrollSession:
         self.region = region
         self.on_done = on_done or (lambda: None)
         self.pending_g = False
-        self.visual = False
+        self.count = ""
         self.origin = _pointer_position()
 
         set_identity()
@@ -264,42 +264,21 @@ class ScrollSession:
         GLib.timeout_add(50, self._grab)
         return False
 
-    # Visual mode drives the application's own selection with the keys it
-    # already understands, rather than trying to reimplement selection through
-    # AT-SPI. That is what makes it behave natively: shift+arrow selects in a
-    # text field, an editor, and a browser with caret browsing, and ctrl+c is
-    # copy everywhere.
-    VISUAL_KEYS = {
-        Gdk.KEY_h: "shift+Left",
-        Gdk.KEY_l: "shift+Right",
-        Gdk.KEY_j: "shift+Down",
-        Gdk.KEY_k: "shift+Up",
-        Gdk.KEY_Left: "shift+Left",
-        Gdk.KEY_Right: "shift+Right",
-        Gdk.KEY_Down: "shift+Down",
-        Gdk.KEY_Up: "shift+Up",
-        Gdk.KEY_w: "shift+ctrl+Right",
-        Gdk.KEY_b: "shift+ctrl+Left",
-        Gdk.KEY_e: "shift+ctrl+Right",
-        Gdk.KEY_0: "shift+Home",
-        Gdk.KEY_dollar: "shift+End",
-        Gdk.KEY_G: "shift+ctrl+End",
-    }
-
     def _on_key(self, _widget, event):
         key = event.keyval
 
-        if self.visual:
-            return self._on_visual_key(key)
-
-        if key == Gdk.KEY_v:
-            self.visual = True
-            self.pending_g = False
-            self.window.queue_draw()
-            return True
-
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()
+            return True
+
+        # Digits accumulate into a count, so 3j scrolls three lines. 0 is only
+        # a count digit once a count is started; on its own it is not a motion
+        # here, unlike in caret mode.
+        unicode_point = Gdk.keyval_to_unicode(key)
+        char = chr(unicode_point) if unicode_point else ""
+        if char.isdigit() and (char != "0" or self.count):
+            self.count = (self.count or "") + char
+            self.window.queue_draw()
             return True
 
         # gg -- top. G alone is bottom, so only the doubled g means top.
@@ -314,60 +293,24 @@ class ScrollSession:
 
         action = self.KEYS.get(key)
         if action is None:
+            self.count = ""
+            self.window.queue_draw()
             return True
         button, amount = action
         self._apply(button, amount)
         return True
 
-    def _send_native(self, combo):
-        """Deliver a key combination to the application underneath.
-
-        We hold an exclusive keyboard grab, so a synthetic keypress would be
-        routed straight back to this overlay instead of reaching the app. The
-        grab has to be dropped for the duration of the send and retaken
-        afterwards -- without this, visual mode silently did nothing.
-        """
-        seat = Gdk.Display.get_default().get_default_seat()
-        was_grabbed = self._grabbed
-        if was_grabbed:
-            seat.ungrab()
-            self._grabbed = False
-            Gdk.Display.get_default().sync()
-        _send_keys(combo)
-        if was_grabbed:
-            gdk_window = self.window.get_window()
-            if gdk_window is not None and seat.grab(
-                    gdk_window, Gdk.SeatCapabilities.KEYBOARD,
-                    False, None, None, None, None) == Gdk.GrabStatus.SUCCESS:
-                self._grabbed = True
-
-    def _on_visual_key(self, key):
-        if key == Gdk.KEY_Escape:
-            self.visual = False
-            self.window.queue_draw()
-            return True
-        if key == Gdk.KEY_y:
-            # Copy, then leave entirely -- yanking is the end of the gesture.
-            self._send_native("ctrl+c")
-            self.visual = False
-            self._close()
-            return True
-        if key == Gdk.KEY_g:
-            if self.pending_g:
-                self.pending_g = False
-                self._send_native("shift+ctrl+Home")
-            else:
-                self.pending_g = True
-            return True
-        self.pending_g = False
-        combo = self.VISUAL_KEYS.get(key)
-        if combo:
-            self._send_native(combo)
-        return True
-
     def _apply(self, button, amount):
+        repeat = int(self.count) if self.count else 1
+        self.count = ""
         x, y = self.region.center
-        _wheel(x, y, button, self.AMOUNTS[amount])
+        # An edge jump is already "all the way", so a count would only make it
+        # slower for no further movement.
+        clicks = self.AMOUNTS[amount]
+        if amount != "edge":
+            clicks *= max(1, min(repeat, config.SCROLL_MAX_COUNT))
+        _wheel(x, y, button, clicks)
+        self.window.queue_draw()
 
     def dismiss(self):
         """Tear down from outside, so the daemon can replace this session."""
@@ -399,19 +342,17 @@ class ScrollSession:
             cr.translate(-origin_x, -origin_y)
 
         region = self.region
-        accent = "chip_window" if self.visual else "chip_matched"
+        accent = "chip_matched"
         # Outline only -- the region has to stay readable while you scroll it.
         cr.set_source_rgba(*self.colors[accent])
         cr.set_line_width(2)
         cr.rectangle(region.x + 1, region.y + 1, region.w - 2, region.h - 2)
         cr.stroke()
 
-        if self.visual:
-            legend = ("VISUAL   h/j/k/l select   w/b word   0/$ line   "
-                      "gg/G doc   y yank   esc")
-        else:
-            legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
-                      "v visual   esc")
+        legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
+                  "3j counts   esc")
+        if self.count:
+            legend = f"{self.count}…   " + legend
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
         ext = cr.text_extents(legend)
@@ -426,19 +367,6 @@ class ScrollSession:
         cr.move_to(x + pad, y + h - pad + 2)
         cr.show_text(legend)
         return True
-
-
-def _send_keys(combo):
-    """Send a key combination to whatever currently has focus."""
-    if x11.available() and x11.send_combo(combo):
-        return
-    try:
-        subprocess.run(
-            ["xdotool", "key", "--clearmodifiers", combo],
-            timeout=2, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 def _pointer_position():

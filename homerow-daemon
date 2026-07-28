@@ -4,6 +4,7 @@
     homerow-daemon            run in the foreground
     homerow-daemon --debug    log each request and its timing
     homerow-daemon --status   report whether a daemon is answering
+    homerow-daemon --log      print the tail of the log
     homerow-daemon --quit     ask a running daemon to exit
 """
 
@@ -22,7 +23,18 @@ def main():
         running = service.is_running()
         print(f"homerow daemon: {'running' if running else 'not running'} "
               f"({service.socket_path()})")
+        print(f"log: {service.log_path()}")
         return 0 if running else 1
+
+    if "--log" in sys.argv:
+        try:
+            with open(service.log_path(), encoding="utf-8") as handle:
+                lines = handle.readlines()
+            sys.stdout.writelines(lines[-40:])
+        except OSError as error:
+            print(f"homerow: no log ({error})", file=sys.stderr)
+            return 1
+        return 0
 
     if "--quit" in sys.argv:
         if not service.is_running():

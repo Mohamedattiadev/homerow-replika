@@ -24,6 +24,19 @@ from . import (  # noqa: E402
 from .overlay import Overlay, screen_size  # noqa: E402
 
 
+def log_path():
+    """Rotating log location.
+
+    Diagnosing anything used to mean restarting under --debug and hoping the
+    problem recurred; the interesting run was always the one not being logged.
+    The daemon now always logs, so a report can be answered from the record.
+    """
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    directory = os.path.join(base, "homerow")
+    os.makedirs(directory, exist_ok=True)
+    return os.path.join(directory, "homerow.log")
+
+
 def socket_path():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return os.path.join(runtime, "homerow.sock")
@@ -49,6 +62,7 @@ class Daemon:
         self.debug = debug
         self.overlay = None
         self.path = socket_path()
+        self.log = _open_log()
 
     def run(self):
         if is_running(self.path):
@@ -370,8 +384,26 @@ class Daemon:
         self.overlay = None
 
     def _log(self, message):
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
         if self.debug:
             print(f"homerow: {message}", flush=True)
+        if self.log is not None:
+            try:
+                self.log.write(line + "\n")
+                self.log.flush()
+            except Exception:
+                pass
+
+
+def _open_log():
+    """Append to the log, rotating once it gets large."""
+    try:
+        path = log_path()
+        if os.path.exists(path) and os.path.getsize(path) > config.LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+        return open(path, "a", encoding="utf-8")
+    except Exception:
+        return None
 
 
 def _native_caret_key():

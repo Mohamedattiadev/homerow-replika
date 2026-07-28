@@ -1,0 +1,19 @@
+[Unit]
+Description=homerow keyboard hint daemon
+Documentation=file:///home/ati/Attia-Pro/Projects/Homerow_replika/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Attia-Pro/Projects/Homerow_replika/homerow-daemon
+ExecStop=%h/Attia-Pro/Projects/Homerow_replika/homerow-daemon --quit
+Restart=on-failure
+RestartSec=2
+# The daemon needs the X display and the accessibility bus of the running
+# session; a user unit does not inherit them from the login shell.
+Environment=DISPLAY=:0
+Slice=session.slice
+
+[Install]
+WantedBy=graphical-session.target
