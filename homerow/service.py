@@ -333,9 +333,7 @@ class Daemon:
         # it, leaving the daemon unable to dismiss the session later.
         def start():
             self.overlay = scroll.ScrollSession(
-                region, self._finished,
-                on_caret=lambda: GLib.idle_add(self._caret),
-                regions=regions)
+                region, self._finished, regions=regions)
             self.overlay.show()
             return False
         GLib.idle_add(start)

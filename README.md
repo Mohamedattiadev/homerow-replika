@@ -87,7 +87,12 @@ a dialog rather than a keystroke. A wrong guess costs one `Tab`.
 | `gg` / `G` | top / bottom |
 | `h` / `l` | sideways |
 | `3j`, `5k` | count prefixes |
+| `Tab` | next region |
 | `Esc` | leave |
+
+No mode-switch key here. Caret has its own binding, so a `v` inside scroll was
+a second route to the same place and a hidden transition inside a mode —
+Homerow's scroll mode has none either.
 
 `gg`/`G` mean "all the way", so they overshoot deliberately rather than use a
 tuned click count — 50 clicks looked right on short pages and left `G` stranded

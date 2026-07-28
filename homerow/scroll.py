@@ -264,14 +264,9 @@ class ScrollSession:
         "edge": config.SCROLL_EDGE_CLICKS,
     }
 
-    def __init__(self, region, on_done=None, on_caret=None,
-                 regions=None):
+    def __init__(self, region, on_done=None, regions=None):
         self.region = region
         self.on_done = on_done or (lambda: None)
-        # v leaves scrolling and starts a text cursor. It used to run a
-        # shift+arrow selection that caret mode replaced, so it became a key
-        # that silently did nothing.
-        self.on_caret = on_caret
         # Tab cycles the other candidates, so skipping the picker never means
         # being stuck with the wrong guess.
         self.regions = list(regions) if regions else [region]
@@ -363,12 +358,6 @@ class ScrollSession:
             self.index = (self.index + step) % len(self.regions)
             self.region = self.regions[self.index]
             self.window.queue_draw()
-            return True
-
-        if key == Gdk.KEY_v and self.on_caret is not None:
-            handoff = self.on_caret
-            self._close()
-            handoff()
             return True
 
         # Digits accumulate into a count, so 3j scrolls three lines. 0 is only
@@ -483,7 +472,7 @@ class ScrollSession:
         cr.stroke()
 
         legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
-                  "3j counts   v caret   esc")
+                  "3j counts   esc")
         if len(self.regions) > 1:
             legend = (f"[{self.index + 1}/{len(self.regions)} tab]   "
                       + legend)
@@ -495,13 +484,16 @@ class ScrollSession:
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad + 4
 
-        # Sit the legend just inside the region's top edge, or just below it
-        # when the region starts at the very top of the screen. Hanging it
-        # above a region flush with the screen edge put it off-screen.
+        # Above the region, or just inside it when there is no room. A region
+        # can start above the top of the screen -- a page container often
+        # reports a negative y -- so both candidates have to be clamped, not
+        # just compared against zero. Without the clamp the legend was drawn
+        # off-screen and scroll mode looked like it had no UI at all.
         x = min(max(region.x + (region.w - w) // 2, 0), max(self.width - w, 0))
         y = region.y - h - 6
         if y < 0:
-            y = min(region.y + 6, self.height - h)
+            y = region.y + 6
+        y = min(max(y, 0), max(self.height - h, 0))
 
         _rounded(cr, x, y, w, h, config.SCROLL_RADIUS)
         cr.set_source_rgba(*colors["chip_matched"])
