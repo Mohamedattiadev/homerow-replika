@@ -412,6 +412,19 @@ class ScrollSession:
         _wheel(x, y, button, clicks)
         self.window.queue_draw()
 
+    def _on_visibility(self, _widget, event):
+        """Re-raise when something covers us.
+
+        The pointer passes through this overlay, so clicking a window
+        underneath raises that window above it -- the session stays live and
+        keeps grabbing keys while being invisible.
+        """
+        if event.state != Gdk.VisibilityState.UNOBSCURED:
+            gdk_window = self.window.get_window()
+            if gdk_window is not None:
+                gdk_window.raise_()
+        return False
+
     def dismiss(self):
         """Tear down from outside, so the daemon can replace this session."""
         self._close()

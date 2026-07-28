@@ -22,7 +22,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
-from . import config, elements, theme  # noqa: E402
+from . import config, elements, theme, x11  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
 
 WORD = Atspi.TextGranularity.WORD
@@ -165,7 +165,6 @@ def best(blocks):
 
 
 def _pointer_position():
-    from . import x11
     return x11.pointer_position() if x11.available() else None
 
 

@@ -131,5 +131,77 @@ class SearchLabelConfig(unittest.TestCase):
             config.SEARCH_MAX_OUTLINES, len(config.SEARCH_LABELS))
 
 
+
+
+class SignalHandlersExist(unittest.TestCase):
+    """Every widget.connect(...) must name a method that exists.
+
+    A session once connected "visibility-notify-event" to a handler that a
+    botched edit never inserted. The constructor raised, so no session ever
+    opened -- scroll appeared to do nothing and Escape had nothing to close.
+    Python cannot catch that at import time, but reading the source can.
+    """
+
+    def test_connected_handlers_are_defined(self):
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "homerow"
+        missing = []
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text())
+            for klass in [n for n in ast.walk(tree)
+                          if isinstance(n, ast.ClassDef)]:
+                defined = {n.name for n in klass.body
+                           if isinstance(n, ast.FunctionDef)}
+                for call in [n for n in ast.walk(klass)
+                             if isinstance(n, ast.Call)]:
+                    func = call.func
+                    if not (isinstance(func, ast.Attribute)
+                            and func.attr == "connect"):
+                        continue
+                    for arg in call.args[1:]:
+                        # self._handler -- the form that can silently dangle.
+                        if (isinstance(arg, ast.Attribute)
+                                and isinstance(arg.value, ast.Name)
+                                and arg.value.id == "self"
+                                and arg.attr not in defined):
+                            missing.append(
+                                f"{path.name}:{klass.name}.{arg.attr}")
+        self.assertEqual(missing, [], f"connected but undefined: {missing}")
+
+class ModuleNamesResolve(unittest.TestCase):
+    """Every sibling module used must actually be imported.
+
+    caret.py called x11.release_modifiers() without importing x11, so closing
+    a session raised before destroying its window -- Escape looked dead. The
+    call sat on an error path, which is exactly where a NameError hides.
+    """
+
+    def test_no_module_is_used_without_being_imported(self):
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "homerow"
+        siblings = {p.stem for p in root.glob("*.py")} - {"__init__"}
+        offenders = []
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text())
+            imported = {alias.name for node in ast.walk(tree)
+                        if isinstance(node, ast.ImportFrom)
+                        for alias in node.names}
+            imported |= {alias.name.split(".")[0] for node in ast.walk(tree)
+                         if isinstance(node, ast.Import)
+                         for alias in node.names}
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id in siblings
+                        and node.value.id != path.stem
+                        and node.value.id not in imported):
+                    offenders.append(f"{path.name} uses {node.value.id}")
+        self.assertEqual(sorted(set(offenders)), [])
+
+
 if __name__ == "__main__":
     unittest.main()
