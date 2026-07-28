@@ -85,7 +85,7 @@ a dialog rather than a keystroke. A wrong guess costs one `Tab`.
 | `j` / `k` | line down / up |
 | `d` / `u` | half page down / up |
 | `gg` / `G` | top / bottom |
-| `h` / `l` | sideways |
+| `h` / `l` | sideways — only offered when the region scrolls sideways |
 | `3j`, `5k` | count prefixes |
 | `Tab` | next region |
 | `Esc` | leave |
@@ -93,6 +93,11 @@ a dialog rather than a keystroke. A wrong guess costs one `Tab`.
 No mode-switch key here. Caret has its own binding, so a `v` inside scroll was
 a second route to the same place and a hidden transition inside a mode —
 Homerow's scroll mode has none either.
+
+`h`/`l` are refused, and dropped from the legend, on a region whose content
+only overflows downwards. The overflow test already measures both axes; horizontal
+wheel events sent at a vertical-only region are silently swallowed, and a key
+that does nothing reads as the mode being broken.
 
 `gg`/`G` mean "all the way", so they overshoot deliberately rather than use a
 tuned click count — 50 clicks looked right on short pages and left `G` stranded

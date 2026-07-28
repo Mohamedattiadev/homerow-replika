@@ -76,8 +76,14 @@ def collect(screen_w, screen_h):
         # Test the biggest first and stop after a fixed number: every overflow
         # test is several D-Bus round trips.
         items.sort(key=lambda e: e.w * e.h, reverse=True)
-        return [r for r in items[:config.SCROLL_MAX_CANDIDATES]
-                if _overflows(r)]
+        kept = []
+        for region in items[:config.SCROLL_MAX_CANDIDATES]:
+            vertical, horizontal = _overflows(region)
+            if vertical or horizontal:
+                region.scroll_y = vertical
+                region.scroll_x = horizontal
+                kept.append(region)
+        return kept
 
     regions = sift(candidates)
     if not regions:
@@ -149,7 +155,12 @@ def _shape(matches, win_x, win_y, left, top, right, bottom, seen):
 
 
 def _overflows(region):
-    """True if the region's content is bigger than the region itself.
+    """(vertical, horizontal) -- which axes the content overflows.
+
+    Both axes are reported rather than or-ed together, because a region that
+    only overflows downwards has nothing to scroll sideways: h and l would
+    send horizontal wheel events that the app quietly swallows, which reads as
+    scroll mode having broken.
 
     Sampling the first and last few children rather than all of them: each
     child is a D-Bus round trip, and a container that scrolls almost always
@@ -161,9 +172,9 @@ def _overflows(region):
     try:
         count = accessible.get_child_count()
     except Exception:
-        return True
+        return True, True
     if count <= 0:
-        return True
+        return True, True
 
     probe = config.SCROLL_PROBE_CHILDREN
     indexes = list(range(min(probe, count)))
@@ -190,11 +201,11 @@ def _overflows(region):
                  else max(right, ext.x + ext.width))
 
     if top is None:
-        return True
+        return True, True
 
     ratio = config.SCROLL_OVERFLOW_RATIO
-    return ((bottom - top) > region.h * ratio
-            or (right - left) > region.w * ratio)
+    return ((bottom - top) > region.h * ratio,
+            (right - left) > region.w * ratio)
 
 
 def _wheel(x, y, button, times):
@@ -239,7 +250,10 @@ def window_region():
     _, x, y, w, h = window
     if w < config.MIN_SCROLL_SIZE or h < config.MIN_SCROLL_SIZE:
         return None
-    return elements.Element(None, x, y, w, h)
+    region = elements.Element(None, x, y, w, h)
+    # Nothing was measured, so do not rule either axis out.
+    region.scroll_x = region.scroll_y = True
+    return region
 
 
 class ScrollSession:
@@ -386,8 +400,16 @@ class ScrollSession:
             self.window.queue_draw()
             return True
         button, amount = action
+        if button in (WHEEL_LEFT, WHEEL_RIGHT) and not self._sideways():
+            # Nothing overflows sideways here, so these would be swallowed.
+            self.count = ""
+            self.window.queue_draw()
+            return True
         self._apply(button, amount)
         return True
+
+    def _sideways(self):
+        return getattr(self.region, "scroll_x", True)
 
     def _apply(self, button, amount):
         repeat = int(self.count) if self.count else 1
@@ -471,8 +493,10 @@ class ScrollSession:
                  region.h - config.SCROLL_BORDER, config.SCROLL_RADIUS)
         cr.stroke()
 
-        legend = ("j/k line   d/u page   gg/G ends   h/l sideways   "
-                  "3j counts   esc")
+        legend = "j/k line   d/u page   gg/G ends   "
+        if self._sideways():
+            legend += "h/l sideways   "
+        legend += "3j counts   esc"
         if len(self.regions) > 1:
             legend = (f"[{self.index + 1}/{len(self.regions)} tab]   "
                       + legend)

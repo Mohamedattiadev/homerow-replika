@@ -147,7 +147,12 @@ class NestedElements(unittest.TestCase):
 
 
 class ScrollOverflow(unittest.TestCase):
-    """scroll._overflows decides what is actually scrollable."""
+    """scroll._overflows reports (vertical, horizontal) overflow.
+
+    Both axes are reported separately so h and l can be refused on a region
+    that only scrolls downwards -- sending horizontal wheel events there is
+    silently swallowed, which reads as scroll mode having broken.
+    """
 
     class Region:
         def __init__(self, w, h, children):
@@ -169,9 +174,9 @@ class ScrollOverflow(unittest.TestCase):
             raise AssertionError("region extents are not read")
 
     class Child:
-        def __init__(self, y, height):
+        def __init__(self, y, height, x=0, width=10):
             self.y, self.height = y, height
-            self.x, self.width = 0, 10
+            self.x, self.width = x, width
 
         def get_component_iface(self):
             return self
@@ -179,23 +184,36 @@ class ScrollOverflow(unittest.TestCase):
         def get_extents(self, _coord):
             return self
 
-    def test_content_taller_than_box_overflows(self):
+    def test_content_taller_than_box_overflows_vertically_only(self):
         from homerow import scroll
         children = [self.Child(y, 20) for y in range(0, 2000, 100)]
-        self.assertTrue(scroll._overflows(self.Region(300, 400, children)))
+        vertical, horizontal = scroll._overflows(
+            self.Region(300, 400, children))
+        self.assertTrue(vertical)
+        self.assertFalse(horizontal)
+
+    def test_content_wider_than_box_overflows_horizontally(self):
+        from homerow import scroll
+        children = [self.Child(0, 20, x, 40) for x in range(0, 3000, 100)]
+        vertical, horizontal = scroll._overflows(
+            self.Region(300, 400, children))
+        self.assertTrue(horizontal)
+        self.assertFalse(vertical)
 
     def test_content_fitting_inside_does_not(self):
         from homerow import scroll
         # 16 rows spanning 218px inside a 591px pane -- the pcmanfm-qt case
         # that was wrongly reported as scrollable.
         children = [self.Child(y, 14) for y in range(0, 218, 14)]
-        self.assertFalse(scroll._overflows(self.Region(1196, 591, children)))
+        self.assertEqual(scroll._overflows(self.Region(1196, 591, children)),
+                         (False, False))
 
     def test_childless_container_is_assumed_scrollable(self):
         from homerow import scroll
         # Web documents lay children out lazily; refusing these would lose the
         # main scroll target on most pages.
-        self.assertTrue(scroll._overflows(self.Region(300, 400, [])))
+        self.assertEqual(scroll._overflows(self.Region(300, 400, [])),
+                         (True, True))
 
 
 if __name__ == "__main__":
