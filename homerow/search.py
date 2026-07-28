@@ -18,14 +18,24 @@ from . import config, theme  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
 
 
-def matches(elements, query):
-    """Elements whose name or role contains every whitespace-separated term."""
+def matches(elements, query, names=None):
+    """Elements whose name or role contains every whitespace-separated term.
+
+    `names` is an optional precomputed list parallel to `elements`; entries
+    that are still None have not been read yet and simply do not match.
+    """
     terms = query.lower().split()
     if not terms:
         return list(elements)
     found = []
-    for element in elements:
-        haystack = f"{element.name} {element.role}".lower()
+    for index, element in enumerate(elements):
+        if names is None:
+            haystack = f"{element.name} {element.role}".lower()
+        else:
+            name = names[index]
+            if name is None:
+                continue
+            haystack = name
         if all(term in haystack for term in terms):
             found.append(element)
     return found
@@ -41,6 +51,14 @@ class SearchPrompt:
         self.query = ""
         self.hits = list(elements)
         self.submitted = False
+
+        # Names are lazy because each is a D-Bus round trip. Reading them all
+        # before showing the prompt cost ~2s on a busy page, which reads as
+        # "search is broken" -- nothing happens, then everything does. Instead
+        # the prompt opens immediately and names stream in on the idle loop.
+        self.names = [None] * len(elements)
+        self.indexed = 0
+        GLib.idle_add(self._index_chunk)
 
         set_identity()
         self.colors = theme.palette()
@@ -122,8 +140,24 @@ class SearchPrompt:
             self._refresh()
         return True
 
+    def _index_chunk(self):
+        """Read the next few names, then yield back to the main loop."""
+        end = min(self.indexed + config.SEARCH_INDEX_CHUNK,
+                  len(self.elements))
+        for index in range(self.indexed, end):
+            element = self.elements[index]
+            try:
+                self.names[index] = f"{element.name} {element.role}".lower()
+            except Exception:
+                self.names[index] = ""
+        self.indexed = end
+        if self.query:
+            self.hits = matches(self.elements, self.query, self.names)
+        self.window.queue_draw()
+        return self.indexed < len(self.elements)
+
     def _refresh(self):
-        self.hits = matches(self.elements, self.query)
+        self.hits = matches(self.elements, self.query, self.names)
         self.window.queue_draw()
 
     def _close(self):
@@ -161,15 +195,21 @@ class SearchPrompt:
         cr.set_font_size(config.FONT_SIZE)
 
         # Outline what currently matches, so the query can be refined by eye
-        # before committing to hint selection.
-        cr.set_line_width(2)
-        cr.set_source_rgba(*self.colors["chip_matched"])
-        for element in self.hits[:config.MAX_ELEMENTS]:
-            cr.rectangle(element.x, element.y, element.w, element.h)
-        cr.stroke()
+        # before committing to hint selection. Nothing is outlined for an empty
+        # query: "everything matches" is true but drawing a box round every
+        # element just looks like noise.
+        if self.query:
+            cr.set_line_width(2)
+            cr.set_source_rgba(*self.colors["chip_matched"])
+            for element in self.hits[:config.MAX_ELEMENTS]:
+                cr.rectangle(element.x, element.y, element.w, element.h)
+            cr.stroke()
 
-        label = f"search: {self.query}"
+        label = f"search: {self.query}_" if not self.query else \
+            f"search: {self.query}"
         count = f"{len(self.hits)} match" + ("" if len(self.hits) == 1 else "es")
+        if self.indexed < len(self.elements):
+            count += f"  (reading {self.indexed}/{len(self.elements)})"
         text = f"{label}    {count}    enter to pick, esc to cancel"
         ext = cr.text_extents(text)
         pad = 8

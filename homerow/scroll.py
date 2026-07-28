@@ -68,7 +68,7 @@ def collect(screen_w, screen_h):
     right = min(win_x + win_w, screen_w)
     bottom = min(win_y + win_h, screen_h)
 
-    regions = []
+    candidates = []
     seen = set()
     for acc, ext in elements._extents(matches, win_x, win_y):
         if ext.width < config.MIN_SCROLL_SIZE or \
@@ -81,14 +81,21 @@ def collect(screen_w, screen_h):
         if key in seen:
             continue
         seen.add(key)
-        regions.append(
+        candidates.append(
             elements.Element(acc, ext.x, ext.y, ext.width, ext.height)
         )
 
-    regions = [r for r in regions if _overflows(r)]
+    # Test the biggest first and stop after a fixed number: every overflow test
+    # is several D-Bus round trips, and a page can nominate dozens of sections.
+    candidates.sort(key=lambda e: e.w * e.h, reverse=True)
+    regions = [r for r in candidates[:config.SCROLL_MAX_CANDIDATES]
+               if _overflows(r)]
 
-    # Bigger regions first: the main content pane is nearly always what you
-    # want, and it gets the shortest label that way.
+    # Nested scrollables are all offered rather than resolved automatically.
+    # A page's whole document overflows as well as its sidebar and its content
+    # pane, and there is no way to know from here which one you meant --
+    # dropping ancestors would lose the main scroll target on any page that
+    # happens to contain a small overflowing widget.
     regions.sort(key=lambda e: e.w * e.h, reverse=True)
     return regions
 

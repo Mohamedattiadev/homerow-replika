@@ -196,10 +196,7 @@ class Daemon:
                     "tree.")
             return False
 
-        # Names are lazy, and search needs every one of them; pay for it here
-        # rather than in the hint path, which never reads them.
-        named = [e for e in found if e.name.strip()]
-        self._log(f"search over {len(named)} named elements")
+        self._log(f"search over {len(found)} elements")
 
         def on_query(hits):
             if not hits:
@@ -210,7 +207,7 @@ class Daemon:
             self.overlay.show()
 
         self.overlay = search.SearchPrompt(
-            named, lambda hits: GLib.idle_add(lambda: (on_query(hits), False)[1]),
+            found, lambda hits: GLib.idle_add(lambda: (on_query(hits), False)[1]),
             self._finished,
         )
         self.overlay.show()

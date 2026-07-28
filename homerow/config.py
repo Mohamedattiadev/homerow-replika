@@ -43,6 +43,11 @@ MAX_FRACTION_OF_SCREEN = 0.9
 
 # --- scroll mode -----------------------------------------------------------
 # Regions worth offering as scroll targets.
+# Containers that might scroll. This is deliberately broad: on a web page the
+# scrollable sidebar is a SECTION and the content pane is a PANEL, neither of
+# which is a "scrolling" role, so a tight whitelist misses exactly the regions
+# people want. Roles only nominate candidates -- the overflow test below is
+# what actually decides.
 SCROLL_ROLES = [
     "SCROLL_PANE",
     "DOCUMENT_WEB",
@@ -53,7 +58,23 @@ SCROLL_ROLES = [
     "TREE_TABLE",
     "TABLE",
     "VIEWPORT",
+    "SECTION",
+    "PANEL",
+    "FILLER",
+    "GROUPING",
+    "INTERNAL_FRAME",
+    "LAYERED_PANE",
+    "SPLIT_PANE",
 ]
+
+# Only the largest candidates are overflow-tested; each test costs a handful of
+# D-Bus round trips and small containers are never what you meant to scroll.
+SCROLL_MAX_CANDIDATES = 10
+
+# --- search mode -----------------------------------------------------------
+# Names are read this many per idle tick, so the prompt stays responsive while
+# indexing a page with hundreds of elements.
+SEARCH_INDEX_CHUNK = 12
 
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it

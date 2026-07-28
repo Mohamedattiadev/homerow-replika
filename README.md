@@ -61,11 +61,26 @@ is only one.
 | `h` / `l` | sideways |
 | `Esc` | leave |
 
-A container counts as scrollable only when its content actually overflows it —
-role alone is a bad signal, since a short list is still a `LIST`, and trusting
-the role put scroll hints on things that could not scroll. Chromium exposes no
-scrollbars at all through AT-SPI, so scrollbar checks are not an option;
-comparing sampled child extents against the visible box is.
+A container counts as scrollable only when its content actually overflows it.
+Two separate mistakes are possible here and both were made:
+
+- **Trusting roles** put scroll hints on things that could not scroll — a short
+  list is still a `LIST`.
+- **Whitelisting "scrolling" roles** then missed the regions people actually
+  want: on a web page the scrollable sidebar is a `SECTION` and the content
+  pane is a `PANEL`. Neither sounds scrollable, and a tight whitelist saw
+  neither, leaving only the whole page.
+
+So roles now merely nominate candidates — broadly, including `SECTION`,
+`PANEL`, `FILLER` — and the overflow test decides. Only the largest
+`SCROLL_MAX_CANDIDATES` are tested, since each test costs several round trips.
+Chromium exposes no scrollbars at all through AT-SPI, so scrollbar checks were
+never an option; comparing sampled child extents against the visible box is.
+
+Nested scrollables are all offered rather than resolved automatically. A page's
+document overflows as well as its sidebar and its content pane, and nothing
+here can know which you meant — dropping ancestors would lose the main scroll
+target on any page containing a small overflowing widget.
 
 When nothing reports itself as scrollable, scroll mode drives the focused
 window instead of refusing. Wheel events do not need accessibility, so a
@@ -90,6 +105,13 @@ whitespace-separated and all must match, against both name and role — so
 Two phases on purpose: filtering and hinting at once would make every keystroke
 ambiguous — is `a` a search character or the label `a`? Committing with `Enter`
 keeps both alphabets unambiguous and lets the query contain anything.
+
+Names are read **in the background**, a chunk per idle tick, and the prompt
+says `reading n/m` while it catches up. Reading them all up front cost ~2s on a
+busy page: nothing happened, then everything did, which is indistinguishable
+from the feature being broken. Names are lazy everywhere else for the same
+reason — each one is a D-Bus round trip — and search is the only mode that
+needs them at all.
 
 Run it directly to inspect what it sees:
 
