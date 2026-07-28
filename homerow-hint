@@ -1,0 +1,40 @@
+#!/bin/sh
+# Fast client. Pokes the resident daemon over a unix socket and exits.
+#
+# This is deliberately not Python: the interpreter plus PyGObject imports cost
+# ~435ms, which was the entire reason hints felt sluggish. nc costs ~2ms.
+#
+# Falls back to starting the daemon if none is running, and hands --list /
+# --debug to the standalone CLI, which needs the full stack anyway.
+
+set -eu
+
+DIR=$(dirname "$(readlink -f "$0")")
+SOCK="${XDG_RUNTIME_DIR:-/tmp}/homerow.sock"
+
+for arg in "$@"; do
+    case "$arg" in
+        --list | --debug | --standalone)
+            exec python3 "$DIR/homerow-cli" "$@"
+            ;;
+    esac
+done
+
+send() {
+    printf 'hint\n' | nc -U -N -w 1 "$SOCK" 2>/dev/null
+}
+
+[ "$(send)" = "ok" ] && exit 0
+
+# No daemon answering. Start one detached, then retry until it binds.
+setsid "$DIR/homerow-daemon" >/dev/null 2>&1 &
+
+n=0
+while [ "$n" -lt 60 ]; do
+    [ "$(send)" = "ok" ] && exit 0
+    n=$((n + 1))
+    sleep 0.05
+done
+
+notify-send -a homerow "Homerow" "Daemon failed to start" 2>/dev/null || true
+exit 1

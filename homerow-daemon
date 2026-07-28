@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Resident homerow daemon.
+
+    homerow-daemon            run in the foreground
+    homerow-daemon --debug    log each request and its timing
+    homerow-daemon --status   report whether a daemon is answering
+    homerow-daemon --quit     ask a running daemon to exit
+"""
+
+import os
+import socket
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from homerow import service  # noqa: E402
+
+
+def main():
+    if "--status" in sys.argv:
+        running = service.is_running()
+        print(f"homerow daemon: {'running' if running else 'not running'} "
+              f"({service.socket_path()})")
+        return 0 if running else 1
+
+    if "--quit" in sys.argv:
+        if not service.is_running():
+            print("homerow: no daemon running", file=sys.stderr)
+            return 1
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(1.0)
+            client.connect(service.socket_path())
+            client.sendall(b"quit\n")
+            client.recv(16)  # read the ack before hanging up
+        # Shutdown is asynchronous. Wait it out so that restarting immediately
+        # afterwards does not hit the outgoing daemon and abort.
+        for _ in range(50):
+            if not service.is_running():
+                return 0
+            time.sleep(0.05)
+        print("homerow: daemon did not exit", file=sys.stderr)
+        return 1
+
+    return service.Daemon(debug="--debug" in sys.argv).run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

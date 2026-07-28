@@ -1,0 +1,320 @@
+"""Find actionable UI elements in the focused window via AT-SPI.
+
+The whole design hangs on Collection.get_matches: it runs the role/state filter
+inside the target application and returns matches in a single D-Bus round trip.
+Walking the tree by hand costs one round trip per node (~480 nodes/sec here),
+which is far too slow to feel instant.
+"""
+
+import subprocess
+import time
+from dataclasses import dataclass
+
+import gi
+
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi  # noqa: E402
+
+from . import config  # noqa: E402
+
+
+@dataclass
+class Element:
+    """A hintable target, already resolved to screen coordinates.
+
+    `name` and `role` are deliberately lazy: each is a D-Bus round trip
+    (~13ms per element on this machine) and drawing hints never needs them.
+    Only --debug and --list pay for them.
+    """
+
+    accessible: object
+    x: int
+    y: int
+    w: int
+    h: int
+
+    kind = "element"
+
+    @property
+    def center(self):
+        return self.x + self.w // 2, self.y + self.h // 2
+
+    @property
+    def name(self):
+        try:
+            return self.accessible.get_name() or ""
+        except Exception:
+            return ""
+
+    @property
+    def role(self):
+        try:
+            return self.accessible.get_role_name() or ""
+        except Exception:
+            return ""
+
+
+def _roles(names=None):
+    out = []
+    for name in (names if names is not None else config.HINT_ROLES):
+        role = getattr(Atspi.Role, name, None)
+        if role is not None:
+            out.append(role)
+    return out
+
+
+def active_window():
+    """(pid, x, y, w, h) of the focused X11 window, or None.
+
+    One subprocess call gets both, and the geometry lets us scope results to
+    the focused window without the per-child AT-SPI state probing that
+    frame detection would cost (~127ms).
+    """
+    try:
+        out = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowpid",
+             "getactivewindow", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, timeout=1,
+        )
+        if out.returncode != 0:
+            return None
+        lines = out.stdout.strip().splitlines()
+        pid = int(lines[0])
+        values = dict(
+            line.split("=", 1) for line in lines[1:] if "=" in line
+        )
+        return (pid, int(values["X"]), int(values["Y"]),
+                int(values["WIDTH"]), int(values["HEIGHT"]))
+    except (ValueError, KeyError, IndexError, OSError,
+            subprocess.SubprocessError):
+        return None
+
+
+def _app_for_pid(pid):
+    desktop = Atspi.get_desktop(0)
+    for i in range(desktop.get_child_count()):
+        try:
+            app = desktop.get_child_at_index(i)
+            if app and app.get_process_id() == pid:
+                return app
+        except Exception:
+            continue
+    return None
+
+
+def _candidates(app):
+    """Actionable accessibles under `app`, by whichever route it supports.
+
+    Collection.get_matches is the fast path -- one D-Bus round trip for the
+    whole filter. Not every toolkit implements it though (pavucontrol exposes
+    no Collection interface on its application *or* its frame), so fall back to
+    walking. The walk is bounded because untargeted walking runs at roughly
+    480 nodes/sec, which is unusable on a large tree.
+    """
+    collection = app.get_collection_iface()
+    if collection is not None:
+        return _query_both(collection)
+
+    # Some apps implement Collection per top-level rather than per application.
+    matches = []
+    walk_roots = []
+    for index in range(app.get_child_count()):
+        try:
+            frame = app.get_child_at_index(index)
+        except Exception:
+            continue
+        frame_collection = frame.get_collection_iface()
+        if frame_collection is None:
+            walk_roots.append(frame)
+            continue
+        matches.extend(_query_both(frame_collection))
+
+    deadline = time.monotonic() + config.WALK_BUDGET_MS / 1000
+    for root in walk_roots:
+        matches.extend(_walk(root, deadline, config.MAX_ELEMENTS - len(matches)))
+    return matches
+
+
+def _walk(root, deadline, cap):
+    """Breadth-first hunt for hintable roles, bounded by time and count."""
+    actionable = set(_roles(config.ACTIONABLE_ROLES))
+    containers = set(_roles(config.CONTAINER_ROLES))
+    found = []
+    queue = [root]
+    while queue and len(found) < cap:
+        if time.monotonic() > deadline:
+            break
+        node = queue.pop(0)
+        try:
+            count = node.get_child_count()
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                child = node.get_child_at_index(index)
+                role = child.get_role()
+            except Exception:
+                continue
+            if role in actionable or role in containers:
+                try:
+                    states = child.get_state_set()
+                    if states.contains(Atspi.StateType.SHOWING) and (
+                        role in actionable
+                        or states.contains(Atspi.StateType.FOCUSABLE)
+                    ):
+                        found.append(child)
+                except Exception:
+                    pass
+            queue.append(child)
+    return found
+
+
+def _match_rule(roles=None, require_focusable=False):
+    wanted = [Atspi.StateType.SHOWING, Atspi.StateType.VISIBLE]
+    if require_focusable:
+        wanted.append(Atspi.StateType.FOCUSABLE)
+    return Atspi.MatchRule.new(
+        Atspi.StateSet.new(wanted), Atspi.CollectionMatchType.ALL,
+        {}, Atspi.CollectionMatchType.ALL,
+        _roles(roles), Atspi.CollectionMatchType.ANY,
+        [], Atspi.CollectionMatchType.ALL,
+        False,
+    )
+
+
+def _query(collection, roles, require_focusable):
+    return collection.get_matches(
+        _match_rule(roles, require_focusable),
+        Atspi.CollectionSortOrder.CANONICAL,
+        config.MAX_ELEMENTS, True,
+    )
+
+
+def _query_both(collection):
+    """Actionable roles unconditionally, container roles only when focusable."""
+    found = _query(collection, config.ACTIONABLE_ROLES, False)
+    found += _query(collection, config.CONTAINER_ROLES, True)
+    return found
+
+
+class _Rect:
+    __slots__ = ("x", "y", "width", "height")
+
+    def __init__(self, x, y, width, height):
+        self.x, self.y, self.width, self.height = x, y, width, height
+
+
+def _extents(matches, win_x, win_y):
+    """Pair each accessible with its screen rectangle.
+
+    Some toolkits report SCREEN coordinates as 0,0 for everything -- pavucontrol
+    does, while its WINDOW coordinates are correct. Detect that case by looking
+    at the whole batch rather than any single element, since one element
+    legitimately sitting at the origin is not evidence of anything, then
+    re-read in WINDOW space and offset by the window's own position.
+    """
+    pairs = []
+    for acc in matches:
+        try:
+            component = acc.get_component_iface()
+            if component is None:
+                continue
+            ext = component.get_extents(Atspi.CoordType.SCREEN)
+        except Exception:
+            continue
+        pairs.append((acc, _Rect(ext.x, ext.y, ext.width, ext.height)))
+
+    at_origin = sum(1 for _, e in pairs if e.x == 0 and e.y == 0)
+    if len(pairs) < 3 or at_origin < len(pairs) * 0.75:
+        return pairs
+
+    repaired = []
+    for acc, screen_ext in pairs:
+        try:
+            ext = acc.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
+        except Exception:
+            repaired.append((acc, screen_ext))
+            continue
+        repaired.append((
+            acc,
+            _Rect(ext.x + win_x, ext.y + win_y, ext.width, ext.height),
+        ))
+    return repaired
+
+
+def _nested(cx, cy, area, accepted):
+    """True if this candidate is a duplicate of something already accepted.
+
+    Only similarly sized boxes count. A small button legitimately sits inside
+    a large row or toolbar, and those are separate targets; it is the
+    near-same-size wrapper/child pair that is one thing wearing two hats.
+    """
+    for other in accepted:
+        if not (other.x <= cx < other.x + other.w
+                and other.y <= cy < other.y + other.h):
+            continue
+        other_area = other.w * other.h
+        if not other_area:
+            continue
+        ratio = area / other_area
+        if config.NEST_MIN_RATIO <= ratio <= config.NEST_MAX_RATIO:
+            return True
+    return False
+
+
+def collect(screen_w, screen_h):
+    """Actionable elements in the focused window, in reading order."""
+    window = active_window()
+    if window is None:
+        return []
+    pid, win_x, win_y, win_w, win_h = window
+
+    app = _app_for_pid(pid)
+    if app is None:
+        # Nothing in the a11y tree owns the focused window -- the app simply
+        # does not expose accessibility. Nothing to hint.
+        return []
+
+    try:
+        matches = _candidates(app)
+    except Exception:
+        return []
+
+    max_w = screen_w * config.MAX_FRACTION_OF_SCREEN
+    max_h = screen_h * config.MAX_FRACTION_OF_SCREEN
+
+    # Clip to the focused window so an occluded window belonging to the same
+    # application cannot contribute phantom hints.
+    left, top = max(win_x, 0), max(win_y, 0)
+    right, bottom = min(win_x + win_w, screen_w), min(win_y + win_h, screen_h)
+
+    seen = set()
+    elements = []
+    for acc, ext in _extents(matches, win_x, win_y):
+        if ext.width < config.MIN_SIZE or ext.height < config.MIN_SIZE:
+            continue
+        if ext.width > max_w and ext.height > max_h:
+            continue  # a container masquerading as a target
+        # Require the centre inside the window; edge overlap alone would let
+        # neighbouring windows leak in.
+        cx, cy = ext.x + ext.width // 2, ext.y + ext.height // 2
+        if not (left <= cx < right and top <= cy < bottom):
+            continue
+
+        # Web content nests actionable elements constantly -- a link wrapping
+        # an image reports two boxes a few pixels apart, which produced two
+        # chips for one thing you can click. Exact-ish bucketing misses those
+        # because the bounds are merely similar, not equal, so also drop a
+        # candidate whose centre falls inside one already accepted.
+        key = (ext.x // 6, ext.y // 6, ext.width // 6, ext.height // 6)
+        if key in seen:
+            continue
+        if _nested(cx, cy, ext.width * ext.height, elements):
+            continue
+        seen.add(key)
+
+        elements.append(
+            Element(acc, ext.x, ext.y, ext.width, ext.height)
+        )
+
+    return elements

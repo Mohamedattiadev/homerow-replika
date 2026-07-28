@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Show hints over the focused window, then click whatever label you type.
+
+    homerow-hint            hint and click
+    homerow-hint --debug    also print timings and what was found
+    homerow-hint --list     print elements without drawing anything
+"""
+
+import os
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import gi  # noqa: E402
+
+gi.require_version("Atspi", "2.0")
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")  # without this, Gdk 4.0 loads and has no Screen
+from gi.repository import Atspi, Gdk  # noqa: E402
+
+from homerow import click, elements, hints  # noqa: E402
+from homerow.overlay import Overlay, screen_size  # noqa: E402
+
+
+def notify(message):
+    """Best-effort desktop notification; silence is fine if dunst is absent."""
+    try:
+        subprocess.run(
+            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
+            timeout=1, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def main():
+    debug = "--debug" in sys.argv
+    list_only = "--list" in sys.argv
+
+    started = time.perf_counter()
+    Atspi.init()
+
+    if Gdk.Display.get_default() is None:
+        print("No X display.", file=sys.stderr)
+        return 1
+    width, height = screen_size()
+
+    found = elements.collect(width, height)
+    elapsed = (time.perf_counter() - started) * 1000
+
+    if debug or list_only:
+        print(f"{len(found)} elements in {elapsed:.0f}ms "
+              f"(screen {width}x{height})")
+        for element in found:
+            print(f"  {element.role:14} {element.name[:40]:40} "
+                  f"@{element.x},{element.y} {element.w}x{element.h}")
+    if list_only:
+        return 0
+
+    if not found:
+        notify("No hintable elements — this app exposes no accessibility tree.")
+        return 0
+
+    labels = hints.assign(found)
+
+    def on_choose(element, button, modifiers):
+        method = click.perform(element, button, modifiers)
+        if debug:
+            print(f"clicked {element.role} {element.name[:40]!r} "
+                  f"button={button} mods={modifiers} via {method}")
+
+    Overlay(found, labels, on_choose).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

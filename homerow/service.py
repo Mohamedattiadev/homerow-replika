@@ -1,0 +1,205 @@
+"""Resident daemon.
+
+Almost all of the old per-invocation cost was fixed startup: ~435ms of Python
+interpreter and PyGObject imports before any useful work. None of that depends
+on the request, so it happens once here and every hint after that is just a
+socket write.
+"""
+
+import os
+import socket
+import sys
+import time
+
+import gi
+
+gi.require_version("Atspi", "2.0")
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Atspi, GLib, Gtk  # noqa: E402
+
+from . import click, elements, hints, windows  # noqa: E402
+from .overlay import Overlay, screen_size  # noqa: E402
+
+
+def socket_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return os.path.join(runtime, "homerow.sock")
+
+
+def is_running(path=None):
+    """True if a daemon is already answering on the socket."""
+    path = path or socket_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            probe.connect(path)
+            probe.sendall(b"ping\n")
+            return probe.recv(16).strip() == b"ok"
+    except OSError:
+        return False
+
+
+class Daemon:
+    def __init__(self, debug=False):
+        self.debug = debug
+        self.overlay = None
+        self.path = socket_path()
+
+    def run(self):
+        if is_running(self.path):
+            print("homerow: daemon already running", file=sys.stderr)
+            return 1
+
+        # Nothing answered, so any socket file left behind is stale.
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+        Atspi.init()
+
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(self.path)
+        self.server.listen(8)
+        self.server.setblocking(False)
+        GLib.io_add_watch(
+            self.server.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN,
+            self._on_connection,
+        )
+
+        # Touching the accessibility tree once now means the first real hint
+        # does not pay for connection setup.
+        try:
+            Atspi.get_desktop(0).get_child_count()
+        except Exception:
+            pass
+
+        self._log(f"listening on {self.path}")
+        try:
+            Gtk.main()
+        finally:
+            self._cleanup()
+        return 0
+
+    def _cleanup(self):
+        try:
+            self.server.close()
+        except OSError:
+            pass
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+    def _on_connection(self, _fd, _condition):
+        try:
+            conn, _ = self.server.accept()
+        except OSError:
+            return True
+
+        with conn:
+            conn.settimeout(0.5)
+            try:
+                command = conn.recv(64).decode("utf-8", "replace").strip()
+            except OSError:
+                return True
+            # Answer and hang up before doing the work, so the client process
+            # exits immediately instead of waiting on the overlay. A client
+            # that hung up without reading still gets its command run --
+            # failing to acknowledge is not a reason to drop the request.
+            try:
+                conn.sendall(b"ok\n")
+            except OSError:
+                pass
+
+        if command == "hint":
+            GLib.idle_add(self._hint)
+        elif command == "quit":
+            GLib.idle_add(Gtk.main_quit)
+        return True
+
+    def _hint(self):
+        if self.overlay is not None:
+            # Pressing the hotkey again re-hints rather than doing nothing.
+            # Silently ignoring it meant one overlay that failed to close made
+            # every later press a no-op with no clue why.
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        started = time.perf_counter()
+        width, height = screen_size()
+        active = elements.active_window()
+        self._log(f"active window: {active}")
+        try:
+            found = elements.collect(width, height)
+        except Exception as error:
+            print(f"homerow: collect failed: {error!r}", file=sys.stderr)
+            found = []
+
+        try:
+            switchable = windows.collect(width, height, _active_window_id())
+        except Exception as error:
+            print(f"homerow: window scan failed: {error!r}", file=sys.stderr)
+            switchable = []
+        found = found + switchable
+
+        if not found:
+            self._log("no hintable elements")
+            _notify("No hintable elements — this app exposes no "
+                    "accessibility tree.")
+            return False
+
+        collected = time.perf_counter()
+        window_count = len(switchable)
+        labels = hints.assign(found)
+        self.overlay = Overlay(found, labels, self._choose, self._finished)
+        self.overlay.show()
+        shown = time.perf_counter()
+        self._log(
+            f"{len(found) - window_count} elements + "
+            f"{window_count} windows: "
+            f"collect {(collected - started) * 1000:.0f}ms, "
+            f"overlay {(shown - collected) * 1000:.0f}ms, "
+            f"total {(shown - started) * 1000:.0f}ms"
+        )
+        return False
+
+    def _choose(self, element, button, modifiers):
+        method = click.perform(element, button, modifiers)
+        self._log(f"clicked button={button} mods={modifiers} via {method}")
+
+    def _finished(self):
+        self.overlay = None
+
+    def _log(self, message):
+        if self.debug:
+            print(f"homerow: {message}", flush=True)
+
+
+def _active_window_id():
+    """X id of the focused window, so it is not offered as a switch target."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["xdotool", "getactivewindow"],
+            capture_output=True, text=True, timeout=1,
+        )
+        return int(result.stdout.strip()) if result.returncode == 0 else None
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def _notify(message):
+    import subprocess
+    try:
+        subprocess.run(
+            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
+            timeout=1, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
