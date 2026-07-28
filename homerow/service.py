@@ -18,7 +18,9 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
-from . import click, elements, hints, scroll, windows  # noqa: E402
+from . import (  # noqa: E402
+    click, config, elements, hints, scroll, search, windows,
+)
 from .overlay import Overlay, screen_size  # noqa: E402
 
 
@@ -117,6 +119,8 @@ class Daemon:
             GLib.idle_add(self._hint)
         elif command == "scroll":
             GLib.idle_add(self._scroll)
+        elif command == "search":
+            GLib.idle_add(self._search)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
         return True
@@ -171,6 +175,47 @@ class Daemon:
         )
         return False
 
+    def _search(self):
+        if self.overlay is not None:
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        width, height = screen_size()
+        try:
+            found = elements.collect(width, height)
+        except Exception as error:
+            print(f"homerow: collect failed: {error!r}", file=sys.stderr)
+            return False
+        if not found:
+            self._log("nothing to search")
+            _notify("Nothing to search — this app exposes no accessibility "
+                    "tree.")
+            return False
+
+        # Names are lazy, and search needs every one of them; pay for it here
+        # rather than in the hint path, which never reads them.
+        named = [e for e in found if e.name.strip()]
+        self._log(f"search over {len(named)} named elements")
+
+        def on_query(hits):
+            if not hits:
+                return
+            self.overlay = Overlay(
+                hits, hints.assign(hits), self._choose, self._finished
+            )
+            self.overlay.show()
+
+        self.overlay = search.SearchPrompt(
+            named, lambda hits: GLib.idle_add(lambda: (on_query(hits), False)[1]),
+            self._finished,
+        )
+        self.overlay.show()
+        return False
+
     def _scroll(self):
         if self.overlay is not None:
             self._log("overlay already open; replacing it")
@@ -187,6 +232,13 @@ class Daemon:
         except Exception as error:
             print(f"homerow: scroll scan failed: {error!r}", file=sys.stderr)
             return False
+
+        if not regions and config.SCROLL_FALLBACK_TO_WINDOW:
+            fallback = scroll.window_region()
+            if fallback is not None:
+                self._log("no region reported; scrolling the window itself")
+                self._enter_scroll(fallback)
+                return False
 
         if not regions:
             self._log("no scrollable regions")

@@ -85,20 +85,84 @@ def collect(screen_w, screen_h):
             elements.Element(acc, ext.x, ext.y, ext.width, ext.height)
         )
 
+    regions = [r for r in regions if _overflows(r)]
+
     # Bigger regions first: the main content pane is nearly always what you
     # want, and it gets the shortest label that way.
     regions.sort(key=lambda e: e.w * e.h, reverse=True)
     return regions
 
 
-def _wheel(x, y, button, times):
-    argv = ["xdotool", "mousemove", "--sync", str(x), str(y)]
-    for _ in range(times):
-        argv += ["click", str(button)]
+def _overflows(region):
+    """True if the region's content is bigger than the region itself.
+
+    Sampling the first and last few children rather than all of them: each
+    child is a D-Bus round trip, and a container that scrolls almost always
+    has its extremes outside the visible box. Containers that report no usable
+    children are kept -- a web document's children can be laid out lazily, and
+    dropping those would lose the main case.
+    """
+    accessible = region.accessible
     try:
-        subprocess.run(argv, timeout=5, check=False)
+        count = accessible.get_child_count()
+    except Exception:
+        return True
+    if count <= 0:
+        return True
+
+    probe = config.SCROLL_PROBE_CHILDREN
+    indexes = list(range(min(probe, count)))
+    indexes += [i for i in range(max(count - probe, 0), count)
+                if i not in indexes]
+
+    top = bottom = left = right = None
+    for index in indexes:
+        try:
+            child = accessible.get_child_at_index(index)
+            component = child.get_component_iface()
+            if component is None:
+                continue
+            ext = component.get_extents(Atspi.CoordType.SCREEN)
+        except Exception:
+            continue
+        if ext.width <= 0 or ext.height <= 0:
+            continue
+        top = ext.y if top is None else min(top, ext.y)
+        left = ext.x if left is None else min(left, ext.x)
+        bottom = (ext.y + ext.height if bottom is None
+                  else max(bottom, ext.y + ext.height))
+        right = (ext.x + ext.width if right is None
+                 else max(right, ext.x + ext.width))
+
+    if top is None:
+        return True
+
+    ratio = config.SCROLL_OVERFLOW_RATIO
+    return ((bottom - top) > region.h * ratio
+            or (right - left) > region.w * ratio)
+
+
+def _wheel(x, y, button, times):
+    argv = [
+        "xdotool", "mousemove", "--sync", str(x), str(y),
+        "click", "--repeat", str(times),
+        "--delay", str(config.SCROLL_CLICK_DELAY), str(button),
+    ]
+    try:
+        subprocess.run(argv, timeout=8, check=False)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def window_region():
+    """The focused window as a scroll target, for apps that report none."""
+    window = elements.active_window()
+    if window is None:
+        return None
+    _, x, y, w, h = window
+    if w < config.MIN_SCROLL_SIZE or h < config.MIN_SCROLL_SIZE:
+        return None
+    return elements.Element(None, x, y, w, h)
 
 
 class ScrollSession:

@@ -12,14 +12,31 @@ Built and verified against this machine: Arch, X11, qtile 0.36, picom, Python
 
 ## Usage
 
-`alt+shift+f` shows hints over the focused window.
+Everything lives in one qtile chord, **`win+shift+f`** (Hint-Mode, formerly
+Mouse-Mode). Inside it:
 
-One press hints two kinds of target:
+| Key | Mode |
+|---|---|
+| `h` | **hint** — label every clickable element and every other window |
+| `s` | **scroll** — pick a scrollable region, drive it with vim keys |
+| `f` | **search** — type part of a label, then hint the matches |
+| `n` / `w` | warpd normal / warpd hints, for apps with no accessibility |
+| `q` / `Esc` | leave the chord |
+
+Each of `h`/`s`/`f` leaves the chord as it fires. homerow grabs the keyboard
+itself, and two grabs competing for the same keystrokes is how you get a mode
+that silently eats input.
+
+Nothing is bound globally, so `h`, `s` and `f` stay ordinary letters
+everywhere else.
+
+### Hint mode
+
+Labels two kinds of target at once:
 
 - **clickable elements** in the focused window, in the theme's main accent
-- **other visible windows**, in a second accent, so the same keypress switches
-  apps instead of clicking. Selecting one focuses it, switching group if
-  needed. Turn off with `HINT_WINDOWS = False`.
+- **other visible windows**, in a second accent — the same keypress that
+  clicks a button can instead switch apps. Off with `HINT_WINDOWS = False`.
 
 | Key | Action |
 |---|---|
@@ -31,13 +48,10 @@ One press hints two kinds of target:
 | `Backspace` | undo a typed character |
 | `Esc` | cancel |
 
-Homerow uses `shift+space`; grabbing that globally on X11 would swallow it
-everywhere you type, so this uses `alt+shift+f`.
+### Scroll mode
 
-## Scroll mode
-
-`alt+shift+j` hints the scrollable regions, largest first. Pick one and it
-stays selected while you drive it; when there is only one, it skips the picker.
+Hints the scrollable regions, largest first, and skips the picker when there
+is only one.
 
 | Key | Action |
 |---|---|
@@ -47,16 +61,35 @@ stays selected while you drive it; when there is only one, it skips the picker.
 | `h` / `l` | sideways |
 | `Esc` | leave |
 
+A container counts as scrollable only when its content actually overflows it —
+role alone is a bad signal, since a short list is still a `LIST`, and trusting
+the role put scroll hints on things that could not scroll. Chromium exposes no
+scrollbars at all through AT-SPI, so scrollbar checks are not an option;
+comparing sampled child extents against the visible box is.
+
+When nothing reports itself as scrollable, scroll mode drives the focused
+window instead of refusing. Wheel events do not need accessibility, so a
+missing region usually means the app under-reports rather than that it cannot
+scroll — terminals and pcmanfm's file view are both in that category.
+
 Scrolling uses synthetic **wheel events**, not `PageDown`/`Home` keypresses. A
 keypress goes wherever focus is and can land as text in an input; a wheel event
-goes to whatever is under the pointer and cannot type anything. It also means
-scroll mode works in apps whose accessibility is good enough to locate a region
-but not to scroll it.
+goes to whatever is under the pointer and cannot type anything.
 
 The session window carries an empty input shape, so it is invisible to the
 pointer — otherwise the fullscreen overlay sits under the cursor and eats the
-wheel events itself, drawing an outline over a region that never moves. The
-pointer is parked over the region while scrolling and put back on exit.
+wheel events itself, drawing an outline over a region that never moves.
+
+### Search mode
+
+Type part of a label; matches are outlined live and counted. `Enter` switches
+to hint selection over just those matches, `Esc` cancels. Terms are
+whitespace-separated and all must match, against both name and role — so
+`save f` finds "Save File", and `button` narrows to buttons.
+
+Two phases on purpose: filtering and hinting at once would make every keystroke
+ambiguous — is `a` a search character or the label `a`? Committing with `Enter`
+keeps both alphabets unambiguous and lets the query contain anything.
 
 Run it directly to inspect what it sees:
 
@@ -144,87 +177,64 @@ anywhere that could drift out of step.
 
 ## Coverage
 
-Surveyed on this machine, each app focused for real and the result checked
-against a screenshot:
+Every app below was focused for real, with the focus verified before
+measuring — activating a window across qtile groups fails silently often
+enough that unverified numbers are worthless.
 
-| App | Toolkit | Result |
-|---|---|---|
-| Brave | Chromium | 46 elements, 78ms — needs the flag below |
-| Firefox | Gecko | full chrome + page content |
-| qutebrowser | Qt WebEngine | full chrome + page content |
-| VS Code | Electron | works — needs the flag below |
-| Kate | Qt / KDE | menus, toolbar, buttons, sidebar |
-| pavucontrol | GTK (old ATK) | works, via both fallbacks below |
-| Dolphin | Qt / KDE | works, **including file items** |
-| pcmanfm-qt | Qt / LXQt | works, **including file items** |
-| pcmanfm | GTK | chrome and sidebar only — see below |
-| kitty | terminal | nothing, and nothing to be done |
+| App | Toolkit | Elements | Scroll regions |
+|---|---|---|---|
+| VS Code | Electron | 64 | 1 |
+| pcmanfm-qt | Qt / LXQt | 51 | window fallback |
+| qutebrowser | Qt WebEngine | 42 | window fallback |
+| Kate | Qt / KDE | 35 | 2 |
+| Brave | Chromium | 34 | 1 |
+| Dolphin | Qt / KDE | 34 | window fallback |
+| qalculate-gtk | GTK | 85 | 2 |
+| pcmanfm | GTK | 24 | 2 |
+| pavucontrol | GTK (old ATK) | 12 | window fallback |
+| Firefox | Gecko | 11 | window fallback |
+| blueman-manager | GTK | 7 | 1 |
+| Obsidian | Electron | 6 | window fallback |
+| VLC | Qt | 0 | window fallback |
+| kitty | terminal | 0 | window fallback |
 
-Terminals expose no accessibility tree at all, so they will never hint. Neither
-will Flutter, most games, or Electron apps without the flag.
+"window fallback" is not a failure: those windows had nothing that overflowed
+at the time, so scroll mode drives the whole window, which is what you want.
 
-**pcmanfm does not expose its files.** Menus, toolbar and the Places sidebar
-hint fine, but the folder view publishes *zero* accessibles — probed directly,
-nothing at all exists in that region of the tree. This was tested in **both**
-Icon View and Detailed List View (switched via the app's own accessible menu
-action): both publish nothing, so it is libfm's folder view lacking ATK
-support, not a quirk of one view mode. No filter or role list can recover what
-was never published.
+Terminals and VLC expose no usable tree, so they will never hint — but window
+switching and scrolling still work in them, since neither needs accessibility.
 
-**pcmanfm-qt is the drop-in fix** — the Qt port of the same file manager,
-installed and verified here: 53 elements in a full-screen window with a hint on
-every folder, and 49 in the home directory. Its file items come through as
-`list item` with names, and they carry FOCUSABLE, so they survive the container
-filter. Dolphin also works if you prefer it.
-
-Switching to it is two edits you may or may not want:
-
-- `~/.config/qtile/config.py:2434` launches `pcmanfm` from the app menu
-- `xdg-mime default pcmanfm-qt.desktop inode/directory` for folder handling
-  (currently `kitty-open.desktop`)
-
-Two toolkit quirks are handled, both found on pavucontrol:
-
-- **No Collection interface.** Older ATK apps implement it on neither the
-  application nor the frame. There is a bounded fallback walk for those, capped
-  by `WALK_BUDGET_MS` because walking costs a round trip per node.
-- **Broken SCREEN coordinates.** pavucontrol reports every element at `0,0` in
-  screen space while its WINDOW-space coordinates are correct. When most of a
-  batch lands on the origin, coordinates are re-read in window space and
-  offset by the window position.
-
-**Chromium and Electron need a flag.** They expose nothing by default. Already
-applied to both, each of which is read at launch only, so restart the app:
-
-- `~/.config/brave-flags.conf`
-- `~/.config/code-flags.conf`
+**Chromium and Electron need a flag**, applied to all three already. Each is
+read at launch, so restart the app:
 
 ```
 --force-renderer-accessibility
 ```
 
-This keeps an accessibility tree live for every tab, which costs memory on
-heavy sessions. Remove the line to undo.
+- `~/.config/brave-flags.conf`
+- `~/.config/code-flags.conf`
+- `~/.config/obsidian/user-flags.conf`
 
-VS Code additionally reacts to the flag by switching the editor into "Screen
-Reader Optimized" mode, which changes wrapping and disables some rendering
-optimisations. To keep hints without that, set in VS Code's settings.json:
+Every Electron app needs its own file, and they do not share a location —
+Obsidian reads `obsidian/user-flags.conf` while VS Code reads
+`code-flags.conf`. An Electron app showing zero elements almost always means
+its flags file is missing rather than anything being broken.
 
-```json
-"editor.accessibilitySupport": "off"
-```
+VS Code additionally switches into "Screen Reader Optimized" mode with the
+flag. `"editor.accessibilitySupport": "off"` in its settings.json keeps hints
+without the editor adapting its wrapping.
 
-That tells the editor not to adapt itself while leaving the tree exposed.
-
-GTK apps also need `toolkit-accessibility`, which is already set:
+GTK apps need `toolkit-accessibility`, already set:
 
 ```sh
 gsettings set org.gnome.desktop.interface toolkit-accessibility true
 ```
 
-Apps with **no** accessibility tree — Flutter, most games, some Electron
-builds, legacy X11 toolkits — show no hints and print a notification saying so.
-That is a deliberate limit: this hints real elements or nothing at all.
+**pcmanfm does not expose its files.** Menus, toolbar and the Places sidebar
+hint fine, but the folder view publishes *zero* accessibles, in both Icon View
+and Detailed List View — it is libfm's folder view lacking ATK support, not a
+quirk of one view mode. **pcmanfm-qt** is the drop-in fix: same file manager,
+Qt toolkit, files hint correctly. Dolphin works too.
 
 ## Layout
 

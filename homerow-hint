@@ -18,6 +18,9 @@ for arg in "$@"; do
         --scroll)
             COMMAND=scroll
             ;;
+        --search)
+            COMMAND=search
+            ;;
         --list | --debug | --standalone)
             exec python3 "$DIR/homerow-cli" "$@"
             ;;

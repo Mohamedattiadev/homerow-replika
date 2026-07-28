@@ -53,8 +53,18 @@ SCROLL_ROLES = [
     "TREE_TABLE",
     "TABLE",
     "VIEWPORT",
-    "TEXT",
 ]
+
+# A container only counts as scrollable if its content actually overflows it.
+# Role alone is a bad signal -- a short list is still a LIST, and offering it
+# put scroll hints on things that could not scroll. Chromium exposes no
+# scrollbars at all through AT-SPI, so a scrollbar check is not an option;
+# comparing content extent against the visible box is.
+SCROLL_OVERFLOW_RATIO = 1.08
+# Children sampled per candidate when measuring content extent. Each is a
+# D-Bus round trip, so this is a latency/accuracy tradeoff, not a limit on
+# how much can scroll.
+SCROLL_PROBE_CHILDREN = 4
 
 # A scroll target has to be big enough to be worth aiming at.
 MIN_SCROLL_SIZE = 80
@@ -62,9 +72,19 @@ MIN_SCROLL_SIZE = 80
 # Wheel clicks per key. Scrolling is done with synthetic wheel events rather
 # than Home/End keypresses: wheel events cannot land as text in a focused
 # field, which keypresses can.
-SCROLL_LINE_CLICKS = 2
-SCROLL_PAGE_CLICKS = 8
-SCROLL_EDGE_CLICKS = 40
+SCROLL_LINE_CLICKS = 1
+SCROLL_PAGE_CLICKS = 6
+SCROLL_EDGE_CLICKS = 50
+
+# Repeat delay in ms passed to xdotool for multi-click scrolls. Too low and
+# smooth-scrolling apps coalesce the events into one small jump.
+SCROLL_CLICK_DELAY = 6
+
+# When nothing reports itself as scrollable, scroll the focused window anyway
+# rather than refusing. Wheel events do not need accessibility to work, so a
+# missing region usually means the app under-reports, not that it cannot
+# scroll -- terminals and pcmanfm's file view are both in that category.
+SCROLL_FALLBACK_TO_WINDOW = True
 
 # Nested elements of a similar size are treated as one target. Widen the band
 # to collapse more aggressively; narrow it if distinct controls get swallowed.
