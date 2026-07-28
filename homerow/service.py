@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
 from . import (  # noqa: E402
-    caret, click, config, elements, hints, scroll, search, windows,
+    caret, click, config, elements, hints, scroll, search, windows, x11,
 )
 from .overlay import Overlay, screen_size  # noqa: E402
 
@@ -238,6 +238,13 @@ class Daemon:
 
         started = time.perf_counter()
         width, height = screen_size()
+
+        native = _native_caret_key()
+        if native:
+            self._log(f"handing caret off to the app's own mode ({native})")
+            x11.send_combo(native)
+            return False
+
         try:
             blocks = caret.collect(width, height)
         except Exception as error:
@@ -365,6 +372,24 @@ class Daemon:
     def _log(self, message):
         if self.debug:
             print(f"homerow: {message}", flush=True)
+
+
+def _native_caret_key():
+    """The key that enters this app's own caret mode, if it has one."""
+    window = elements.active_window()
+    if window is None:
+        return None
+    app = elements._app_for_pid(window[0])
+    if app is None:
+        return None
+    try:
+        name = (app.get_name() or "").lower()
+    except Exception:
+        return None
+    for known, key in config.CARET_NATIVE.items():
+        if known in name:
+            return key
+    return None
 
 
 def _active_window_id():

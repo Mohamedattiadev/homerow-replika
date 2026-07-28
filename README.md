@@ -70,7 +70,7 @@ is only one.
 tuned click count — 50 clicks looked right on short pages and left `G` stranded
 mid-document on long ones. Clicks past the end cost nothing.
 
-#### Visual mode
+#### Caret mode (`v` in the chord)
 
 `v` inside scroll mode selects text with vim motions, driving the
 application's **own** selection rather than reimplementing one:

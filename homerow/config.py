@@ -105,6 +105,15 @@ CARET_MIN_CHARS = 12
 # Roles that carry text. The Text interface is not a role and cannot be
 # queried for directly, so these nominate candidates and the character count
 # decides -- walking the tree for it instead cost ~2.5s.
+# Apps with their own vim caret mode. Handing off beats reimplementing: our
+# AT-SPI caret needs a real Text interface, and Qt WebEngine publishes none at
+# all, so in qutebrowser it could only ever miss things. Its own caret mode is
+# already vim -- h/j/k/l, w/b/e, v to select, y to yank -- and instant.
+# Keyed on the AT-SPI application name, value is the key that enters the mode.
+CARET_NATIVE = {
+    "qutebrowser": "v",
+}
+
 CARET_ROLES = [
     "TEXT", "PARAGRAPH", "HEADING", "LABEL", "STATIC", "DOCUMENT_TEXT",
     "ENTRY", "LIST_ITEM", "TABLE_CELL", "SECTION", "DOCUMENT_WEB",
