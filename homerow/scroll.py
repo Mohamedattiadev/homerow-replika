@@ -24,9 +24,9 @@ WHEEL_UP, WHEEL_DOWN = 4, 5
 WHEEL_LEFT, WHEEL_RIGHT = 6, 7
 
 
-def _scroll_roles():
+def _roles(names):
     out = []
-    for name in config.SCROLL_ROLES:
+    for name in names:
         role = getattr(Atspi.Role, name, None)
         if role is not None:
             out.append(role)
@@ -48,28 +48,56 @@ def collect(screen_w, screen_h):
     if collection is None:
         return []
 
-    rule = Atspi.MatchRule.new(
-        Atspi.StateSet.new(
-            [Atspi.StateType.SHOWING, Atspi.StateType.VISIBLE]
-        ), Atspi.CollectionMatchType.ALL,
-        {}, Atspi.CollectionMatchType.ALL,
-        _scroll_roles(), Atspi.CollectionMatchType.ANY,
-        [], Atspi.CollectionMatchType.ALL, False,
-    )
-    try:
-        matches = collection.get_matches(
-            rule, Atspi.CollectionSortOrder.CANONICAL, config.MAX_ELEMENTS,
-            True,
-        )
-    except Exception:
-        return []
-
     left, top = max(win_x, 0), max(win_y, 0)
     right = min(win_x + win_w, screen_w)
     bottom = min(win_y + win_h, screen_h)
 
-    candidates = []
+    def query(names):
+        rule = Atspi.MatchRule.new(
+            Atspi.StateSet.new(
+                [Atspi.StateType.SHOWING, Atspi.StateType.VISIBLE]
+            ), Atspi.CollectionMatchType.ALL,
+            {}, Atspi.CollectionMatchType.ALL,
+            _roles(names), Atspi.CollectionMatchType.ANY,
+            [], Atspi.CollectionMatchType.ALL, False,
+        )
+        try:
+            return collection.get_matches(
+                rule, Atspi.CollectionSortOrder.CANONICAL,
+                config.MAX_ELEMENTS, True)
+        except Exception:
+            return []
+
+    matches = query(config.SCROLL_ROLES)
     seen = set()
+    candidates = _shape(matches, win_x, win_y, left, top, right, bottom, seen)
+
+    def sift(items):
+        # Test the biggest first and stop after a fixed number: every overflow
+        # test is several D-Bus round trips.
+        items.sort(key=lambda e: e.w * e.h, reverse=True)
+        return [r for r in items[:config.SCROLL_MAX_CANDIDATES]
+                if _overflows(r)]
+
+    regions = sift(candidates)
+    if not regions:
+        # Nothing obvious scrolls, so pay for the broad roles now.
+        candidates = _shape(query(config.SCROLL_ROLES_FALLBACK), win_x, win_y,
+                            left, top, right, bottom, seen)
+        regions = sift(candidates)
+
+    # Nested scrollables are all offered rather than resolved automatically.
+    # A page's whole document overflows as well as its sidebar and its content
+    # pane, and there is no way to know from here which one you meant --
+    # dropping ancestors would lose the main scroll target on any page that
+    # happens to contain a small overflowing widget.
+    regions.sort(key=lambda e: e.w * e.h, reverse=True)
+    return regions
+
+
+def _shape(matches, win_x, win_y, left, top, right, bottom, seen):
+    """Turn raw matches into sized, on-screen, de-duplicated candidates."""
+    out = []
     for acc, ext in elements._extents(matches, win_x, win_y):
         if ext.width < config.MIN_SCROLL_SIZE or \
                 ext.height < config.MIN_SCROLL_SIZE:
@@ -81,23 +109,8 @@ def collect(screen_w, screen_h):
         if key in seen:
             continue
         seen.add(key)
-        candidates.append(
-            elements.Element(acc, ext.x, ext.y, ext.width, ext.height)
-        )
-
-    # Test the biggest first and stop after a fixed number: every overflow test
-    # is several D-Bus round trips, and a page can nominate dozens of sections.
-    candidates.sort(key=lambda e: e.w * e.h, reverse=True)
-    regions = [r for r in candidates[:config.SCROLL_MAX_CANDIDATES]
-               if _overflows(r)]
-
-    # Nested scrollables are all offered rather than resolved automatically.
-    # A page's whole document overflows as well as its sidebar and its content
-    # pane, and there is no way to know from here which one you meant --
-    # dropping ancestors would lose the main scroll target on any page that
-    # happens to contain a small overflowing widget.
-    regions.sort(key=lambda e: e.w * e.h, reverse=True)
-    return regions
+        out.append(elements.Element(acc, ext.x, ext.y, ext.width, ext.height))
+    return out
 
 
 def _overflows(region):

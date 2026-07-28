@@ -68,25 +68,33 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
     collection = app.get_collection_iface()
     if collection is None:
         return []
-    roles = []
-    for name in config.CARET_ROLES:
-        role = getattr(Atspi.Role, name, None)
-        if role is not None:
-            roles.append(role)
-    rule = Atspi.MatchRule.new(
-        Atspi.StateSet.new(
-            [Atspi.StateType.SHOWING, Atspi.StateType.VISIBLE]
-        ), Atspi.CollectionMatchType.ALL,
-        {}, Atspi.CollectionMatchType.ALL,
-        roles, Atspi.CollectionMatchType.ANY,
-        [], Atspi.CollectionMatchType.ALL, False,
-    )
-    try:
-        matches = collection.get_matches(
-            rule, Atspi.CollectionSortOrder.CANONICAL, config.MAX_ELEMENTS,
-            True)
-    except Exception:
-        return []
+
+    def query(names):
+        roles = []
+        for name in names:
+            role = getattr(Atspi.Role, name, None)
+            if role is not None:
+                roles.append(role)
+        rule = Atspi.MatchRule.new(
+            Atspi.StateSet.new(
+                [Atspi.StateType.SHOWING, Atspi.StateType.VISIBLE]
+            ), Atspi.CollectionMatchType.ALL,
+            {}, Atspi.CollectionMatchType.ALL,
+            roles, Atspi.CollectionMatchType.ANY,
+            [], Atspi.CollectionMatchType.ALL, False,
+        )
+        try:
+            return collection.get_matches(
+                rule, Atspi.CollectionSortOrder.CANONICAL,
+                config.MAX_ELEMENTS, True)
+        except Exception:
+            return []
+
+    # Search wants everything; caret only pays for the numerous roles when the
+    # cheap ones turn up nothing to put a cursor in.
+    matches = query(config.CARET_ROLES)
+    if not require_text:
+        matches = list(matches) + list(query(config.CARET_ROLES_FALLBACK))
 
     found = []
     for accessible, ext in elements._extents(matches, win_x, win_y):
@@ -111,8 +119,35 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
         found.append(
             elements.Element(accessible, ext.x, ext.y, ext.width, ext.height))
 
+    if not found and require_text:
+        found = _shape(query(config.CARET_ROLES_FALLBACK), win_x, win_y,
+                       left, top, right, bottom, min_chars, require_text)
+
     found.sort(key=lambda e: e.w * e.h, reverse=True)
     return found
+
+
+def _shape(matches, win_x, win_y, left, top, right, bottom, min_chars,
+           require_text):
+    """Filter raw matches down to usable text blocks."""
+    out = []
+    for accessible, ext in elements._extents(matches, win_x, win_y):
+        cx, cy = ext.x + ext.width // 2, ext.y + ext.height // 2
+        if not (left <= cx < right and top <= cy < bottom):
+            continue
+        if ext.width <= 0 or ext.height <= 0:
+            continue
+        if require_text:
+            try:
+                iface = accessible.get_text_iface()
+                if iface is None or \
+                        iface.get_character_count() < min_chars:
+                    continue
+            except Exception:
+                continue
+        out.append(
+            elements.Element(accessible, ext.x, ext.y, ext.width, ext.height))
+    return out
 
 
 def best(blocks):

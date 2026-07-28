@@ -119,11 +119,19 @@ Two separate mistakes are possible here and both were made:
   pane is a `PANEL`. Neither sounds scrollable, and a tight whitelist saw
   neither, leaving only the whole page.
 
-So roles now merely nominate candidates — broadly, including `SECTION`,
-`PANEL`, `FILLER` — and the overflow test decides. Only the largest
+So roles nominate candidates and the overflow test decides. Only the largest
 `SCROLL_MAX_CANDIDATES` are tested, since each test costs several round trips.
 Chromium exposes no scrollbars at all through AT-SPI, so scrollbar checks were
 never an option; comparing sampled child extents against the visible box is.
+
+The roles are queried in **two tiers**. `SCROLL_ROLES` — the ones that sound
+like they scroll — are few and are the answer in most apps.
+`SCROLL_ROLES_FALLBACK` (`SECTION`, `PANEL`, `FILLER`) is only asked for when
+the first tier finds nothing that overflows. It has to exist, because a web
+page's scrollable sidebar is a `SECTION`; but there are hundreds of them and
+every candidate costs a round trip for its rectangle. Asking unconditionally
+spent ~330ms fetching 333 rectangles to keep one. Caret mode is tiered the
+same way.
 
 Nested scrollables are all offered rather than resolved automatically. A page's
 document overflows as well as its sidebar and its content pane, and nothing

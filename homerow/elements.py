@@ -131,12 +131,32 @@ def _mostly_on_screen(geometry):
     return not area or (visible_w * visible_h) / area >= config.MIN_ONSCREEN
 
 
+_app_cache = {}
+
+
 def _app_for_pid(pid):
+    """The AT-SPI application for a pid, cached.
+
+    Scanning the desktop costs a round trip per application -- about 20ms with
+    a dozen apps open, paid on every single press. Application objects are
+    stable for the life of the process, so the cache only needs one round trip
+    to confirm the entry still refers to the same pid.
+    """
+    cached = _app_cache.get(pid)
+    if cached is not None:
+        try:
+            if cached.get_process_id() == pid:
+                return cached
+        except Exception:
+            pass
+        _app_cache.pop(pid, None)
+
     desktop = Atspi.get_desktop(0)
     for i in range(desktop.get_child_count()):
         try:
             app = desktop.get_child_at_index(i)
             if app and app.get_process_id() == pid:
+                _app_cache[pid] = app
                 return app
         except Exception:
             continue

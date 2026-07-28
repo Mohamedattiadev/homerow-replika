@@ -62,6 +62,8 @@ MAX_FRACTION_OF_SCREEN = 0.9
 # which is a "scrolling" role, so a tight whitelist misses exactly the regions
 # people want. Roles only nominate candidates -- the overflow test below is
 # what actually decides.
+# Queried first. These are few even on a busy page, and on most apps they are
+# the answer, so the expensive pass below never runs.
 SCROLL_ROLES = [
     "SCROLL_PANE",
     "DOCUMENT_WEB",
@@ -72,6 +74,14 @@ SCROLL_ROLES = [
     "TREE_TABLE",
     "TABLE",
     "VIEWPORT",
+]
+
+# Only if the above found nothing scrollable. A web page's scrollable sidebar
+# is a SECTION and its content pane a PANEL, so these are needed for
+# correctness -- but there are hundreds of them, and every candidate costs a
+# round trip for its extents. Asking for them unconditionally spent ~330ms
+# fetching 333 rectangles to keep one.
+SCROLL_ROLES_FALLBACK = [
     "SECTION",
     "PANEL",
     "FILLER",
@@ -130,9 +140,16 @@ CARET_NATIVE = {
 }
 
 CARET_ROLES = [
-    "TEXT", "PARAGRAPH", "HEADING", "LABEL", "STATIC", "DOCUMENT_TEXT",
-    "ENTRY", "LIST_ITEM", "TABLE_CELL", "SECTION", "DOCUMENT_WEB",
-    "DOCUMENT_FRAME", "TERMINAL",
+    "TEXT", "PARAGRAPH", "HEADING", "DOCUMENT_TEXT", "ENTRY", "TERMINAL",
+    "STATIC",
+]
+
+# Searched as well as the above, and used for caret only when the above found
+# nothing. Labels and list items are numerous; asking for them every time is
+# what made caret slow.
+CARET_ROLES_FALLBACK = [
+    "LABEL", "LIST_ITEM", "TABLE_CELL", "SECTION", "DOCUMENT_WEB",
+    "DOCUMENT_FRAME",
 ]
 
 # A container only counts as scrollable if its content actually overflows it.
