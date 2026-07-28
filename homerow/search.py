@@ -1,9 +1,13 @@
-"""Search mode: type part of a label, then hint only what matched.
+"""Search mode: type to filter, Tab to cycle, Enter to click.
 
-Two phases on purpose. Filtering and hinting at the same time would make every
-keystroke ambiguous -- is `a` a search character or the label `a`? Typing the
-query, then pressing Enter to switch to hint selection, keeps both alphabets
-unambiguous and means the query can contain any character.
+Modelled on vim's `/` rather than on a picker dialog. Matches update on every
+keystroke, the current one is highlighted, and Enter acts on it -- so the
+common case (type three letters, press Enter) never involves a second phase or
+a hint label at all.
+
+Cycling is bound to Tab and the arrow keys, never to letters: every letter has
+to stay available for the query, which is exactly the ambiguity that made an
+earlier "type, then pick a label" version awkward to use.
 """
 
 import sys
@@ -44,12 +48,13 @@ def matches(elements, query, names=None):
 class SearchPrompt:
     """Collects a query, then hands the surviving elements to a callback."""
 
-    def __init__(self, elements, on_query, on_cancel=None):
+    def __init__(self, elements, on_pick, on_cancel=None):
         self.elements = elements
-        self.on_query = on_query
+        self.on_pick = on_pick
         self.on_cancel = on_cancel or (lambda: None)
         self.query = ""
         self.hits = list(elements)
+        self.current = 0
         self.submitted = False
 
         # Names are lazy because each is a D-Bus round trip. Reading them all
@@ -105,9 +110,9 @@ class SearchPrompt:
         gdk_window = self.window.get_window()
         if gdk_window is not None:
             seat = Gdk.Display.get_default().get_default_seat()
-            if seat.grab(gdk_window, Gdk.SeatCapabilities.KEYBOARD,
-                         False, None, None, None, None) == \
-                    Gdk.GrabStatus.SUCCESS:
+            status = seat.grab(gdk_window, Gdk.SeatCapabilities.KEYBOARD,
+                               False, None, None, None, None)
+            if status == Gdk.GrabStatus.SUCCESS:
                 self._grabbed = True
                 self.window.present()
                 return False
@@ -129,6 +134,16 @@ class SearchPrompt:
                 self.submitted = True
                 self._close()
             return True
+        if key in (Gdk.KEY_Tab, Gdk.KEY_Down):
+            if self.hits:
+                self.current = (self.current + 1) % len(self.hits)
+                self.window.queue_draw()
+            return True
+        if key in (Gdk.KEY_ISO_Left_Tab, Gdk.KEY_Up):
+            if self.hits:
+                self.current = (self.current - 1) % len(self.hits)
+                self.window.queue_draw()
+            return True
         if key == Gdk.KEY_BackSpace:
             self.query = self.query[:-1]
             self._refresh()
@@ -147,17 +162,37 @@ class SearchPrompt:
         for index in range(self.indexed, end):
             element = self.elements[index]
             try:
-                self.names[index] = f"{element.name} {element.role}".lower()
+                parts = [element.name, element.role]
+                # Many web controls carry no accessible name but do expose
+                # their visible text, and that is what you would search for.
+                accessible = element.accessible
+                if accessible is not None:
+                    try:
+                        text_iface = accessible.get_text_iface()
+                        if text_iface is not None:
+                            count = text_iface.get_character_count()
+                            if count:
+                                parts.append(text_iface.get_text(
+                                    0, min(count, config.SEARCH_TEXT_CHARS)))
+                    except Exception:
+                        pass
+                self.names[index] = " ".join(p for p in parts if p).lower()
             except Exception:
                 self.names[index] = ""
         self.indexed = end
         if self.query:
-            self.hits = matches(self.elements, self.query, self.names)
+            self._refresh(keep_current=True)
         self.window.queue_draw()
         return self.indexed < len(self.elements)
 
-    def _refresh(self):
+    def _refresh(self, keep_current=False):
+        previous = self.hits[self.current] if (
+            keep_current and self.current < len(self.hits)) else None
         self.hits = matches(self.elements, self.query, self.names)
+        # Editing the query restarts at the first match; results arriving from
+        # background indexing must not move the selection out from under you.
+        self.current = self.hits.index(previous) if (
+            previous is not None and previous in self.hits) else 0
         self.window.queue_draw()
 
     def _close(self):
@@ -169,8 +204,8 @@ class SearchPrompt:
             Gtk.main_iteration_do(False)
         Gdk.Display.get_default().sync()
 
-        if self.submitted:
-            self.on_query(self.hits)
+        if self.submitted and self.hits:
+            self.on_pick(self.hits[min(self.current, len(self.hits) - 1)])
         else:
             self.on_cancel()
 
@@ -201,16 +236,34 @@ class SearchPrompt:
         if self.query:
             cr.set_line_width(2)
             cr.set_source_rgba(*self.colors["chip_matched"])
-            for element in self.hits[:config.MAX_ELEMENTS]:
+            for index, element in enumerate(self.hits[:config.MAX_ELEMENTS]):
+                if index == self.current:
+                    continue
                 cr.rectangle(element.x, element.y, element.w, element.h)
             cr.stroke()
 
-        label = f"search: {self.query}_" if not self.query else \
-            f"search: {self.query}"
-        count = f"{len(self.hits)} match" + ("" if len(self.hits) == 1 else "es")
+            # The current match is what Enter acts on, so it has to be
+            # obviously different from the rest, not just one of many boxes.
+            if self.current < len(self.hits):
+                element = self.hits[self.current]
+                cr.set_source_rgba(*self.colors["chip"])
+                cr.set_line_width(3)
+                cr.rectangle(element.x - 1, element.y - 1,
+                             element.w + 2, element.h + 2)
+                cr.stroke()
+                cr.set_source_rgba(*self.colors["chip"][:3], 0.22)
+                cr.rectangle(element.x, element.y, element.w, element.h)
+                cr.fill()
+
+        label = f"search: {self.query}_"
+        if self.hits and self.query:
+            count = f"{self.current + 1}/{len(self.hits)}"
+        else:
+            count = f"{len(self.hits)} match" + (
+                "" if len(self.hits) == 1 else "es")
         if self.indexed < len(self.elements):
             count += f"  (reading {self.indexed}/{len(self.elements)})"
-        text = f"{label}    {count}    enter to pick, esc to cancel"
+        text = f"{label}    {count}    tab next · enter click · esc cancel"
         ext = cr.text_extents(text)
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2

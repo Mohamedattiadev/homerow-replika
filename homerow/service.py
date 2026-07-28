@@ -198,17 +198,11 @@ class Daemon:
 
         self._log(f"search over {len(found)} elements")
 
-        def on_query(hits):
-            if not hits:
-                return
-            self.overlay = Overlay(
-                hits, hints.assign(hits), self._choose, self._finished
-            )
-            self.overlay.show()
+        def on_pick(element):
+            self._choose(element, click.BUTTON_LEFT, ())
 
         self.overlay = search.SearchPrompt(
-            found, lambda hits: GLib.idle_add(lambda: (on_query(hits), False)[1]),
-            self._finished,
+            found, on_pick, self._finished,
         )
         self.overlay.show()
         return False

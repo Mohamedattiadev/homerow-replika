@@ -76,6 +76,10 @@ SCROLL_MAX_CANDIDATES = 10
 # indexing a page with hundreds of elements.
 SEARCH_INDEX_CHUNK = 12
 
+# Visible text is searched as well as the accessible name, since many web
+# controls have no name but do have text. Capped because it is per element.
+SEARCH_TEXT_CHARS = 60
+
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
 # put scroll hints on things that could not scroll. Chromium exposes no
@@ -95,7 +99,10 @@ MIN_SCROLL_SIZE = 80
 # field, which keypresses can.
 SCROLL_LINE_CLICKS = 1
 SCROLL_PAGE_CLICKS = 6
-SCROLL_EDGE_CLICKS = 50
+# gg/G mean "all the way", so this has to overshoot the longest realistic
+# content rather than be a tuned guess. 50 looked fine on short pages and left
+# G stranded mid-document on long ones. Extra clicks past the end are free.
+SCROLL_EDGE_CLICKS = 400
 
 # Repeat delay in ms passed to xdotool for multi-click scrolls. Too low and
 # smooth-scrolling apps coalesce the events into one small jump.

@@ -23,9 +23,11 @@ Mouse-Mode). Inside it:
 | `n` / `w` | warpd normal / warpd hints, for apps with no accessibility |
 | `q` / `Esc` | leave the chord |
 
-Each of `h`/`s`/`f` leaves the chord as it fires. homerow grabs the keyboard
-itself, and two grabs competing for the same keystrokes is how you get a mode
-that silently eats input.
+The chord **stays active** across actions, so you can scroll one region, then
+hint, then scroll another without reopening it. homerow's own keyboard grab
+outranks qtile's passive key grabs while an overlay is up, so the chord cannot
+steal those keys; once the overlay closes the chord is simply still there.
+`q` or `Esc` leaves.
 
 Nothing is bound globally, so `h`, `s` and `f` stay ordinary letters
 everywhere else.
@@ -59,7 +61,36 @@ is only one.
 | `d` / `u` | half page down / up |
 | `gg` / `G` | top / bottom |
 | `h` / `l` | sideways |
+| `v` | visual mode (below) |
 | `Esc` | leave |
+
+`gg`/`G` mean "all the way", so they overshoot deliberately rather than use a
+tuned click count — 50 clicks looked right on short pages and left `G` stranded
+mid-document on long ones. Clicks past the end cost nothing.
+
+#### Visual mode
+
+`v` inside scroll mode selects text with vim motions, driving the
+application's **own** selection rather than reimplementing one:
+
+| Key | Action |
+|---|---|
+| `h` `j` `k` `l` | extend selection by character / line |
+| `w` / `b` | by word |
+| `0` / `$` | to line start / end |
+| `gg` / `G` | to document start / end |
+| `y` | yank to clipboard and exit |
+| `Esc` | back to scrolling |
+
+Each motion sends the combination the app already understands — `shift+Right`,
+`shift+ctrl+Right`, `ctrl+c` — which is what makes it behave natively in a text
+field, an editor, or a browser with caret browsing on. It does **not** work
+where the app has no caret: a normal web page without caret browsing has
+nothing to extend a selection from.
+
+The keyboard grab is dropped for the instant each combination is sent and
+retaken afterwards. Without that the synthetic keypress is routed straight back
+to our own overlay by the grab, and visual mode silently does nothing.
 
 A container counts as scrollable only when its content actually overflows it.
 Two separate mistakes are possible here and both were made:
@@ -97,14 +128,25 @@ wheel events itself, drawing an outline over a region that never moves.
 
 ### Search mode
 
-Type part of a label; matches are outlined live and counted. `Enter` switches
-to hint selection over just those matches, `Esc` cancels. Terms are
-whitespace-separated and all must match, against both name and role — so
-`save f` finds "Save File", and `button` narrows to buttons.
+Modelled on vim's `/`, not on a picker dialog.
 
-Two phases on purpose: filtering and hinting at once would make every keystroke
-ambiguous — is `a` a search character or the label `a`? Committing with `Enter`
-keeps both alphabets unambiguous and lets the query contain anything.
+| Key | Action |
+|---|---|
+| any text | filter as you type; current match is highlighted |
+| `Tab` / `Down` | next match |
+| `Shift+Tab` / `Up` | previous match |
+| `Enter` | click the current match |
+| `Esc` | cancel |
+
+So the common case — type three letters, press Enter — never involves a second
+phase or a hint label at all. Cycling is bound to Tab and the arrows, never to
+letters: every letter has to stay usable in the query, which is what made an
+earlier "type, then pick a label" version awkward.
+
+Terms are whitespace-separated and all must match, against the accessible name,
+the role, **and the element's visible text** — many web controls carry no name
+but do have text, and that is what you would search for. `save f` finds "Save
+File"; `button` narrows to buttons.
 
 Names are read **in the background**, a chunk per idle tick, and the prompt
 says `reading n/m` while it catches up. Reading them all up front cost ~2s on a
