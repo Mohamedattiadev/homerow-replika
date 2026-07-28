@@ -74,7 +74,7 @@ def active_window():
         if window:
             pid = x11.window_pid(window)
             geometry = x11.window_geometry(window)
-            if pid and geometry:
+            if pid and geometry and _mostly_on_screen(geometry):
                 return (pid, *geometry)
         return None
 
@@ -96,6 +96,26 @@ def active_window():
     except (ValueError, KeyError, IndexError, OSError,
             subprocess.SubprocessError):
         return None
+
+
+def _mostly_on_screen(geometry):
+    """Reject windows that are only technically the active window.
+
+    A hidden scratchpad parked above the top edge still holds
+    _NET_ACTIVE_WINDOW when nothing else is focused, so clicking empty space
+    and pressing a hotkey targeted qdrop instead of doing nothing.
+    """
+    screen = x11.screen_size()
+    if screen is None:
+        return True
+    screen_w, screen_h = screen
+    x, y, w, h = geometry
+    visible_w = max(0, min(x + w, screen_w) - max(x, 0))
+    visible_h = max(0, min(y + h, screen_h) - max(y, 0))
+    if visible_w < config.MIN_WINDOW_SIZE or visible_h < config.MIN_WINDOW_SIZE:
+        return False
+    area = w * h
+    return not area or (visible_w * visible_h) / area >= config.MIN_ONSCREEN
 
 
 def _app_for_pid(pid):

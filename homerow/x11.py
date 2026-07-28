@@ -158,6 +158,17 @@ def active_window_id():
     return values[0] if values else None
 
 
+def screen_size():
+    """Root window size, for judging whether a window is really on screen."""
+    if not _load():
+        return None
+    root = _x11.XDefaultRootWindow(_display)
+    attrs = _XWindowAttributes()
+    if not _x11.XGetWindowAttributes(_display, root, ctypes.byref(attrs)):
+        return None
+    return attrs.width, attrs.height
+
+
 def client_list():
     if not _load():
         return []

@@ -93,6 +93,11 @@ SEARCH_TEXT_CHARS = 60
 # prompt instead of needing a second phase.
 SEARCH_LABELS = "123456789"
 
+# Search reaches down to very short text. Sidebar entries like "Vite" are
+# LABEL elements, not links, so without this they are in neither the hintable
+# set nor the caret set and simply cannot be found.
+SEARCH_MIN_CHARS = 2
+
 # --- caret mode ------------------------------------------------------------
 # Text elements shorter than this are labels and chrome, not prose worth
 # putting a cursor in.
@@ -149,6 +154,11 @@ NEST_MAX_RATIO = 2.5
 # button" and "switch to that terminal".
 HINT_WINDOWS = True
 MIN_WINDOW_SIZE = 60
+
+# Fraction of a window that must actually be on screen for it to count as the
+# active window. Hidden scratchpads are parked just off the top edge and still
+# hold _NET_ACTIVE_WINDOW when nothing is focused.
+MIN_ONSCREEN = 0.4
 
 # Stop collecting past this many elements. Each one costs a D-Bus round trip
 # for its extents, so this is the main latency knob.

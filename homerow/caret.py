@@ -41,8 +41,16 @@ def _text_of(iface, start, end):
         return ""
 
 
-def collect(screen_w, screen_h):
-    """Text-bearing elements in the focused window, biggest first."""
+def collect(screen_w, screen_h, min_chars=None, require_text=True):
+    """Text-bearing elements in the focused window, biggest first.
+
+    `min_chars` defaults to the caret threshold. Search passes a much lower
+    one: a sidebar entry reading "Vite" is four characters, is a LABEL rather
+    than a link, and was therefore in neither the hintable set nor the caret
+    set -- so searching for it found nothing at all.
+    """
+    if min_chars is None:
+        min_chars = config.CARET_MIN_CHARS
     window = elements.active_window()
     if window is None:
         return []
@@ -87,13 +95,19 @@ def collect(screen_w, screen_h):
             continue
         if ext.width <= 0 or ext.height <= 0:
             continue
-        try:
-            iface = accessible.get_text_iface()
-            if iface is None or \
-                    iface.get_character_count() < config.CARET_MIN_CHARS:
+        if require_text:
+            # Caret mode needs a real Text interface to put an offset into.
+            try:
+                iface = accessible.get_text_iface()
+                if iface is None or \
+                        iface.get_character_count() < min_chars:
+                    continue
+            except Exception:
                 continue
-        except Exception:
-            continue
+        # Search does not: Qt WebEngine labels carry a name and no Text
+        # interface at all, so requiring text discarded every sidebar entry.
+        # Names are read later, asynchronously, by the search indexer -- doing
+        # it here would be a D-Bus round trip per candidate.
         found.append(
             elements.Element(accessible, ext.x, ext.y, ext.width, ext.height))
 

@@ -203,7 +203,9 @@ class Daemon:
         # -- a heading, a paragraph, a list entry -- was often not in the set
         # being searched at all, so an exact match simply never appeared.
         try:
-            blocks = caret.collect(width, height)
+            blocks = caret.collect(width, height,
+                                   min_chars=config.SEARCH_MIN_CHARS,
+                                   require_text=False)
         except Exception:
             blocks = []
         occupied = {(e.x // 6, e.y // 6, e.w // 6, e.h // 6) for e in found}
