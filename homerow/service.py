@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
 from . import (  # noqa: E402
-    click, config, elements, hints, scroll, search, windows,
+    caret, click, config, elements, hints, scroll, search, windows,
 )
 from .overlay import Overlay, screen_size  # noqa: E402
 
@@ -121,6 +121,8 @@ class Daemon:
             GLib.idle_add(self._scroll)
         elif command == "search":
             GLib.idle_add(self._search)
+        elif command == "caret":
+            GLib.idle_add(self._caret)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
         return True
@@ -203,6 +205,51 @@ class Daemon:
 
         self.overlay = search.SearchPrompt(
             found, on_pick, self._finished,
+        )
+        self.overlay.show()
+        return False
+
+    def _caret(self):
+        if self.overlay is not None:
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        started = time.perf_counter()
+        width, height = screen_size()
+        try:
+            blocks = caret.collect(width, height)
+        except Exception as error:
+            print(f"homerow: caret scan failed: {error!r}", file=sys.stderr)
+            return False
+
+        if not blocks:
+            self._log("no text to put a caret in")
+            _notify("No text here — this app publishes no text through "
+                    "accessibility.")
+            return False
+
+        self._log(f"{len(blocks)} text blocks in "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms")
+
+        def start(block):
+            def go():
+                self.overlay = caret.CaretSession(block, self._finished)
+                self.overlay.show()
+                return False
+            GLib.idle_add(go)
+
+        if len(blocks) == 1:
+            start(blocks[0])
+            return False
+
+        self.overlay = Overlay(
+            blocks, hints.assign(blocks),
+            lambda block, button, modifiers: start(block),
+            self._finished,
         )
         self.overlay.show()
         return False

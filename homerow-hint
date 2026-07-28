@@ -21,6 +21,9 @@ for arg in "$@"; do
         --search)
             COMMAND=search
             ;;
+        --caret)
+            COMMAND=caret
+            ;;
         --list | --debug | --standalone)
             exec python3 "$DIR/homerow-cli" "$@"
             ;;

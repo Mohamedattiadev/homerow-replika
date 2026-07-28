@@ -93,6 +93,19 @@ SEARCH_TEXT_CHARS = 60
 # prompt instead of needing a second phase.
 SEARCH_LABELS = "123456789"
 
+# --- caret mode ------------------------------------------------------------
+# Text elements shorter than this are labels and chrome, not prose worth
+# putting a cursor in.
+CARET_MIN_CHARS = 12
+# Roles that carry text. The Text interface is not a role and cannot be
+# queried for directly, so these nominate candidates and the character count
+# decides -- walking the tree for it instead cost ~2.5s.
+CARET_ROLES = [
+    "TEXT", "PARAGRAPH", "HEADING", "LABEL", "STATIC", "DOCUMENT_TEXT",
+    "ENTRY", "LIST_ITEM", "TABLE_CELL", "SECTION", "DOCUMENT_WEB",
+    "DOCUMENT_FRAME", "TERMINAL",
+]
+
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
 # put scroll hints on things that could not scroll. Chromium exposes no
