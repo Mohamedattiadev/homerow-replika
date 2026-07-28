@@ -205,17 +205,20 @@ DIM_BACKGROUND = True
 # instead of appearing on their targets.
 WM_CLASS = "homerow"
 
-# "atspi" fires the element's own accessible action (no pointer movement, but
-# some apps implement it poorly). "pointer" warps the real cursor, clicks, and
-# warps back -- closer to what Homerow does on macOS.
-CLICK_METHOD = "pointer"
+# "action" tries the element's own accessible action first and falls back to
+# the pointer; "pointer_only" always warps the real cursor. Action first is the
+# default because a pointer click on a link is press-move-release, which is
+# indistinguishable from a drag and was picking links up instead of following
+# them.
+CLICK_METHOD = "action"
 
 # How long the button stays down, and how long to wait before putting the
 # pointer back. A zero-length press followed by immediate pointer motion is
 # read as the start of a drag -- links were being picked up and dragged
 # instead of followed.
 CLICK_HOLD_MS = 14
-CLICK_SETTLE_MS = 40
+CLICK_PREPRESS_MS = 30
+CLICK_SETTLE_MS = 120
 
 # Log every key the overlay receives. Useful when hints appear but typing them
 # does nothing, which usually means the keyboard grab is not exclusive.

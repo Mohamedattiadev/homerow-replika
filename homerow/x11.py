@@ -14,6 +14,7 @@ breaking.
 import ctypes
 import ctypes.util
 import subprocess
+import time
 
 _x11 = None
 _xtst = None
@@ -273,7 +274,7 @@ def send_combo(combo):
 
 
 def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
-          hold_ms=0):
+          hold_ms=0, pre_ms=0):
     """Click at (x, y), optionally with modifiers held, `times` times.
 
     `hold_ms` separates press from release. A zero-length press with the
@@ -285,6 +286,11 @@ def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
         return False
     if x is not None and y is not None:
         warp_pointer(x, y)
+        if pre_ms:
+            # Let the app process the motion before the button goes down.
+            # Warping and pressing in the same instant is read as press-while-
+            # moving, which is how a link ends up being dragged.
+            time.sleep(pre_ms / 1000)
     codes = [_keycode(_MODIFIER_NAMES.get(m.lower(), m)) for m in modifiers]
     for code in codes:
         if code:

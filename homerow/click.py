@@ -15,16 +15,19 @@ BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT = 1, 2, 3
 # Action names apps use for "activate this"; varies by toolkit and role.
 _ACTIVATE = ("click", "press", "activate", "jump", "open", "toggle")
 
-
 def perform(element, button=BUTTON_LEFT, modifiers=()):
     """Act on a target. Returns the method used, for logging."""
     if getattr(element, "kind", "element") == "window":
         from . import windows
         return windows.activate(element)
 
-    # A plain left click with no modifiers is the only case the accessible
-    # action can express; anything else has to go through the pointer.
-    if config.CLICK_METHOD == "atspi" and button == BUTTON_LEFT \
+    # Prefer the element's own accessible action for a plain left click. It
+    # moves no pointer at all, so it cannot be mistaken for a drag -- which is
+    # what kept happening to links, where press-move-release is a real gesture
+    # meaning "pick this up". Timing tweaks only made that rarer, never safe.
+    # Anything the action cannot express (modifiers, middle, right) still has
+    # to go through the pointer.
+    if config.CLICK_METHOD != "pointer_only" and button == BUTTON_LEFT \
             and not modifiers:
         if _atspi_click(element):
             return "atspi"
@@ -32,13 +35,31 @@ def perform(element, button=BUTTON_LEFT, modifiers=()):
 
 
 def _atspi_click(element):
+    """Fire the element's own activate action, or focus it and press Enter.
+
+    Qt WebEngine exposes only "SetFocus" on links -- no click action at all --
+    so without the focus+Enter path every web link falls through to the
+    pointer, which is where drags come from. Activating a focused link with
+    Enter is what a keyboard user would do anyway.
+    """
     try:
         action = element.accessible.get_action_iface()
         if action is None:
             return False
+        names = []
         for i in range(action.get_n_actions()):
-            if (action.get_action_name(i) or "").lower() in _ACTIVATE:
-                return bool(action.do_action(i))
+            try:
+                names.append((Atspi.Action.get_action_name(action, i) or "").lower())
+            except Exception:
+                names.append("")
+        for index, name in enumerate(names):
+            if name in _ACTIVATE:
+                return bool(action.do_action(index))
+        # No focus+Enter fallback here on purpose. Qt WebEngine exposes only
+        # "SetFocus" on links, and focusing then pressing Enter reports
+        # success while navigating nowhere -- qutebrowser's normal mode does
+        # not follow a focused link. Claiming success meant the click silently
+        # did nothing instead of falling through to the pointer.
     except Exception:
         pass
     return False
@@ -55,7 +76,8 @@ def _pointer_click(element, button, modifiers):
         # XTest in-process: no subprocess, so the click lands in well under a
         # millisecond instead of the ~15ms an xdotool spawn costs.
         if x11.click(button, x, y, modifiers,
-                     hold_ms=config.CLICK_HOLD_MS):
+                     hold_ms=config.CLICK_HOLD_MS,
+                     pre_ms=config.CLICK_PREPRESS_MS):
             if origin:
                 # Let the click be consumed before moving the pointer away.
                 # Warping straight back turns the click into a drag gesture.
