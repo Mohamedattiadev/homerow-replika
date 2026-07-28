@@ -282,6 +282,43 @@ _MODIFIER_NAMES = {
 }
 
 
+# Modifier bit in the pointer mask -> a keysym that releases it.
+_MODIFIER_BITS = (
+    (1 << 0, "Shift_L"), (1 << 2, "Control_L"), (1 << 3, "Alt_L"),
+    (1 << 6, "Super_L"), (1 << 7, "Alt_R"),
+)
+
+
+def release_modifiers():
+    """Force every held modifier up.
+
+    A keyboard grab taken while the hotkey's own modifier is still physically
+    down swallows that modifier's release: the key-up goes to the grab window
+    and X is left believing the modifier is still held, so afterwards every
+    keystroke behaves as though alt or super were down. That is the "keys stop
+    working until qtile is reloaded" failure. Releasing explicitly on the way
+    out costs nothing and cannot make things worse -- a modifier that is
+    genuinely still held will be re-reported on its next event.
+    """
+    if not _load() or _xtst is None:
+        return
+    root = _x11.XDefaultRootWindow(_display)
+    root_ret, child_ret = ctypes.c_ulong(), ctypes.c_ulong()
+    rx, ry, wx, wy = (ctypes.c_int() for _ in range(4))
+    mask = ctypes.c_uint()
+    if not _x11.XQueryPointer(
+            _display, root, ctypes.byref(root_ret), ctypes.byref(child_ret),
+            ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx),
+            ctypes.byref(wy), ctypes.byref(mask)):
+        return
+    for bit, name in _MODIFIER_BITS:
+        if mask.value & bit:
+            code = _keycode(name)
+            if code:
+                _xtst.XTestFakeKeyEvent(_display, code, False, 0)
+    _x11.XFlush(_display)
+
+
 def send_combo(combo):
     """Send something like 'shift+ctrl+Right' via XTest."""
     if not _load() or _xtst is None:
@@ -292,13 +329,16 @@ def send_combo(combo):
     key_code = _keycode(key)
     if not key_code or any(c == 0 for c in codes):
         return False
-    for code in codes:
-        _xtst.XTestFakeKeyEvent(_display, code, True, 0)
-    _xtst.XTestFakeKeyEvent(_display, key_code, True, 0)
-    _xtst.XTestFakeKeyEvent(_display, key_code, False, 0)
-    for code in reversed(codes):
-        _xtst.XTestFakeKeyEvent(_display, code, False, 0)
-    _x11.XFlush(_display)
+    try:
+        for code in codes:
+            _xtst.XTestFakeKeyEvent(_display, code, True, 0)
+        _xtst.XTestFakeKeyEvent(_display, key_code, True, 0)
+        _xtst.XTestFakeKeyEvent(_display, key_code, False, 0)
+    finally:
+        # Always lift them, even if the press half failed part way through.
+        for code in reversed(codes):
+            _xtst.XTestFakeKeyEvent(_display, code, False, 0)
+        _x11.XFlush(_display)
     return True
 
 
@@ -321,18 +361,20 @@ def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
             # moving, which is how a link ends up being dragged.
             time.sleep(pre_ms / 1000)
     codes = [_keycode(_MODIFIER_NAMES.get(m.lower(), m)) for m in modifiers]
-    for code in codes:
-        if code:
-            _xtst.XTestFakeKeyEvent(_display, code, True, 0)
-    # hold_ms separates press from release; delay_ms spaces successive clicks.
-    for index in range(times):
-        _xtst.XTestFakeButtonEvent(
-            _display, button, True, 0 if index == 0 else delay_ms)
-        _xtst.XTestFakeButtonEvent(_display, button, False, hold_ms)
-    for code in reversed(codes):
-        if code:
-            _xtst.XTestFakeKeyEvent(_display, code, False, 0)
-    _x11.XSync(_display, False)
+    try:
+        for code in codes:
+            if code:
+                _xtst.XTestFakeKeyEvent(_display, code, True, 0)
+        # hold_ms separates press from release; delay_ms spaces the clicks.
+        for index in range(times):
+            _xtst.XTestFakeButtonEvent(
+                _display, button, True, 0 if index == 0 else delay_ms)
+            _xtst.XTestFakeButtonEvent(_display, button, False, hold_ms)
+    finally:
+        for code in reversed(codes):
+            if code:
+                _xtst.XTestFakeKeyEvent(_display, code, False, 0)
+        _x11.XSync(_display, False)
     return True
 
 

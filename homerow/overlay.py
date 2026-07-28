@@ -15,7 +15,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
-from . import config, theme  # noqa: E402
+from . import config, theme, x11  # noqa: E402
 
 # Only Escape cancels. `q` used to as well, but every letter outside the label
 # alphabet is now a filter character, and a hint set containing "Quit" has to
@@ -192,6 +192,10 @@ class Overlay:
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False
+            # The hotkey's own modifier was down when we grabbed, so its
+            # release was swallowed. Lift it or the desktop behaves as though
+            # alt were stuck until qtile is reloaded.
+            x11.release_modifiers()
 
     def _on_key(self, _widget, event):
         key = event.keyval

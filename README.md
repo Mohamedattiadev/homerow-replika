@@ -449,6 +449,25 @@ The overlay translates the cairo canvas by the window's true origin, because
 qtile does not honour `move(0, 0)` — it offset the window by the bar height,
 which put every hint 75px above its target.
 
+## Measured across real sites
+
+15 sites with different layouts (Wikipedia, HN, GitHub, MDN, Arch wiki, Python
+docs, GitLab, Reddit, lobste.rs, rustdoc, W3C, and simple static pages):
+
+| | |
+|---|---|
+| hints | avg 91 per page, 202ms |
+| scroll regions | **avg 1.9, never more than 3** |
+| caret blocks | avg 36, 150ms |
+| hints with no name | avg 0.9%, worst 9.5% (HN) |
+
+The scroll figure is the one that matters: before layout containers were
+dropped, a docs page offered three regions where two behave identically.
+
+A page's accessibility tree lags its rendering — rustdoc reported nothing six
+seconds after load and 81 elements shortly after. Nothing here can fix that;
+it is the browser publishing the tree late.
+
 ## Rough edges
 
 - **Collection is the remaining cost**, ~50ms typical but 100ms+ on heavy

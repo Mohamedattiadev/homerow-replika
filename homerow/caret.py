@@ -207,7 +207,14 @@ class CaretSession:
         if self.translucent:
             self.window.set_visual(visual)
 
-        self.window.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+        self.window.add_events(
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.VISIBILITY_NOTIFY_MASK
+        )
+        # The pointer passes through this overlay, so clicking a window
+        # underneath raises that window above it -- the session is still live
+        # and grabbing keys, but invisible. Re-raise whenever that happens.
+        self.window.connect("visibility-notify-event", self._on_visibility)
         self.window.connect("draw", self._on_draw)
         self.window.connect("key-press-event", self._on_key)
         self._grabbed = False
@@ -223,6 +230,13 @@ class CaretSession:
             gdk_window.raise_()
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
         GLib.idle_add(self._grab)
+
+    def _on_visibility(self, _widget, event):
+        if event.state != Gdk.VisibilityState.UNOBSCURED:
+            gdk_window = self.window.get_window()
+            if gdk_window is not None:
+                gdk_window.raise_()
+        return False
 
     def dismiss(self):
         self._close()
@@ -401,6 +415,9 @@ class CaretSession:
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False
+            # See Overlay._ungrab: a grab taken under a held modifier eats the
+            # key-up, leaving the modifier logically stuck.
+            x11.release_modifiers()
         self.window.destroy()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)

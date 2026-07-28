@@ -95,6 +95,12 @@ SCROLL_ROLES_FALLBACK = [
 # D-Bus round trips and small containers are never what you meant to scroll.
 SCROLL_MAX_CANDIDATES = 10
 
+# Two nested regions this close in area are treated as one scroller: a page's
+# document and its content pane differ only by a margin, and offering both
+# gives two labels that behave identically.
+SCROLL_SAME_RATIO = 0.75
+SCROLL_CONTAIN_MARGIN = 24
+
 # --- search mode -----------------------------------------------------------
 # Names are read this many per idle tick, so the prompt stays responsive while
 # indexing a page with hundreds of elements.

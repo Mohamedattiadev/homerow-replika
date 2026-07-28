@@ -86,13 +86,48 @@ def collect(screen_w, screen_h):
                             left, top, right, bottom, seen)
         regions = sift(candidates)
 
-    # Nested scrollables are all offered rather than resolved automatically.
-    # A page's whole document overflows as well as its sidebar and its content
-    # pane, and there is no way to know from here which one you meant --
-    # dropping ancestors would lose the main scroll target on any page that
-    # happens to contain a small overflowing widget.
-    regions.sort(key=lambda e: e.w * e.h, reverse=True)
-    return regions
+    # Collapse regions that would scroll the same thing. A page's document and
+    # its content pane usually differ only by a margin, and offering both means
+    # two labels with identical behaviour -- and a Tab that appears to do
+    # nothing. Genuinely separate scrollers (a sidebar beside a content pane)
+    # do not overlap like this and both survive.
+    regions.sort(key=lambda e: e.w * e.h)
+    distinct = []
+    for region in regions:
+        if not any(_same_scroller(region, kept) for kept in distinct):
+            distinct.append(region)
+
+    # Drop layout containers. A region enclosing two or more other scrollable
+    # regions is the thing holding them, not a scroller of its own -- on a docs
+    # page that is the wrapper around "sidebar + content", and scrolling it
+    # does whatever the content does. Offering it means a label that either
+    # duplicates another or appears to do nothing.
+    distinct = [
+        region for region in distinct
+        if sum(1 for other in distinct
+               if other is not region and _contains(region, other)) < 2
+    ]
+
+    distinct.sort(key=lambda e: e.w * e.h, reverse=True)
+    return distinct
+
+
+def _same_scroller(a, b):
+    """True if two regions are near-coincident, so scrolling either is one act."""
+    if not (_contains(a, b) or _contains(b, a)):
+        return False
+    area_a, area_b = a.w * a.h, b.w * b.h
+    if not area_a or not area_b:
+        return False
+    return min(area_a, area_b) / max(area_a, area_b) >= config.SCROLL_SAME_RATIO
+
+
+def _contains(outer, inner):
+    margin = config.SCROLL_CONTAIN_MARGIN
+    return (outer.x - margin <= inner.x
+            and outer.y - margin <= inner.y
+            and outer.x + outer.w + margin >= inner.x + inner.w
+            and outer.y + outer.h + margin >= inner.y + inner.h)
 
 
 def _shape(matches, win_x, win_y, left, top, right, bottom, seen):
@@ -268,7 +303,14 @@ class ScrollSession:
         if self.translucent:
             self.window.set_visual(visual)
 
-        self.window.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+        self.window.add_events(
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.VISIBILITY_NOTIFY_MASK
+        )
+        # The pointer passes through this overlay, so clicking a window
+        # underneath raises that window above it -- the session is still live
+        # and grabbing keys, but invisible. Re-raise whenever that happens.
+        self.window.connect("visibility-notify-event", self._on_visibility)
         self.window.connect("draw", self._on_draw)
         self.window.connect("key-press-event", self._on_key)
         self._grabbed = False
@@ -378,6 +420,9 @@ class ScrollSession:
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False
+            # See Overlay._ungrab: a grab taken under a held modifier eats the
+            # key-up, leaving the modifier logically stuck.
+            x11.release_modifiers()
         self.window.destroy()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)

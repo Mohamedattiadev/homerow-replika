@@ -18,7 +18,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
-from . import config, theme  # noqa: E402
+from . import config, theme, x11  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
 
 
@@ -263,6 +263,9 @@ class SearchPrompt:
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False
+            # See Overlay._ungrab: a grab taken under a held modifier eats the
+            # key-up, leaving the modifier logically stuck.
+            x11.release_modifiers()
         self.window.destroy()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
