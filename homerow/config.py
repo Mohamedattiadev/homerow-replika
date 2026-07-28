@@ -41,6 +41,31 @@ HINT_ROLES = ACTIONABLE_ROLES + CONTAINER_ROLES
 MIN_SIZE = 4
 MAX_FRACTION_OF_SCREEN = 0.9
 
+# --- scroll mode -----------------------------------------------------------
+# Regions worth offering as scroll targets.
+SCROLL_ROLES = [
+    "SCROLL_PANE",
+    "DOCUMENT_WEB",
+    "DOCUMENT_FRAME",
+    "DOCUMENT_TEXT",
+    "LIST",
+    "TREE",
+    "TREE_TABLE",
+    "TABLE",
+    "VIEWPORT",
+    "TEXT",
+]
+
+# A scroll target has to be big enough to be worth aiming at.
+MIN_SCROLL_SIZE = 80
+
+# Wheel clicks per key. Scrolling is done with synthetic wheel events rather
+# than Home/End keypresses: wheel events cannot land as text in a focused
+# field, which keypresses can.
+SCROLL_LINE_CLICKS = 2
+SCROLL_PAGE_CLICKS = 8
+SCROLL_EDGE_CLICKS = 40
+
 # Nested elements of a similar size are treated as one target. Widen the band
 # to collapse more aggressively; narrow it if distinct controls get swallowed.
 NEST_MIN_RATIO = 0.4

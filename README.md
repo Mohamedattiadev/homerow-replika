@@ -34,6 +34,30 @@ One press hints two kinds of target:
 Homerow uses `shift+space`; grabbing that globally on X11 would swallow it
 everywhere you type, so this uses `alt+shift+f`.
 
+## Scroll mode
+
+`alt+shift+j` hints the scrollable regions, largest first. Pick one and it
+stays selected while you drive it; when there is only one, it skips the picker.
+
+| Key | Action |
+|---|---|
+| `j` / `k` | line down / up |
+| `d` / `u` | half page down / up |
+| `gg` / `G` | top / bottom |
+| `h` / `l` | sideways |
+| `Esc` | leave |
+
+Scrolling uses synthetic **wheel events**, not `PageDown`/`Home` keypresses. A
+keypress goes wherever focus is and can land as text in an input; a wheel event
+goes to whatever is under the pointer and cannot type anything. It also means
+scroll mode works in apps whose accessibility is good enough to locate a region
+but not to scroll it.
+
+The session window carries an empty input shape, so it is invisible to the
+pointer — otherwise the fullscreen overlay sits under the cursor and eats the
+wheel events itself, drawing an outline over a region that never moves. The
+pointer is parked over the region while scrolling and put back on exit.
+
 Run it directly to inspect what it sees:
 
 ```sh
@@ -97,7 +121,7 @@ The palette is re-read on **every** hint, not cached at import, so
 | Role | Slot | Setting |
 |---|---|---|
 | hint chip | `green` — the dominant accent | `CHIP_SLOT` |
-| chip with a typed prefix | `cyan` | `CHIP_SLOT_MATCHED` |
+| typed prefix, scroll outline | `cyan` | `CHIP_SLOT_MATCHED` |
 | switch-to-window chip | `purple` | `CHIP_SLOT_WINDOW` |
 | label text | `bg` or `fg`, whichever contrasts | — |
 | screen dim | `bg` at 18% | `DIM_ALPHA` |
@@ -113,8 +137,10 @@ chips. That is the palette doing its job, not a hardcoded color — on other
 wallpapers in your cache the same slot resolves to red or orange.
 
 Text color is chosen by measuring the chip's relative luminance rather than
-assuming a dark desktop, so light themes stay readable. To pin colors instead,
-set `FOLLOW_THEME = False` and edit `FALLBACK_PALETTE`.
+assuming a dark desktop, so light themes stay readable. `FOLLOW_THEME = False`
+pins the palette to `theme.FALLBACK` — which is still hex named colors run
+through the same slot and contrast logic, so there is no second set of colors
+anywhere that could drift out of step.
 
 ## Coverage
 
@@ -128,7 +154,6 @@ against a screenshot:
 | qutebrowser | Qt WebEngine | full chrome + page content |
 | VS Code | Electron | works — needs the flag below |
 | Kate | Qt / KDE | menus, toolbar, buttons, sidebar |
-| pcmanfm | GTK | 40 elements, 27ms |
 | pavucontrol | GTK (old ATK) | works, via both fallbacks below |
 | Dolphin | Qt / KDE | works, **including file items** |
 | pcmanfm-qt | Qt / LXQt | works, **including file items** |
@@ -214,6 +239,7 @@ That is a deliberate limit: this hints real elements or nothing at all.
 | `homerow/overlay.py` | GTK overlay, keyboard grab |
 | `homerow/click.py` | click dispatch |
 | `homerow/windows.py` | other windows as switch targets |
+| `homerow/scroll.py` | scroll mode: regions + vim-key session |
 | `homerow/theme.py` | palette from theme-apply / pywal |
 | `homerow/config.py` | roles, alphabet, tuning, fallback palette |
 
@@ -274,4 +300,4 @@ which put every hint 75px above its target.
 - **The overlay grabs the keyboard exclusively while it is up.** Anything you
   type goes to it, not to the app underneath, and a stray keystroke that
   completes a label will click. Escape gets out.
-- Scroll mode and search mode are not built — click mode only.
+- Search mode (Homerow's `shift+/`) is not built.

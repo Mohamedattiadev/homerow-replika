@@ -12,8 +12,12 @@ set -eu
 DIR=$(dirname "$(readlink -f "$0")")
 SOCK="${XDG_RUNTIME_DIR:-/tmp}/homerow.sock"
 
+COMMAND=hint
 for arg in "$@"; do
     case "$arg" in
+        --scroll)
+            COMMAND=scroll
+            ;;
         --list | --debug | --standalone)
             exec python3 "$DIR/homerow-cli" "$@"
             ;;
@@ -21,7 +25,7 @@ for arg in "$@"; do
 done
 
 send() {
-    printf 'hint\n' | nc -U -N -w 1 "$SOCK" 2>/dev/null
+    printf '%s\n' "$COMMAND" | nc -U -N -w 1 "$SOCK" 2>/dev/null
 }
 
 [ "$(send)" = "ok" ] && exit 0

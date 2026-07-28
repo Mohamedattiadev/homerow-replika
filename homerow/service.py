@@ -18,7 +18,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
-from . import click, elements, hints, windows  # noqa: E402
+from . import click, elements, hints, scroll, windows  # noqa: E402
 from .overlay import Overlay, screen_size  # noqa: E402
 
 
@@ -115,6 +115,8 @@ class Daemon:
 
         if command == "hint":
             GLib.idle_add(self._hint)
+        elif command == "scroll":
+            GLib.idle_add(self._scroll)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
         return True
@@ -168,6 +170,57 @@ class Daemon:
             f"total {(shown - started) * 1000:.0f}ms"
         )
         return False
+
+    def _scroll(self):
+        if self.overlay is not None:
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        started = time.perf_counter()
+        width, height = screen_size()
+        try:
+            regions = scroll.collect(width, height)
+        except Exception as error:
+            print(f"homerow: scroll scan failed: {error!r}", file=sys.stderr)
+            return False
+
+        if not regions:
+            self._log("no scrollable regions")
+            _notify("Nothing scrollable here.")
+            return False
+
+        # One region is not worth asking about -- go straight in.
+        if len(regions) == 1:
+            self._log(f"1 region in "
+                      f"{(time.perf_counter() - started) * 1000:.0f}ms; "
+                      f"entering scroll mode")
+            self._enter_scroll(regions[0])
+            return False
+
+        labels = hints.assign(regions)
+        self._log(f"{len(regions)} scrollable regions in "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms")
+        self.overlay = Overlay(
+            regions, labels,
+            lambda region, button, modifiers: self._enter_scroll(region),
+            self._finished,
+        )
+        self.overlay.show()
+        return False
+
+    def _enter_scroll(self, region):
+        # Deferred: when this comes from the picker, the picker's own on_done
+        # runs after on_choose and would clear self.overlay right after we set
+        # it, leaving the daemon unable to dismiss the session later.
+        def start():
+            self.overlay = scroll.ScrollSession(region, self._finished)
+            self.overlay.show()
+            return False
+        GLib.idle_add(start)
 
     def _choose(self, element, button, modifiers):
         method = click.perform(element, button, modifiers)
