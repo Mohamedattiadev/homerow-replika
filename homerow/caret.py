@@ -467,8 +467,15 @@ class CaretSession:
             span = self._word_bounds(self.offset)
         text = _text_of(self.iface, *span)
         if text:
-            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
-            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).store()
+            # An exception here must not skip _close(): it releases the
+            # exclusive keyboard grab, and a session that never reaches that
+            # freezes every hotkey on the desktop until the idle timeout.
+            try:
+                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                clipboard.set_text(text, -1)
+                clipboard.store()
+            except Exception:
+                _clipboard_fallback(text)
         self._close()
 
     def _close(self):
