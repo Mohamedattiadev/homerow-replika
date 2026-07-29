@@ -190,6 +190,9 @@ SCROLL_CLICK_DELAY = 6
 SCROLL_MAX_COUNT = 50
 
 # Scroll overlay styling.
+# Distance from the bottom of the screen to a mode's legend.
+LEGEND_MARGIN = 40
+
 SCROLL_BORDER = 2
 SCROLL_RADIUS = 6
 

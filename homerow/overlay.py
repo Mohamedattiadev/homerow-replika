@@ -106,8 +106,11 @@ class Overlay:
             self.window.set_visual(visual)
 
         self.window.add_events(
-            Gdk.EventMask.KEY_PRESS_MASK | Gdk.EventMask.BUTTON_PRESS_MASK
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.VISIBILITY_NOTIFY_MASK
         )
+        self.window.connect("visibility-notify-event", self._on_visibility)
         self.window.connect("draw", self._on_draw)
         self.window.connect("key-press-event", self._on_key)
         self.window.connect("button-press-event", lambda *_: self._close())
@@ -154,6 +157,14 @@ class Overlay:
         if self.filter and self.indexed >= len(self.all_elements):
             self._apply_filter()
         return self.indexed < len(self.all_elements)
+
+    def _on_visibility(self, _widget, event):
+        """Come back to the front if something is stacked over us."""
+        if event.state != Gdk.VisibilityState.UNOBSCURED:
+            gdk_window = self.window.get_window()
+            if gdk_window is not None:
+                gdk_window.raise_()
+        return False
 
     # -- input ----------------------------------------------------------
 
@@ -336,7 +347,7 @@ class Overlay:
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
         x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - 40, 0)
+        y = max(self.height - h - config.LEGEND_MARGIN, 0)
         cr.set_source_rgba(*self.colors["chip"])
         cr.rectangle(x, y, w, h)
         cr.fill()
@@ -353,7 +364,7 @@ class Overlay:
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
         x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - 40, 0)
+        y = max(self.height - h - config.LEGEND_MARGIN, 0)
         cr.set_source_rgba(*self.colors["chip" if count else "chip_window"])
         cr.rectangle(x, y, w, h)
         cr.fill()

@@ -163,6 +163,45 @@ def _app_for_pid(pid):
     return None
 
 
+def active_document(app, window_title):
+    """The document node for the foreground tab, or None.
+
+    Qt WebEngine keeps every background tab's accessibility tree alive, all
+    reporting SHOWING, VISIBLE and the very same rectangle -- so a five-tab
+    window offered five pages of hints stacked on one viewport, most of them
+    over blank space. No state distinguishes the foreground tab; the window
+    title does, because the WM title is the active tab's title.
+    """
+    if not window_title:
+        return None
+    collection = app.get_collection_iface()
+    if collection is None:
+        return None
+    rule = Atspi.MatchRule.new(
+        Atspi.StateSet.new([]), Atspi.CollectionMatchType.ALL,
+        {}, Atspi.CollectionMatchType.ALL,
+        _roles(["DOCUMENT_WEB"]), Atspi.CollectionMatchType.ANY,
+        [], Atspi.CollectionMatchType.ALL, False)
+    try:
+        docs = collection.get_matches(
+            rule, Atspi.CollectionSortOrder.CANONICAL, 40, True)
+    except Exception:
+        return None
+    if len(docs) < 2:
+        return None          # single document: nothing to disambiguate
+
+    title = window_title.lower()
+    best, best_len = None, 0
+    for doc in docs:
+        try:
+            name = (doc.get_name() or "").strip().lower()
+        except Exception:
+            continue
+        if name and name in title and len(name) > best_len:
+            best, best_len = doc, len(name)
+    return best
+
+
 def _candidates(app):
     """Actionable accessibles under `app`, by whichever route it supports.
 
@@ -303,6 +342,14 @@ def _extents(matches, win_x, win_y):
     return repaired
 
 
+def _inside(ext, rect):
+    if rect is None:
+        return False
+    x, y, w, h = rect
+    cx, cy = ext.x + ext.width // 2, ext.y + ext.height // 2
+    return x <= cx < x + w and y <= cy < y + h
+
+
 def _nested(cx, cy, area, accepted):
     """True if this candidate is a duplicate of something already accepted.
 
@@ -336,8 +383,30 @@ def collect(screen_w, screen_h):
         # does not expose accessibility. Nothing to hint.
         return []
 
+    # Restrict to the foreground tab when the app keeps several alive, but
+    # keep the chrome around the page -- tab bar, url bar, status line -- by
+    # taking anything outside the document's rectangle from the whole app.
+    document = None
+    doc_rect = None
     try:
-        matches = _candidates(app)
+        title = x11.window_name(x11.active_window_id() or 0) if \
+            x11.available() else ""
+        document = active_document(app, title)
+        if document is not None:
+            ext = document.get_component_iface().get_extents(
+                Atspi.CoordType.SCREEN)
+            doc_rect = (ext.x, ext.y, ext.width, ext.height)
+    except Exception:
+        document, doc_rect = None, None
+
+    try:
+        if document is not None:
+            matches = list(_candidates(document))
+            for accessible, ext in _extents(_candidates(app), win_x, win_y):
+                if not _inside(ext, doc_rect):
+                    matches.append(accessible)
+        else:
+            matches = _candidates(app)
     except Exception:
         return []
 

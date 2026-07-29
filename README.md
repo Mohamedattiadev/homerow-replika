@@ -328,6 +328,22 @@ pins the palette to `theme.FALLBACK` — which is still hex named colors run
 through the same slot and contrast logic, so there is no second set of colors
 anywhere that could drift out of step.
 
+## Background tabs
+
+Qt WebEngine keeps every background tab's accessibility tree alive, all
+reporting SHOWING, VISIBLE and the *same rectangle* as the foreground tab. A
+five-tab qutebrowser window therefore offered five pages of hints stacked on
+one viewport — 135 where 14 were real, most of them floating over blank space.
+
+No state distinguishes the foreground document; they are identical. The window
+title does, because the WM title is the active tab's title, so the document
+whose name appears in it wins. Chrome outside the document rectangle — tab bar,
+url bar, status line — is still taken from the whole application, so nothing
+around the page is lost.
+
+This only engages when an app exposes more than one document, so Chromium and
+native apps are untouched.
+
 ## Coverage
 
 Every app below was focused for real, with the focus verified before

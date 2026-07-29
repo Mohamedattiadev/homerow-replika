@@ -65,7 +65,19 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
     # Ask for text-bearing roles rather than walking. The Text interface is not
     # a role and cannot be queried directly, but the roles that carry text are
     # a short list -- and walking for it cost ~2.5s, which is unusable.
-    collection = app.get_collection_iface()
+    # Same foreground-tab restriction as hint mode: a browser keeping five
+    # tabs alive otherwise offers five pages of text stacked on one viewport.
+    scope = app
+    try:
+        title = x11.window_name(x11.active_window_id() or 0) if \
+            x11.available() else ""
+        document = elements.active_document(app, title)
+        if document is not None:
+            scope = document
+    except Exception:
+        scope = app
+
+    collection = scope.get_collection_iface()
     if collection is None:
         return []
 
@@ -482,7 +494,7 @@ class CaretSession:
         pad = 8
         w, h = text_ext.width + pad * 2, config.FONT_SIZE + pad * 2
         x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - 40, 0)
+        y = max(self.height - h - config.LEGEND_MARGIN, 0)
         cr.set_source_rgba(*self.colors["chip"])
         cr.rectangle(x, y, w, h)
         cr.fill()

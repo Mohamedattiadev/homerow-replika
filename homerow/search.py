@@ -111,7 +111,11 @@ class SearchPrompt:
         if self.translucent:
             self.window.set_visual(visual)
 
-        self.window.add_events(Gdk.EventMask.KEY_PRESS_MASK)
+        self.window.add_events(
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.VISIBILITY_NOTIFY_MASK
+        )
+        self.window.connect("visibility-notify-event", self._on_visibility)
         self.window.connect("draw", self._on_draw)
         self.window.connect("key-press-event", self._on_key)
         self._grabbed = False
@@ -129,6 +133,14 @@ class SearchPrompt:
 
     def dismiss(self):
         self._close()
+
+    def _on_visibility(self, _widget, event):
+        """Come back to the front if something is stacked over us."""
+        if event.state != Gdk.VisibilityState.UNOBSCURED:
+            gdk_window = self.window.get_window()
+            if gdk_window is not None:
+                gdk_window.raise_()
+        return False
 
     # -- input ----------------------------------------------------------
 
@@ -337,7 +349,7 @@ class SearchPrompt:
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
         x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - 40, 0)
+        y = max(self.height - h - config.LEGEND_MARGIN, 0)
 
         cr.set_source_rgba(*self.colors["chip"])
         cr.rectangle(x, y, w, h)

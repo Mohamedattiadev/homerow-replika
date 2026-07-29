@@ -508,16 +508,13 @@ class ScrollSession:
         pad = 8
         w, h = ext.width + pad * 2, config.FONT_SIZE + pad + 4
 
-        # Above the region, or just inside it when there is no room. A region
-        # can start above the top of the screen -- a page container often
-        # reports a negative y -- so both candidates have to be clamped, not
-        # just compared against zero. Without the clamp the legend was drawn
-        # off-screen and scroll mode looked like it had no UI at all.
-        x = min(max(region.x + (region.w - w) // 2, 0), max(self.width - w, 0))
-        y = region.y - h - 6
-        if y < 0:
-            y = region.y + 6
-        y = min(max(y, 0), max(self.height - h, 0))
+        # Fixed to the bottom of the screen, like every other mode's legend.
+        # Positioning it relative to the region meant it landed wherever the
+        # region happened to be -- off the top when a page container reported
+        # a negative y, and over the WM bar once clamped. A constant place is
+        # both always visible and always where you already looked.
+        x = min(max((self.width - w) // 2, 0), max(self.width - w, 0))
+        y = max(self.height - h - config.LEGEND_MARGIN, 0)
 
         _rounded(cr, x, y, w, h, config.SCROLL_RADIUS)
         cr.set_source_rgba(*colors["chip_matched"])
