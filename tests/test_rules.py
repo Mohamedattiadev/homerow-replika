@@ -374,5 +374,70 @@ class WindowScopeRule(unittest.TestCase):
         self.assertIs(elements.active_frame(app, (0, 38, 1366, 730)), visible)
 
 
+class WorkspaceWatch(unittest.TestCase):
+    """A mode must not survive a workspace switch.
+
+    Everything it knows -- scrollable regions, hint positions, the caret's text
+    block -- describes the window that was in front when it opened, and the
+    overlay keeps the keyboard grabbed over whatever is in front now.
+    """
+
+    def daemon(self, desktop):
+        import unittest.mock
+
+        from homerow import service
+        instance = object.__new__(service.Daemon)
+        instance.debug = False
+        instance._desktop = desktop
+        instance._desktop_watch = None
+        instance.log = None
+        instance.overlay = unittest.mock.Mock()
+        return instance
+
+    def test_a_changed_workspace_dismisses_the_overlay(self):
+        import unittest.mock
+
+        from homerow import service, x11
+        instance = self.daemon(2)
+        with unittest.mock.patch.object(x11, "current_desktop",
+                                        return_value=5), \
+             unittest.mock.patch.object(service.Daemon, "_clear_mode"):
+            keep_going = instance._check_workspace()
+        instance.overlay.dismiss.assert_called_once()
+        self.assertFalse(keep_going)   # and stops polling
+
+    def test_the_same_workspace_leaves_it_alone(self):
+        import unittest.mock
+
+        from homerow import x11
+        instance = self.daemon(2)
+        with unittest.mock.patch.object(x11, "current_desktop",
+                                        return_value=2):
+            keep_going = instance._check_workspace()
+        instance.overlay.dismiss.assert_not_called()
+        self.assertTrue(keep_going)
+
+    def test_no_overlay_stops_the_watch(self):
+        import unittest.mock
+
+        from homerow import x11
+        instance = self.daemon(2)
+        instance.overlay = None
+        with unittest.mock.patch.object(x11, "current_desktop",
+                                        return_value=5) as read:
+            self.assertFalse(instance._check_workspace())
+        read.assert_not_called()
+
+    def test_a_wm_that_publishes_no_desktop_is_not_treated_as_a_switch(self):
+        import unittest.mock
+
+        from homerow import x11
+        instance = self.daemon(2)
+        with unittest.mock.patch.object(x11, "current_desktop",
+                                        return_value=None):
+            self.assertTrue(instance._check_workspace())
+        instance.overlay.dismiss.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
