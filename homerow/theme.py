@@ -117,9 +117,10 @@ def _build(named):
     # theme's own extremes contrasts with the chip. This is what keeps light
     # themes readable instead of assuming a dark desktop.
     def text_on(chip_color):
-        if _luminance(chip_color) > 0.45:
-            return background if _luminance(background) < 0.5 else (0, 0, 0)
-        return foreground if _luminance(foreground) > 0.5 else (1, 1, 1)
+        mid = config.LUMINANCE_MIDPOINT
+        if _luminance(chip_color) > config.CHIP_LIGHT_ABOVE:
+            return background if _luminance(background) < mid else (0, 0, 0)
+        return foreground if _luminance(foreground) > mid else (1, 1, 1)
 
     ink = text_on(chip)
     return {

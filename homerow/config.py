@@ -110,7 +110,13 @@ SCROLL_VERIFY = False
 # amount of measuring reveals that they scroll -- but probing every candidate
 # would jitter the page and cost a second.
 SCROLL_RESCUE_BELOW = 2
-SCROLL_RESCUE_MAX = 3
+SCROLL_RESCUE_MAX = 2
+
+# Probe both directions. Trying only downward made the result depend on where
+# the page happened to be scrolled: a pane already at its bottom looked
+# unscrollable, so the same page offered different regions from one press to
+# the next.
+SCROLL_RESCUE_BOTH_WAYS = True
 # Smooth scrolling animates a wheel click over a couple of hundred
 # milliseconds, so a short settle samples mid-animation and sees nothing move.
 SCROLL_PROBE_SETTLE_MS = 90
@@ -119,6 +125,10 @@ SCROLL_PROBE_CLICKS = 2
 # How many descendants to look through for something whose position moves.
 SCROLL_PROBE_SEARCH = 40
 
+# How closely a frame's geometry must match the focused window to be trusted
+# as that window's frame, in pixels of total edge difference.
+FRAME_MATCH_TOLERANCE = 80
+
 # A nested region this close in area to the one containing it is the same
 # scroller. A page's content column sits inside the viewport pane at roughly
 # half its area and scrolls exactly with it, so 0.75 left both on offer.
@@ -126,6 +136,10 @@ SCROLL_PROBE_SEARCH = 40
 # the genuinely separate case -- is never collapsed by this.
 SCROLL_SAME_RATIO = 0.45
 SCROLL_CONTAIN_MARGIN = 24
+
+# How much two regions may overlap and still count as sitting beside each
+# other rather than one inside the other.
+SCROLL_BESIDE_OVERLAP = 0.25
 
 # --- search mode -----------------------------------------------------------
 # Names are read this many per idle tick, so the prompt stays responsive while
@@ -205,6 +219,11 @@ SCROLL_PROBE_CHILDREN = 4
 
 # A scroll target has to be big enough to be worth aiming at.
 MIN_SCROLL_SIZE = 80
+
+# A scroll target must also be a real fraction of the window. A browser tab
+# strip is horizontally scrollable and about 40px tall, so it passed the size
+# floor and turned up as a region you could Tab to for no reason.
+MIN_SCROLL_FRACTION = 0.22
 
 # Wheel clicks per key. Scrolling is done with synthetic wheel events rather
 # than Home/End keypresses: wheel events cannot land as text in a focused
@@ -293,6 +312,11 @@ CHIP_SLOT = "green"
 CHIP_SLOT_MATCHED = "cyan"
 # Windows you can switch to, to tell them apart from clickable elements.
 CHIP_SLOT_WINDOW = "purple"
+
+# A chip brighter than this gets dark text; the midpoint decides whether the
+# theme's own background or foreground is the readable choice against it.
+CHIP_LIGHT_ABOVE = 0.45
+LUMINANCE_MIDPOINT = 0.5
 
 DIM_ALPHA = 0.18
 CHIP_ALPHA = 0.96

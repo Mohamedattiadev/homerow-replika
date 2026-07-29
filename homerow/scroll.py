@@ -124,14 +124,9 @@ def collect(screen_w, screen_h):
         shortlist = rejected[:config.SCROLL_RESCUE_MAX]
         rescued = None
         for region in shortlist:
-            if _scrolls(region):
+            if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
                 rescued = region
                 break
-        if rescued is None and shortlist:
-            # Nothing moved downward; the likeliest candidate may simply be
-            # sitting at its bottom already, so give that one an upward try.
-            if _scrolls(shortlist[0], both_ways=True):
-                rescued = shortlist[0]
         if rescued is not None:
             rescued.scroll_y = True
             rescued.scroll_x = False
@@ -234,10 +229,12 @@ def _position(child):
         return None
 
 
-def _overlapping(a, b, threshold=0.25):
+def _overlapping(a, b, threshold=None):
     """True if two regions share a meaningful part of the smaller one."""
     left, right = max(a.x, b.x), min(a.x + a.w, b.x + b.w)
     top, bottom = max(a.y, b.y), min(a.y + a.h, b.y + b.h)
+    if threshold is None:
+        threshold = config.SCROLL_BESIDE_OVERLAP
     if right <= left or bottom <= top:
         return False
     shared = (right - left) * (bottom - top)
@@ -341,6 +338,10 @@ def _shape(matches, win_x, win_y, left, top, right, bottom, seen):
     for acc, ext in elements._extents(matches, win_x, win_y):
         if ext.width < config.MIN_SCROLL_SIZE or \
                 ext.height < config.MIN_SCROLL_SIZE:
+            continue
+        # Thin strips are chrome, not content: a tab bar scrolls sideways and
+        # is about 40px tall, which cleared the absolute floor easily.
+        if ext.height < (bottom - top) * config.MIN_SCROLL_FRACTION:
             continue
         cx, cy = ext.x + ext.width // 2, ext.y + ext.height // 2
         if not (left <= cx < right and top <= cy < bottom):

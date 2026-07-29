@@ -213,7 +213,8 @@ def active_frame(app, window_rect):
         if best_score is None or score < best_score:
             best, best_score = frame, score
     # Only trust a close match; a wildly different frame means we cannot tell.
-    if best is not None and best_score is not None and best_score <= 80:
+    if (best is not None and best_score is not None
+            and best_score <= config.FRAME_MATCH_TOLERANCE):
         return best
     return None
 
