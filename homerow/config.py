@@ -121,7 +121,14 @@ SCROLL_VERIFY = True
 # amount of measuring reveals that they scroll -- but probing every candidate
 # would jitter the page and cost a second.
 SCROLL_RESCUE_BELOW = 2
-SCROLL_RESCUE_MAX = 2
+# Live-measured on devdocs.io: _overflows() reported nothing scrollable at
+# all (0 regions), yet the actual content pane genuinely scrolls -- confirmed
+# by probing it directly. It ranked 3rd by area behind two non-scrolling
+# page-level wrapper candidates (the whole toolbar+page area, and the whole
+# document including the sidebar), so a budget of 2 spent both slots on
+# wrappers and never reached it. Raised so a couple of wrapper levels above
+# the real scroller no longer exhausts the budget before reaching it.
+SCROLL_RESCUE_MAX = 5
 
 # Probe both directions. Trying only downward made the result depend on where
 # the page happened to be scrolled: a pane already at its bottom looked

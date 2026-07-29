@@ -231,6 +231,51 @@ class ScrollOverflow(unittest.TestCase):
                          (True, True))
 
 
+class ScrollWheelTarget(unittest.TestCase):
+    """ScrollSession._wheel_target() decides where the synthetic wheel event
+    lands, which also decides whether/how far the real pointer gets warped.
+
+    Regression: this used to fall back to region.center whenever the pointer
+    was outside the region -- on a large pane that is a big, disorienting
+    teleport, reported live as "the mouse acts weird when I start scrolling".
+    Clamping the pointer's own position into the region instead keeps the
+    jump to just the axis (or axes) that were actually out of bounds.
+    """
+
+    def session(self, region):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        return instance
+
+    def test_pointer_already_inside_is_used_unchanged(self):
+        from homerow import scroll
+        region = Fake(x=0, y=0, w=200, h=200)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 60)):
+            self.assertEqual(instance._wheel_target(), (50, 60))
+
+    def test_pointer_outside_is_clamped_not_teleported_to_center(self):
+        from homerow import scroll
+        region = Fake(x=200, y=200, w=800, h=800)   # center is (600, 600)
+        instance = self.session(region)
+        # Just past the region's left edge, vertically already inside it:
+        # only x should move, landing at the edge -- nowhere near the center.
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 250)):
+            x, y = instance._wheel_target()
+        self.assertEqual((x, y), (200, 250))
+
+    def test_no_pointer_info_falls_back_to_center(self):
+        from homerow import scroll
+        region = Fake(x=200, y=200, w=800, h=800)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=None):
+            self.assertEqual(instance._wheel_target(), region.center)
+
+
 class ScrollBest(unittest.TestCase):
     """scroll.best picks which detected region a session opens on.
 

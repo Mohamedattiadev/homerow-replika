@@ -134,21 +134,27 @@ def collect(screen_w, screen_h):
             and not any(_overlapping(region, kept) for kept in regions)
         ]
         rejected.sort(key=lambda e: e.w * e.h, reverse=True)
-        # Stop at the first one that actually scrolls. The wrappers around a
-        # sidebar are larger than the sidebar itself, so ranking by area alone
-        # spends the budget on boxes that do nothing.
+        # Keep every one that actually scrolls, not just the first. A page
+        # can have more than one virtualised pane -- devdocs.io's sidebar and
+        # its content pane both render only their visible rows -- and
+        # stopping at the first success would rescue the content pane and
+        # leave the sidebar looking unscrollable forever. Skip a candidate
+        # that overlaps one already rescued: the wrappers around a sidebar
+        # are larger than the sidebar itself, so ranking by area alone can
+        # still put a wrapper right after the real thing, and it would
+        # otherwise "rescue" the same scroller a second time.
         shortlist = rejected[:config.SCROLL_RESCUE_MAX]
-        rescued = None
+        rescued = []
         for region in shortlist:
             if time.monotonic() > deadline:
                 break
+            if any(_overlapping(region, kept) for kept in rescued):
+                continue
             if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
-                rescued = region
-                break
-        if rescued is not None:
-            rescued.scroll_y = True
-            rescued.scroll_x = False
-            regions.append(rescued)
+                region.scroll_y = True
+                region.scroll_x = False
+                rescued.append(region)
+        regions.extend(rescued)
 
     # Collapse regions that would scroll the same thing. A page's document and
     # its content pane usually differ only by a margin, and offering both means
@@ -744,10 +750,16 @@ class ScrollSession:
         (scroll.best()) is to enter on the region already under the pointer
         -- the common case needed no warp at all, and got one every single
         j/k anyway. Preferring the pointer's current position when it is
-        already inside the region avoids that; the center is still the
-        fallback, since it is the one point guaranteed to land inside the
-        region when the pointer has drifted outside it (Tab switched
-        regions, or something else nudged the pointer mid-session).
+        already inside the region avoids that.
+
+        When the pointer really is outside the region (Tab switched regions,
+        or the window-fallback region in scroll.best() was picked because
+        nothing was detected where the pointer actually was), clamp the
+        pointer's own position into the region rather than teleporting to
+        its exact center: on a large pane the center can be far from wherever
+        the user's hand actually was, and a full teleport there is a much
+        bigger, more disorienting jump than nudging just the axis (or axes)
+        that were actually out of bounds.
         """
         region = self.region
         position = _pointer_position()
@@ -756,6 +768,9 @@ class ScrollSession:
             if region.x <= px < region.x + region.w \
                     and region.y <= py < region.y + region.h:
                 return px, py
+            x = min(max(px, region.x), region.x + region.w - 1)
+            y = min(max(py, region.y), region.y + region.h - 1)
+            return x, y
         return region.center
 
     def _on_idle(self):
