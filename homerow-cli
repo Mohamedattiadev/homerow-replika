@@ -5,9 +5,11 @@ Pays the ~435ms interpreter/PyGObject startup cost itself, unlike
 homerow-hint (the daemon client) which only pays it once. Used directly for
 --list/--debug, and as what homerow-hint execs into for those same flags.
 
-    homerow-cli            hint and click
-    homerow-cli --debug    also print timings and what was found
-    homerow-cli --list     print elements without drawing anything
+    homerow-cli              hint and click
+    homerow-cli -d/--debug   also print timings and what was found
+    homerow-cli -l/--list    print elements without drawing anything
+    homerow-cli -h/--help    this message
+    homerow-cli -v/--version print the installed version
 """
 
 import os
@@ -24,7 +26,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")  # without this, Gdk 4.0 loads and has no Screen
 from gi.repository import Atspi, Gdk  # noqa: E402
 
-from homerow import click, elements, hints  # noqa: E402
+from homerow import __version__, click, elements, hints  # noqa: E402
 from homerow.overlay import Overlay, screen_size  # noqa: E402
 
 
@@ -40,8 +42,15 @@ def notify(message):
 
 
 def main():
-    debug = "--debug" in sys.argv
-    list_only = "--list" in sys.argv
+    if "-h" in sys.argv or "--help" in sys.argv:
+        print(__doc__.strip())
+        return 0
+    if "-v" in sys.argv or "--version" in sys.argv:
+        print(f"homerow {__version__}")
+        return 0
+
+    debug = "-d" in sys.argv or "--debug" in sys.argv
+    list_only = "-l" in sys.argv or "--list" in sys.argv
 
     started = time.perf_counter()
     Atspi.init()

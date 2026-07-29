@@ -156,14 +156,20 @@ alt+space
 ```
 
 ```sh
-homerow-daemon --status   # is one answering?
-homerow-daemon --log      # tail the log
-homerow-daemon --quit     # stop it
-homerow-daemon --debug    # foreground, mirror the log to stdout
+homerow-daemon --status       # is one answering?
+homerow-daemon --log          # tail the log
+homerow-daemon --quit         # stop it
+homerow-daemon -d/--debug     # foreground, mirror the log to stdout
+homerow-daemon -h/--help      # usage
+homerow-daemon -v/--version   # installed version
 ```
 
 The daemon always logs to `$XDG_STATE_HOME/homerow/homerow.log`. Restart it
 after editing anything under `homerow/` — it holds the modules in memory.
+
+`homerow-hint` itself takes `-h/--help` and `-v/--version` too (it forwards
+them to `homerow-cli`, same as `-l/--list` and `-d/--debug`), so `homerow-hint
+-v` works whether or not a daemon is running.
 
 ## Theming
 
@@ -249,6 +255,26 @@ is indistinguishable from the keyboard breaking.
 is still a `LIST`. Content overflow is better, but a virtualised list renders
 only its visible rows, so nothing measurable proves it scrolls. Those are found
 by actually scrolling them and watching what moves.
+
+**A rescue budget spent on wrappers never reaches the real scroller.** Live on
+devdocs.io: overflow measurement found nothing scrollable at all, yet the
+content pane plainly scrolls — confirmed by probing it directly. It ranked
+3rd by area behind two non-scrolling page-level wrapper candidates (the whole
+toolbar+page area, and the whole document including the sidebar), so a rescue
+budget of 2 spent both slots on wrappers and never got to it. Two fixes:
+raise the budget, and keep testing after the first success instead of
+stopping there — a page can have more than one virtualised pane (a sidebar
+*and* its content), and stopping early rescues one and leaves the other
+looking permanently unscrollable.
+
+**A wall-clock deadline for the whole pass, not just each call.**
+`Atspi.set_timeout()` bounds one D-Bus call; `scroll.collect()` makes many of
+them per press. Each easily dodges that per-call cap alone, but they can sum
+to a real stall when the accessibility service is merely slow, not hung. A
+single overall budget (`SCROLL_COLLECT_BUDGET_MS`) covers that case instead,
+learned from reading a comparable project's collector
+([museslabs/stochos](https://github.com/museslabs/stochos)), which wraps its
+whole async collection in one outer deadline for the same reason.
 
 ## Limits
 
