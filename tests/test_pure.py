@@ -130,20 +130,34 @@ class NestedElements(unittest.TestCase):
 
     def test_similar_sized_overlap_is_a_duplicate(self):
         accepted = [Fake(x=0, y=0, w=100, h=20)]
-        self.assertTrue(self.nested(50, 10, 100 * 20, accepted))
+        self.assertTrue(self.nested(Fake(x=10, y=2, w=100, h=20), accepted))
 
     def test_small_control_inside_large_row_is_kept(self):
         # A button inside a toolbar is a separate target, not a duplicate.
         accepted = [Fake(x=0, y=0, w=1000, h=40)]
-        self.assertFalse(self.nested(500, 20, 20 * 20, accepted))
+        self.assertFalse(self.nested(Fake(x=490, y=10, w=20, h=20), accepted))
 
     def test_disjoint_elements_are_kept(self):
         accepted = [Fake(x=0, y=0, w=100, h=20)]
-        self.assertFalse(self.nested(500, 500, 100 * 20, accepted))
+        self.assertFalse(self.nested(Fake(x=490, y=490, w=100, h=20), accepted))
 
     def test_zero_area_accepted_does_not_divide_by_zero(self):
         accepted = [Fake(x=0, y=0, w=0, h=0)]
-        self.assertFalse(self.nested(0, 0, 100, accepted))
+        self.assertFalse(self.nested(Fake(x=0, y=0, w=100, h=10), accepted))
+
+    def test_combobox_selected_value_label_is_a_duplicate(self):
+        # A combobox showing its current value at its own top-left corner,
+        # spanning only part of its height -- seen identically on WSJ, Python
+        # docs, Amazon, OpenTable and Netflix, none of which are a close area
+        # ratio to their box.
+        accepted = [Fake(x=935, y=317, w=172, h=46)]
+        self.assertTrue(self.nested(Fake(x=935, y=317, w=172, h=11), accepted))
+
+    def test_overlapping_but_not_enclosed_is_kept(self):
+        # Same top-left corner but the candidate is not fully inside (taller
+        # than the accepted box) -- a real distinct element, not a relabel.
+        accepted = [Fake(x=824, y=131, w=516, h=50)]
+        self.assertFalse(self.nested(Fake(x=824, y=131, w=67, h=70), accepted))
 
 
 class ScrollOverflow(unittest.TestCase):

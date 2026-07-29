@@ -429,13 +429,26 @@ def _inside(ext, rect):
     return x <= cx < x + w and y <= cy < y + h
 
 
-def _nested(cx, cy, area, accepted):
+def _nested(rect, accepted):
     """True if this candidate is a duplicate of something already accepted.
 
-    Only similarly sized boxes count. A small button legitimately sits inside
-    a large row or toolbar, and those are separate targets; it is the
-    near-same-size wrapper/child pair that is one thing wearing two hats.
+    Two shapes count as one thing wearing two hats:
+
+    - Similarly sized boxes whose centres coincide. A small button
+      legitimately sits inside a large row or toolbar, and those are
+      separate targets; it is the near-same-size wrapper/child pair that is
+      one thing, which is why only a close area ratio counts here.
+    - A candidate flush against an accepted box's own top-left corner and
+      fully inside it, regardless of size ratio. A combobox showing its
+      currently selected value exposes that value as its own "menu item"
+      accessible sitting at the box's own origin, spanning only part of its
+      height -- e.g. a 172x46 edition/language/date selector with an 11px-tall
+      selected-item label starting at the same corner (seen identically on
+      WSJ, Python docs, Amazon, OpenTable and Netflix). The area ratio there
+      is nowhere near 1, so only the shared-corner check catches it.
     """
+    cx, cy = rect.x + rect.w // 2, rect.y + rect.h // 2
+    area = rect.w * rect.h
     for other in accepted:
         if not (other.x <= cx < other.x + other.w
                 and other.y <= cy < other.y + other.h):
@@ -445,6 +458,13 @@ def _nested(cx, cy, area, accepted):
             continue
         ratio = area / other_area
         if config.NEST_MIN_RATIO <= ratio <= config.NEST_MAX_RATIO:
+            return True
+
+    slop = config.NEST_CORNER_SLOP
+    for other in accepted:
+        if (abs(rect.x - other.x) <= slop and abs(rect.y - other.y) <= slop
+                and rect.x + rect.w <= other.x + other.w + slop
+                and rect.y + rect.h <= other.y + other.h + slop):
             return True
     return False
 
@@ -524,13 +544,12 @@ def collect(screen_w, screen_h):
         key = (ext.x // 6, ext.y // 6, ext.width // 6, ext.height // 6)
         if key in seen:
             continue
-        if _nested(cx, cy, ext.width * ext.height, elements):
+        candidate = Element(acc, ext.x, ext.y, ext.width, ext.height)
+        if _nested(candidate, elements):
             continue
         seen.add(key)
 
-        elements.append(
-            Element(acc, ext.x, ext.y, ext.width, ext.height)
-        )
+        elements.append(candidate)
 
     # Drop layout containers. An element enclosing several other hintable
     # elements is the box holding them, not a target -- its chip lands in

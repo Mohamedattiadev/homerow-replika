@@ -266,6 +266,12 @@ CONTAINER_MIN_CHILDREN = 3
 NEST_MIN_RATIO = 0.4
 NEST_MAX_RATIO = 2.5
 
+# A candidate sharing an accepted box's top-left corner (within this many
+# pixels) and fully inside it is treated as the same target regardless of
+# area ratio -- e.g. a combobox's own selected-value label, which the ratio
+# check above misses because it is far smaller than the box that contains it.
+NEST_CORNER_SLOP = 2
+
 # Also hint the other visible windows, so one keypress covers both "click that
 # button" and "switch to that terminal".
 HINT_WINDOWS = True
