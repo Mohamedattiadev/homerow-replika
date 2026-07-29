@@ -295,10 +295,21 @@ def _scrolls(region, both_ways=False):
     It doubles the cost, so it is saved for the retry pass rather than paid on
     every candidate.
     """
+    return _scrolls_at(region, *region.center, both_ways=both_ways)
+
+
+def _scrolls_at(region, x, y, both_ways=False):
+    """As _scrolls(), but with the wheel aimed at an explicit point.
+
+    A wheel event scrolls whatever sits under the pointer, which is not
+    necessarily the region we mean to drive -- so "does this region scroll?"
+    and "does aiming *here* scroll this region?" are different questions, and
+    ScrollSession needs the second one to find out whether the user's cursor
+    happens to be resting on some other scroller.
+    """
     watchers = _probe_children(region)
     if not watchers:
         return False
-    x, y = region.center
     passes = ((WHEEL_DOWN, WHEEL_UP), (WHEEL_UP, WHEEL_DOWN))
     for forward, back in (passes if both_ways else passes[:1]):
         before = [_position(w) for w in watchers]
@@ -374,6 +385,22 @@ def _same_scroller(a, b):
     if not area_a or not area_b:
         return False
     return min(area_a, area_b) / max(area_a, area_b) >= config.SCROLL_SAME_RATIO
+
+
+def _clamp(value, start, span):
+    """Clamp into [start, start+span), kept clear of the very edge.
+
+    Landing exactly on a pane's boundary is ambiguous: measured live in
+    qutebrowser, a target on the 1px seam between the sidebar and the content
+    pane scrolled the sidebar even though the content pane was the region being
+    driven -- and inconsistently, so a probe could pass there and the real
+    scroll still go to the wrong pane. Whatever the region is, a point a few
+    pixels in belongs to it unambiguously.
+    """
+    margin = config.SCROLL_TARGET_MARGIN
+    if span <= 4 * margin:
+        margin = 0
+    return min(max(value, start + margin), start + span - 1 - margin)
 
 
 def _inside(region, x, y):
@@ -723,6 +750,10 @@ class ScrollSession:
             # the outline appeared but nothing moved.
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
         GLib.idle_add(self._grab)
+        # After the grab, not before: the probe scrolls the page and puts it
+        # back, and doing that while the keyboard is still ungrabbed leaves a
+        # window where a keystroke reaches the app instead of us.
+        GLib.idle_add(self._check_aim)
         # Never hold the keyboard indefinitely. The grab is exclusive, so
         # while a session is open every other binding on the desktop is dead
         # -- including the ones that would close it. A session left open by
@@ -774,6 +805,9 @@ class ScrollSession:
             self.index = (self.index + step) % len(self.regions)
             self.region = self.regions[self.index]
             self.window.queue_draw()
+            # Deferred so the new outline is drawn before the probe's jitter,
+            # which otherwise looks like Tab having done nothing for a moment.
+            GLib.idle_add(self._check_aim)
             return True
 
         # Digits accumulate into a count, so 3j scrolls three lines. 0 is only
@@ -859,19 +893,77 @@ class ScrollSession:
         aiming there scrolls that inner scroller, not the region the outline
         is drawn around. Reported live on devdocs.io: with the pointer resting
         on the sidebar, both Tab entries scrolled the sidebar, so Tab looked
-        broken. So step off any enclosed sibling first.
+        broken. So step off any enclosed sibling first, and where the aim has
+        been checked against the region itself (see _check_aim), use what
+        actually worked.
+        """
+        aim = getattr(self.region, "aim", None)
+        if aim in ("center_x", "center"):
+            return self._aim_point(aim)
+        return self._aim_point("pointer")
+
+    def _aim_point(self, strategy):
+        """Where `strategy` puts the wheel event for the current region.
+
+        Strategies, in the order _check_aim tries them:
+
+        "pointer"   the pointer's own position, clamped into the region and
+                    stepped off any enclosed sibling. Costs no cursor movement
+                    in the common case and scrolls what the user is looking at.
+        "center_x"  the region's horizontal middle at the pointer's own height.
+                    For the usual sidebar-beside-content layout this leaves the
+                    sidebar while moving the cursor as little as possible.
+        "center"    the region's middle, for anything the first two miss.
         """
         region = self.region
+        cx, cy = region.center
+        if strategy == "center":
+            return cx, cy
         position = _pointer_position()
-        if position:
-            px, py = position
-            x = min(max(px, region.x), region.x + region.w - 1)
-            y = min(max(py, region.y), region.y + region.h - 1)
-            blockers = self._enclosed_siblings()
-            if not any(_inside(other, x, y) for other in blockers):
-                return x, y
-            return _clear_point(region, blockers, (px, py))
-        return region.center
+        if not position:
+            return cx, cy
+        px, py = position
+        if strategy == "center_x":
+            return cx, _clamp(py, region.y, region.h)
+        x = _clamp(px, region.x, region.w)
+        y = _clamp(py, region.y, region.h)
+        blockers = self._enclosed_siblings()
+        if not any(_inside(other, x, y) for other in blockers):
+            return x, y
+        return _clear_point(region, blockers, (px, py))
+
+    def _check_aim(self):
+        """Find an aim that really scrolls the current region, once per region.
+
+        The step-off above only works on scrollers AT-SPI actually reported.
+        qutebrowser (Qt WebEngine) reports a devdocs.io page as one
+        document and nothing else, so with the cursor resting on the sidebar
+        there was no sibling to step off and every Tab entry scrolled the
+        sidebar -- recorded live, the content pane never moved once. Geometry
+        cannot see a scroller that was never published, so the aim is tested
+        the only way that is toolkit-independent: scroll there and watch
+        whether *this* region moved. Cached on the region, so it costs one
+        probe per region per session and nothing per keystroke.
+
+        Regions with nothing to watch -- the whole-window fallback has no
+        accessible at all -- cannot be tested, so they take "center_x": the
+        fallback is an approximation by nature, and aiming down its middle is
+        a better guess than trusting a cursor that may well be parked on a
+        sidebar.
+        """
+        region = self.region
+        if getattr(region, "aim", None) is not None:
+            return
+        if not _probe_children(region):
+            region.aim = "center_x"
+            return
+        for strategy in ("pointer", "center_x", "center"):
+            if _scrolls_at(region, *self._aim_point(strategy), both_ways=True):
+                region.aim = strategy
+                return
+        # Nothing moved it anywhere, in either direction. Keep the cursor
+        # where it is rather than warping it for a scroll that cannot happen.
+        region.aim = "pointer"
 
     def _enclosed_siblings(self):
         """Other Tab candidates that live inside the current region.

@@ -261,12 +261,13 @@ class ScrollWheelTarget(unittest.TestCase):
         from homerow import scroll
         region = Fake(x=200, y=200, w=800, h=800)   # center is (600, 600)
         instance = self.session(region)
-        # Just past the region's left edge, vertically already inside it:
-        # only x should move, landing at the edge -- nowhere near the center.
+        # Just past the region's left edge, vertically already inside it: only
+        # x should move, landing just inside the edge -- clear of the seam with
+        # whatever is next door, and nowhere near the center.
         with unittest.mock.patch.object(
                 scroll, "_pointer_position", return_value=(50, 250)):
             x, y = instance._wheel_target()
-        self.assertEqual((x, y), (200, 250))
+        self.assertEqual((x, y), (200 + config.SCROLL_TARGET_MARGIN, 250))
 
     def test_no_pointer_info_falls_back_to_center(self):
         from homerow import scroll
@@ -363,6 +364,108 @@ class ScrollBest(unittest.TestCase):
         with unittest.mock.patch.object(
                 scroll, "_pointer_position", return_value=None):
             self.assertIs(scroll.best([content, sidebar]), content)
+
+
+class ScrollAimCheck(unittest.TestCase):
+    """ScrollSession._check_aim() settles where the wheel goes by testing it.
+
+    Recorded live in qutebrowser (Qt WebEngine): AT-SPI publishes a devdocs.io
+    page as one document and nothing else, so with the cursor resting on the
+    sidebar there was no detected sibling to step off and every Tab entry
+    scrolled the sidebar -- the content pane did not move in a single frame.
+    Geometry cannot see a scroller that was never published, so the aim has to
+    be tested against the region itself.
+    """
+
+    def session(self, region, regions=None):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        instance.regions = list(regions) if regions else [region]
+        return instance
+
+    def test_pointer_aim_is_kept_when_it_scrolls_the_region(self):
+        from homerow import scroll
+        document = Fake(x=0, y=15, w=1366, h=736)
+        instance = self.session(document)
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=["watcher"]), \
+             unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True) as scrolls, \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            instance._check_aim()
+            self.assertEqual(document.aim, "pointer")
+            self.assertEqual(instance._wheel_target(), (150, 400))
+        # Tried the cheap, no-cursor-movement aim first.
+        self.assertEqual(scrolls.call_args_list[0].args[1:], (150, 400))
+
+    def test_aim_moves_off_the_pointer_when_the_region_does_not_move(self):
+        from homerow import scroll
+        # The qutebrowser case: one region covering everything, cursor on an
+        # undetected sidebar. Aiming at the pointer scrolls the sidebar, so the
+        # region itself never moves and the aim must shift to its middle.
+        document = Fake(x=0, y=15, w=1366, h=736)
+        instance = self.session(document)
+
+        def only_away_from_the_sidebar(_region, x, _y, both_ways=False):
+            return x > 340
+
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=["watcher"]), \
+             unittest.mock.patch.object(
+                scroll, "_scrolls_at", only_away_from_the_sidebar), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            instance._check_aim()
+            self.assertEqual(document.aim, "center_x")
+            x, y = instance._wheel_target()
+        self.assertEqual(x, document.center[0])
+        # The cursor keeps its height: leaving the sidebar is a sideways move,
+        # so there is no reason to also drag it up or down the page.
+        self.assertEqual(y, 400)
+
+    def test_unverifiable_region_aims_down_the_middle(self):
+        from homerow import scroll
+        # The whole-window fallback has no accessible, so there is nothing to
+        # watch and no way to test the aim.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        instance = self.session(window)
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=[]), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            instance._check_aim()
+            self.assertEqual(window.aim, "center_x")
+            self.assertEqual(instance._wheel_target(), (window.center[0], 400))
+
+    def test_an_unscrollable_region_leaves_the_cursor_alone(self):
+        from homerow import scroll
+        region = Fake(x=0, y=0, w=800, h=600)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=["watcher"]), \
+             unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=False), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            instance._check_aim()
+            self.assertEqual(region.aim, "pointer")
+            self.assertEqual(instance._wheel_target(), (150, 400))
+
+    def test_the_check_runs_once_per_region(self):
+        from homerow import scroll
+        region = Fake(x=0, y=0, w=800, h=600)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=["watcher"]) as probe, \
+             unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            instance._check_aim()
+            instance._check_aim()
+        self.assertEqual(probe.call_count, 1)
 
 
 class ScrollWindowFallbackTabStop(unittest.TestCase):
