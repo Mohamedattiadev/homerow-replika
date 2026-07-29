@@ -8,6 +8,7 @@ accessibility support is good enough to locate a region but not to scroll it.
 """
 
 import subprocess
+import time
 
 import cairo
 import gi
@@ -115,7 +116,124 @@ def collect(screen_w, screen_h):
     ]
 
     distinct.sort(key=lambda e: e.w * e.h, reverse=True)
+    if config.SCROLL_VERIFY:
+        distinct = verify(distinct)
     return distinct
+
+
+def _probe_child(region):
+    """A descendant whose position can be watched to see if the region moved."""
+    accessible = region.accessible
+    if accessible is None:
+        return None
+    queue = [accessible]
+    seen = 0
+    while queue and seen < config.SCROLL_PROBE_SEARCH:
+        node = queue.pop(0)
+        try:
+            count = node.get_child_count()
+        except Exception:
+            continue
+        for index in range(min(count, 6)):
+            seen += 1
+            try:
+                child = node.get_child_at_index(index)
+                component = child.get_component_iface()
+                if component is None:
+                    continue
+                ext = component.get_extents(Atspi.CoordType.SCREEN)
+            except Exception:
+                continue
+            if ext.height > 0 and ext.width > 0:
+                return child
+            queue.append(child)
+    return None
+
+
+def _probe_children(region, limit=3):
+    """A few descendants of a region whose positions can be watched."""
+    accessible = region.accessible
+    if accessible is None:
+        return []
+    found = []
+    queue = [accessible]
+    seen = 0
+    while queue and seen < config.SCROLL_PROBE_SEARCH and len(found) < limit:
+        node = queue.pop(0)
+        try:
+            count = node.get_child_count()
+        except Exception:
+            continue
+        for index in range(min(count, 6)):
+            seen += 1
+            try:
+                child = node.get_child_at_index(index)
+                component = child.get_component_iface()
+                if component is None:
+                    continue
+                ext = component.get_extents(Atspi.CoordType.SCREEN)
+            except Exception:
+                continue
+            if ext.height > 0 and ext.width > 0:
+                found.append(child)
+                if len(found) >= limit:
+                    break
+            queue.append(child)
+    return found
+
+
+def _position(child):
+    try:
+        ext = child.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
+        return ext.y
+    except Exception:
+        return None
+
+
+def verify(regions):
+    """Keep regions that really scroll, one per actual scroller.
+
+    Geometry cannot tell a scrollable pane from a tall column merely flowing
+    inside one: AT-SPI clips extents to the viewport either way, so both report
+    content taller than their visible box. So each candidate is scrolled by a
+    single click and every watcher is re-read. Regions that move the same
+    watchers are the same scroller; regions that move nothing do not scroll.
+    The click is undone immediately.
+    """
+    if len(regions) < 2:
+        return regions
+
+    # Several watchers per region: the first child is often a sticky header
+    # that never moves however far the pane scrolls.
+    watchers = []
+    for region in regions:
+        watchers.extend(_probe_children(region))
+    if not watchers:
+        return regions
+
+    signatures = []
+    for region in regions:
+        before = [_position(w) for w in watchers]
+        x, y = region.center
+        _wheel(x, y, WHEEL_DOWN, config.SCROLL_PROBE_CLICKS)
+        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        after = [_position(w) for w in watchers]
+        _wheel(x, y, WHEEL_UP, config.SCROLL_PROBE_CLICKS)
+        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        moved = frozenset(
+            index for index, (b, a) in enumerate(zip(before, after))
+            if b is not None and a is not None and abs(a - b) > 2)
+        signatures.append(moved)
+
+    kept, seen = [], []
+    for region, moved in zip(regions, signatures):
+        if not moved:
+            continue                       # scrolls nothing
+        if any(moved & other for other in seen):
+            continue                       # already have this scroller
+        seen.append(moved)
+        kept.append(region)
+    return kept or regions
 
 
 def _same_scroller(a, b):

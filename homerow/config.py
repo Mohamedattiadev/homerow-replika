@@ -98,7 +98,26 @@ SCROLL_MAX_CANDIDATES = 10
 # Two nested regions this close in area are treated as one scroller: a page's
 # document and its content pane differ only by a margin, and offering both
 # gives two labels that behave identically.
-SCROLL_SAME_RATIO = 0.75
+# Scroll each candidate and watch what moves, instead of guessing from
+# geometry. It is the only way to tell a scrollable pane from a tall column
+# flowing inside one -- but it scrolls the page and puts it back for every
+# candidate, so the page visibly jitters and entering the mode costs about a
+# second. Off by default: duplicate regions are a smaller annoyance than that.
+SCROLL_VERIFY = False
+# Smooth scrolling animates a wheel click over a couple of hundred
+# milliseconds, so a short settle samples mid-animation and sees nothing move.
+SCROLL_PROBE_SETTLE_MS = 260
+# One click may not shift a sticky header at all; a few guarantee movement.
+SCROLL_PROBE_CLICKS = 3
+# How many descendants to look through for something whose position moves.
+SCROLL_PROBE_SEARCH = 40
+
+# A nested region this close in area to the one containing it is the same
+# scroller. A page's content column sits inside the viewport pane at roughly
+# half its area and scrolls exactly with it, so 0.75 left both on offer.
+# Only *nested* regions are compared, so a sidebar beside a content pane --
+# the genuinely separate case -- is never collapsed by this.
+SCROLL_SAME_RATIO = 0.45
 SCROLL_CONTAIN_MARGIN = 24
 
 # --- search mode -----------------------------------------------------------

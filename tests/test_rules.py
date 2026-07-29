@@ -268,5 +268,37 @@ class SearchOverlapRule(unittest.TestCase):
                                       self.box(0, 0, 500, 500)))
 
 
+class NestedScrollerRule(unittest.TestCase):
+    """scroll._same_scroller collapses a pane and the column inside it.
+
+    Reported case: a Google Developers page offered the viewport pane and the
+    content column inside it, which scroll together. Sibling regions -- a
+    sidebar next to a content pane -- must survive, because those really are
+    two scrollers.
+    """
+
+    def region(self, x, y, w, h):
+        from homerow.elements import Element
+        return Element(None, x, y, w, h)
+
+    def test_content_column_inside_viewport_is_one_scroller(self):
+        from homerow import scroll
+        viewport = self.region(0, 118, 1366, 650)
+        column = self.region(396, 187, 766, 560)
+        self.assertTrue(scroll._same_scroller(viewport, column))
+
+    def test_sidebar_and_content_pane_stay_separate(self):
+        from homerow import scroll
+        sidebar = self.region(0, 65, 336, 672)
+        content = self.region(334, 65, 1033, 632)
+        self.assertFalse(scroll._same_scroller(sidebar, content))
+
+    def test_a_small_widget_inside_a_pane_survives(self):
+        from homerow import scroll
+        pane = self.region(0, 0, 1000, 800)
+        widget = self.region(100, 100, 200, 150)
+        self.assertFalse(scroll._same_scroller(pane, widget))
+
+
 if __name__ == "__main__":
     unittest.main()
