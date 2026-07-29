@@ -222,12 +222,18 @@ class Daemon:
                                    require_text=False)
         except Exception:
             blocks = []
+        # A link and the text block inside it are the same target seen twice,
+        # and they are not the same rectangle, so a geometry key alone left
+        # both -- a label with a second label nested inside it.
         occupied = {(e.x // 6, e.y // 6, e.w // 6, e.h // 6) for e in found}
         for block in blocks:
             key = (block.x // 6, block.y // 6, block.w // 6, block.h // 6)
-            if key not in occupied:
-                occupied.add(key)
-                found.append(block)
+            if key in occupied:
+                continue
+            if any(_overlaps(block, e) for e in found):
+                continue
+            occupied.add(key)
+            found.append(block)
 
         self._log(f"search over {len(found)} elements "
                   f"({len(blocks)} text blocks)")
@@ -391,6 +397,17 @@ def _open_log():
         return open(path, "a", encoding="utf-8")
     except Exception:
         return None
+
+
+def _overlaps(a, b):
+    """True if two targets cover essentially the same place."""
+    left, right = max(a.x, b.x), min(a.x + a.w, b.x + b.w)
+    top, bottom = max(a.y, b.y), min(a.y + a.h, b.y + b.h)
+    if right <= left or bottom <= top:
+        return False
+    shared = (right - left) * (bottom - top)
+    smaller = min(a.w * a.h, b.w * b.h)
+    return bool(smaller) and shared / smaller >= config.OVERLAP_SAME
 
 
 def _native_caret_key():

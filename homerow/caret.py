@@ -336,6 +336,18 @@ class CaretSession:
                 return True
             self._close()
             return True
+        # Digits jump straight to a block. Tab was the only way to reach one,
+        # which on a page with dozens of blocks meant pressing it dozens of
+        # times. Digits are free here: the motions are all letters.
+        point = Gdk.keyval_to_unicode(key)
+        char = chr(point) if point else ""
+        if char and char in config.CARET_LABELS and len(self.blocks) > 1:
+            index = config.CARET_LABELS.index(char)
+            if index < len(self.blocks):
+                self.index = index
+                self._use_block(self.blocks[index])
+            return True
+
         if key in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) \
                 and len(self.blocks) > 1:
             step = -1 if key == Gdk.KEY_ISO_Left_Tab else 1
@@ -483,11 +495,34 @@ class CaretSession:
                 cr.rectangle(ext.x, ext.y, 2, ext.height)
                 cr.fill()
 
+        # Number the other blocks so one keypress reaches any of them.
+        if len(self.blocks) > 1 and self.anchor is None:
+            cr.select_font_face(config.FONT_FAMILY)
+            cr.set_font_size(config.FONT_SIZE)
+            for number, block in enumerate(
+                    self.blocks[:len(config.CARET_LABELS)]):
+                if number == self.index:
+                    continue
+                label = config.CARET_LABELS[number]
+                ext = cr.text_extents(label)
+                w = ext.width + config.PAD_X * 2
+                h = config.FONT_SIZE + config.PAD_Y * 2
+                x = min(max(block.x - w - config.HINT_GAP, 0),
+                        max(self.width - w, 0))
+                y = min(max(block.y, 0), max(self.height - h, 0))
+                cr.set_source_rgba(*self.colors["chip_matched"])
+                cr.rectangle(x, y, w, h)
+                cr.fill()
+                cr.set_source_rgba(*self.colors["ink"])
+                cr.move_to(x + config.PAD_X, y + h - config.PAD_Y - 2)
+                cr.show_text(label)
+
         mode = "VISUAL" if self.anchor is not None else "CARET"
         legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
                   f"gg/G doc   v select   y yank   esc")
         if len(self.blocks) > 1:
-            legend = f"[{self.index + 1}/{len(self.blocks)} tab]   " + legend
+            legend = (f"[{self.index + 1}/{len(self.blocks)} "
+                      f"1-9 jump, tab next]   " + legend)
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
         text_ext = cr.text_extents(legend)

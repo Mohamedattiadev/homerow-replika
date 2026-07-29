@@ -203,5 +203,70 @@ class ModuleNamesResolve(unittest.TestCase):
         self.assertEqual(sorted(set(offenders)), [])
 
 
+class LayoutContainerRule(unittest.TestCase):
+    """elements._encloses feeds the rule that drops wrapper elements.
+
+    A page wrapper enclosing the whole content area was being hinted, so its
+    chip landed in whatever empty corner the wrapper started at -- one of the
+    "hints in empty space" cases.
+    """
+
+    def box(self, x, y, w, h):
+        from homerow.elements import Element
+        return Element(None, x, y, w, h)
+
+    def test_wrapper_encloses_its_children(self):
+        from homerow import elements
+        outer = self.box(200, 100, 950, 580)
+        inner = self.box(220, 120, 40, 40)
+        self.assertTrue(elements._encloses(outer, inner))
+        self.assertFalse(elements._encloses(inner, outer))
+
+    def test_equal_boxes_do_not_enclose_each_other(self):
+        from homerow import elements
+        a, b = self.box(0, 0, 100, 100), self.box(0, 0, 100, 100)
+        self.assertFalse(elements._encloses(a, b))
+
+    def test_overlapping_but_not_containing_is_not_enclosing(self):
+        from homerow import elements
+        a, b = self.box(0, 0, 100, 100), self.box(50, 50, 100, 100)
+        self.assertFalse(elements._encloses(a, b))
+
+    def test_threshold_keeps_a_button_holding_one_icon(self):
+        # A button wrapping a single icon must survive; only boxes holding
+        # several targets are layout.
+        self.assertGreaterEqual(config.CONTAINER_MIN_CHILDREN, 2)
+
+
+class SearchOverlapRule(unittest.TestCase):
+    """service._overlaps stops a link and its own text both being numbered."""
+
+    def box(self, x, y, w, h):
+        from homerow.elements import Element
+        return Element(None, x, y, w, h)
+
+    def setUp(self):
+        from homerow import service
+        self.overlaps = service._overlaps
+
+    def test_text_inside_its_link_is_the_same_target(self):
+        link = self.box(100, 100, 200, 20)
+        text = self.box(102, 102, 190, 16)
+        self.assertTrue(self.overlaps(text, link))
+
+    def test_separate_targets_are_not(self):
+        self.assertFalse(self.overlaps(self.box(0, 0, 50, 20),
+                                       self.box(300, 300, 50, 20)))
+
+    def test_touching_edges_are_not(self):
+        self.assertFalse(self.overlaps(self.box(0, 0, 50, 20),
+                                       self.box(50, 0, 50, 20)))
+
+    def test_small_target_inside_a_huge_one_still_counts_as_same(self):
+        # The smaller is entirely covered, so numbering both is a duplicate.
+        self.assertTrue(self.overlaps(self.box(10, 10, 10, 10),
+                                      self.box(0, 0, 500, 500)))
+
+
 if __name__ == "__main__":
     unittest.main()

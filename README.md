@@ -335,9 +335,11 @@ reporting SHOWING, VISIBLE and the *same rectangle* as the foreground tab. A
 five-tab qutebrowser window therefore offered five pages of hints stacked on
 one viewport — 135 where 14 were real, most of them floating over blank space.
 
-No state distinguishes the foreground document; they are identical. The window
-title does, because the WM title is the active tab's title, so the document
-whose name appears in it wins. Chrome outside the document rectangle — tab bar,
+Chromium marks the foreground document `FOCUSED`, which is the browser's own
+answer and is preferred. Qt WebEngine marks none of them, so the window title
+is the fallback — it is the active tab's title. The title alone was not enough:
+it goes stale when a tab closes, and once matched a background document, so
+hints were drawn for a page that was not on screen. Chrome outside the document rectangle — tab bar,
 url bar, status line — is still taken from the whole application, so nothing
 around the page is lost.
 

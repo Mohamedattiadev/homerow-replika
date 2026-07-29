@@ -172,8 +172,6 @@ def active_document(app, window_title):
     over blank space. No state distinguishes the foreground tab; the window
     title does, because the WM title is the active tab's title.
     """
-    if not window_title:
-        return None
     collection = app.get_collection_iface()
     if collection is None:
         return None
@@ -190,7 +188,25 @@ def active_document(app, window_title):
     if len(docs) < 2:
         return None          # single document: nothing to disambiguate
 
-    title = window_title.lower()
+    # Chromium marks the foreground document FOCUSED. Prefer that: it is the
+    # browser's own answer, and unlike the window title it cannot go stale
+    # when a tab closes -- a stale title once matched a background document
+    # and hinted the wrong page entirely.
+    focused = []
+    for doc in docs:
+        try:
+            if doc.get_state_set().contains(Atspi.StateType.FOCUSED):
+                focused.append(doc)
+        except Exception:
+            continue
+    if len(focused) == 1:
+        return focused[0]
+
+    # Qt WebEngine marks none of them, so fall back to the window title, which
+    # is the active tab's title.
+    title = (window_title or "").lower()
+    if not title:
+        return None
     best, best_len = None, 0
     for doc in docs:
         try:
@@ -342,6 +358,13 @@ def _extents(matches, win_x, win_y):
     return repaired
 
 
+def _encloses(outer, inner):
+    return (outer.x <= inner.x and outer.y <= inner.y
+            and outer.x + outer.w >= inner.x + inner.w
+            and outer.y + outer.h >= inner.y + inner.h
+            and (outer.w * outer.h) > (inner.w * inner.h))
+
+
 def _inside(ext, rect):
     if rect is None:
         return False
@@ -446,5 +469,16 @@ def collect(screen_w, screen_h):
         elements.append(
             Element(acc, ext.x, ext.y, ext.width, ext.height)
         )
+
+    # Drop layout containers. An element enclosing several other hintable
+    # elements is the box holding them, not a target -- its chip lands in
+    # whatever empty corner the box happens to start at. Same rule scroll uses
+    # for regions.
+    elements = [
+        element for element in elements
+        if sum(1 for other in elements
+               if other is not element and _encloses(element, other))
+        < config.CONTAINER_MIN_CHILDREN
+    ]
 
     return elements

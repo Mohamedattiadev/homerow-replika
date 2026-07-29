@@ -124,6 +124,10 @@ SEARCH_MIN_CHARS = 2
 # the screen, and outlining seventy things is noise, not help.
 SEARCH_MIN_QUERY = 2
 
+# Two search targets sharing this much of the smaller one are one thing: a
+# link and the text inside it would otherwise both be numbered.
+OVERLAP_SAME = 0.7
+
 # Only outline what you could actually reach. Drawing every match buried the
 # labelled ones among dozens of identical boxes.
 SEARCH_MAX_OUTLINES = 12
@@ -131,6 +135,10 @@ SEARCH_MAX_OUTLINES = 12
 # --- caret mode ------------------------------------------------------------
 # Text elements shorter than this are labels and chrome, not prose worth
 # putting a cursor in.
+# Digits jump between text blocks. The motions are all letters, so digits are
+# unambiguous here -- as in search, and for the same reason.
+CARET_LABELS = "123456789"
+
 CARET_MIN_CHARS = 12
 # Roles that carry text. The Text interface is not a role and cannot be
 # queried for directly, so these nominate candidates and the character count
@@ -204,6 +212,10 @@ SCROLL_FALLBACK_TO_WINDOW = True
 
 # Nested elements of a similar size are treated as one target. Widen the band
 # to collapse more aggressively; narrow it if distinct controls get swallowed.
+# An element enclosing at least this many other hintable elements is treated
+# as a layout container and not offered.
+CONTAINER_MIN_CHILDREN = 3
+
 NEST_MIN_RATIO = 0.4
 NEST_MAX_RATIO = 2.5
 
