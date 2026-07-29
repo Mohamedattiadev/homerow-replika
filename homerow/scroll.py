@@ -409,8 +409,10 @@ def _overflows(region):
 
 
 def _wheel(x, y, button, times):
+    # sync=False: see x11.click's docstring.
     if x11.available() and x11.click(button, x, y, times=times,
-                                     delay_ms=config.SCROLL_CLICK_DELAY):
+                                     delay_ms=config.SCROLL_CLICK_DELAY,
+                                     sync=False):
         return
     argv = [
         "xdotool", "mousemove", "--sync", str(x), str(y),
@@ -421,6 +423,44 @@ def _wheel(x, y, button, times):
         subprocess.run(argv, timeout=8, check=False)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def _wheel_paced(x, y, button, times):
+    """Same as _wheel(), but paced by our own timer instead of XTest's.
+
+    _wheel() asks the X server to sleep `delay_ms` between each of the
+    `times` events it queues -- fine for the couple of clicks a scroll
+    probe sends, but a gg/G edge jump asks for SCROLL_EDGE_CLICKS (400) of
+    them, and that per-event server-side sleep blocks the server's *entire*
+    synthetic-input queue while it works through them, not just this
+    request. Confirmed live: the very next synthetic input sent by anyone
+    -- including homerow's own next keypress, or the Escape that closes this
+    session -- gets stuck behind the batch and does not actually fire until
+    it finishes draining, seconds later. That is the "feels laggy, then
+    suddenly catches up" symptom, not a rendering problem.
+
+    Sending each click with delay_ms=0 and pacing the *next* one ourselves
+    via a GLib timer keeps the server's queue empty between clicks, so nothing
+    else ever has to wait behind it. Used for the interactive path (_apply);
+    the probes in verify()/_scrolls() still use _wheel() -- they explicitly
+    sleep and re-check afterward, so the extra few milliseconds of being
+    server-paced for just two clicks was never the problem there.
+    """
+    if not x11.available():
+        _wheel(x, y, button, times)
+        return
+    x11.warp_pointer(x, y)
+    remaining = [times]
+
+    def tick():
+        if remaining[0] <= 0:
+            return False
+        x11.click(button, times=1, delay_ms=0, sync=False)
+        remaining[0] -= 1
+        return remaining[0] > 0
+
+    if tick() and remaining[0] > 0:
+        GLib.timeout_add(config.SCROLL_CLICK_DELAY, tick)
 
 
 def best(regions):
@@ -583,6 +623,12 @@ class ScrollSession:
     def _on_key(self, _widget, event):
         self._touch()
         key = normalize_key(event.keyval, event.state)
+        if config.DEBUG_KEYS:
+            x11.debug_log(
+                f"[scroll] key={Gdk.keyval_name(key)!r} "
+                f"region=({self.region.x},{self.region.y},"
+                f"{self.region.w},{self.region.h}) "
+                f"pointer={x11.pointer_position()}")
 
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()
@@ -636,14 +682,44 @@ class ScrollSession:
     def _apply(self, button, amount):
         repeat = int(self.count) if self.count else 1
         self.count = ""
-        x, y = self.region.center
+        x, y = self._wheel_target()
         # An edge jump is already "all the way", so a count would only make it
         # slower for no further movement.
         clicks = self.AMOUNTS[amount]
         if amount != "edge":
             clicks *= max(1, min(repeat, config.SCROLL_MAX_COUNT))
-        _wheel(x, y, button, clicks)
+        if config.DEBUG_KEYS:
+            started = time.perf_counter()
+            _wheel_paced(x, y, button, clicks)
+            elapsed = (time.perf_counter() - started) * 1000
+            x11.debug_log(
+                f"[scroll] wheel button={button} clicks={clicks} "
+                f"target=({x},{y}) dispatch={elapsed:.2f}ms")
+        else:
+            _wheel_paced(x, y, button, clicks)
         self.window.queue_draw()
+
+    def _wheel_target(self):
+        """Where to land the synthetic wheel event.
+
+        Always warping to the region's center, every keystroke, visibly
+        yanked the real cursor there even though scroll mode's own default
+        (scroll.best()) is to enter on the region already under the pointer
+        -- the common case needed no warp at all, and got one every single
+        j/k anyway. Preferring the pointer's current position when it is
+        already inside the region avoids that; the center is still the
+        fallback, since it is the one point guaranteed to land inside the
+        region when the pointer has drifted outside it (Tab switched
+        regions, or something else nudged the pointer mid-session).
+        """
+        region = self.region
+        position = _pointer_position()
+        if position:
+            px, py = position
+            if region.x <= px < region.x + region.w \
+                    and region.y <= py < region.y + region.h:
+                return px, py
+        return region.center
 
     def _on_idle(self):
         """Close after a spell with no keys: a stuck grab locks the desktop."""
@@ -763,6 +839,14 @@ def _rounded(cr, x, y, w, h, radius):
 
 
 def _pointer_position():
+    # In-process ctypes first, same as click.py -- this runs on entering and
+    # leaving every scroll session, so a ~10-30ms xdotool spawn here was
+    # visible as a stutter each time, not just a latency number. xdotool is
+    # the fallback for a system without libX11 bound, not the normal path.
+    if x11.available():
+        position = x11.pointer_position()
+        if position:
+            return position
     try:
         out = subprocess.run(
             ["xdotool", "getmouselocation", "--shell"],
@@ -780,6 +864,8 @@ def _pointer_position():
 
 
 def _restore_pointer(origin):
+    if x11.available() and x11.warp_pointer(*origin):
+        return
     try:
         subprocess.run(
             ["xdotool", "mousemove", "--sync", str(origin[0]), str(origin[1])],
