@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Show hints over the focused window, then click whatever label you type.
+"""Standalone hint pass: show hints, then click whatever label you type.
 
-    homerow-hint            hint and click
-    homerow-hint --debug    also print timings and what was found
-    homerow-hint --list     print elements without drawing anything
+Pays the ~435ms interpreter/PyGObject startup cost itself, unlike
+homerow-hint (the daemon client) which only pays it once. Used directly for
+--list/--debug, and as what homerow-hint execs into for those same flags.
+
+    homerow-cli            hint and click
+    homerow-cli --debug    also print timings and what was found
+    homerow-cli --list     print elements without drawing anything
 """
 
 import os
