@@ -23,7 +23,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import screen_size, set_identity  # noqa: E402
+from .overlay import normalize_key, screen_size, set_identity  # noqa: E402
 
 WORD = Atspi.TextGranularity.WORD
 LINE = Atspi.TextGranularity.LINE
@@ -352,7 +352,7 @@ class CaretSession:
 
     def _on_key(self, _widget, event):
         self._touch()
-        key = event.keyval
+        key = normalize_key(event.keyval, event.state)
         moved = True
 
         if key == Gdk.KEY_Escape:
@@ -417,6 +417,14 @@ class CaretSession:
         elif key == Gdk.KEY_dollar:
             self.offset = max(self._line_bounds(self.offset)[1] - 1, 0)
         elif key == Gdk.KEY_G:
+            self.offset = max(self.length - 1, 0)
+        # Caps Lock inverts every letter's case, and there is no way to tell
+        # a genuine `G` from an accidentally-capitalised `g` once it is on --
+        # see normalize_key. Home/End are not letters, so they reach the same
+        # ends regardless of Caps Lock.
+        elif key == Gdk.KEY_Home:
+            self.offset = 0
+        elif key == Gdk.KEY_End:
             self.offset = max(self.length - 1, 0)
         elif key != Gdk.KEY_g:
             moved = False

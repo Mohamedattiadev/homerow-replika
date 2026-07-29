@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import screen_size, set_identity  # noqa: E402
+from .overlay import normalize_key, screen_size, set_identity  # noqa: E402
 
 WHEEL_UP, WHEEL_DOWN = 4, 5
 WHEEL_LEFT, WHEEL_RIGHT = 6, 7
@@ -471,6 +471,16 @@ class ScrollSession:
         Gdk.KEY_Page_Down: (WHEEL_DOWN, "page"),
         Gdk.KEY_Page_Up: (WHEEL_UP, "page"),
         Gdk.KEY_G: (WHEEL_DOWN, "edge"),
+        # Caps Lock (bound as the launch modifier -- see README) inverts case
+        # for every letter, and there is no way to tell a genuine `G` from an
+        # accidentally-capitalised `g` at the X11 protocol level once it is
+        # on: both arrive as the same keysym with the same modifier state.
+        # normalize_key resolves that ambiguity in favour of the far more
+        # common case (plain letters), which makes `G` alone unreachable
+        # while Caps Lock is stuck on. Home/End are not letters, so Caps Lock
+        # cannot touch them -- they reach the same edges regardless.
+        Gdk.KEY_Home: (WHEEL_UP, "edge"),
+        Gdk.KEY_End: (WHEEL_DOWN, "edge"),
     }
     AMOUNTS = {
         "line": config.SCROLL_LINE_CLICKS,
@@ -572,7 +582,7 @@ class ScrollSession:
 
     def _on_key(self, _widget, event):
         self._touch()
-        key = event.keyval
+        key = normalize_key(event.keyval, event.state)
 
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()

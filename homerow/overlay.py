@@ -24,6 +24,24 @@ CANCEL_KEYS = {Gdk.KEY_Escape}
 BUTTON_PREFIXES = {",": 3, ".": 2}  # right, middle
 
 
+def normalize_key(key, state):
+    """Recover the intended letter from an accidental Caps Lock.
+
+    Caps Lock is bound as the launch modifier here (see README), which makes
+    it easy to nudge on by accident -- and once it is on, every plain-letter
+    binding (scroll's j/k/h/l/d/u, caret's h/j/k/l/w/b/e/v/y) silently stops
+    matching, because GDK now hands over the uppercase keysym instead of the
+    one actually bound. Only apply this when Shift is not also held: Shift
+    together with Caps Lock already double-negates back to the lowercase
+    keysym, so a deliberate Shift+letter -- the vim gg-vs-G distinction --
+    still comes through unchanged in the common case (Caps Lock off).
+    """
+    if (state & Gdk.ModifierType.LOCK_MASK
+            and not state & Gdk.ModifierType.SHIFT_MASK):
+        return Gdk.keyval_to_lower(key)
+    return key
+
+
 def set_identity():
     """Give our windows a stable WM_CLASS of `homerow`.
 
