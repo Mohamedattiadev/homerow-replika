@@ -402,16 +402,26 @@ class SearchPromptCleanup(unittest.TestCase):
         prompt.on_done = lambda: done.append(True)
         return prompt, picked, done
 
+    def _close(self, prompt):
+        # _close() ends with Gdk.Display.get_default().sync() unconditionally
+        # -- fine on a real desktop (this file's usual dev environment), but
+        # CI runs headless with no display at all, where get_default()
+        # returns None. Patched here rather than skipped so the test still
+        # runs in CI instead of being silently absent from it.
+        from homerow import search
+        with unittest.mock.patch.object(search.Gdk.Display, "get_default"):
+            prompt._close()
+
     def test_successful_pick_still_calls_on_done(self):
         hit = Fake(name="result")
         prompt, picked, done = self.make([hit], submitted=True)
-        prompt._close()
+        self._close(prompt)
         self.assertEqual(picked, [hit])
         self.assertEqual(done, [True])
 
     def test_cancel_calls_on_done_without_picking(self):
         prompt, picked, done = self.make([Fake(name="result")], submitted=False)
-        prompt._close()
+        self._close(prompt)
         self.assertEqual(picked, [])
         self.assertEqual(done, [True])
 
