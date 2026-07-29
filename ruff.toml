@@ -1,0 +1,11 @@
+target-version = "py314"
+line-length = 88
+
+[lint]
+# Pyflakes + pycodestyle only. The broader rulesets (bugbear, bandit's
+# blind-except/try-except-pass checks, etc.) fire on this codebase's
+# deliberate broad `except Exception` guards around per-call AT-SPI D-Bus
+# round trips -- see the "Notes from building this" section of the README.
+# Those are load-bearing, not oversights, so the rules that flag them stay
+# off rather than farmed out to a growing pile of inline `# noqa`s.
+select = ["E", "F", "W"]

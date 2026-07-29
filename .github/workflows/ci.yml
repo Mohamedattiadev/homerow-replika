@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No actions/setup-python here on purpose: PyGObject and the AT-SPI
+      # bindings tests import (homerow/elements.py, homerow/search.py, ...)
+      # come from apt, not pip, and only line up with the distro's own
+      # python3 -- a venv'd interpreter would not see them.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-atspi-2.0 \
+            python3-pip
+
+      - name: Install ruff
+        run: pip install --user ruff
+
+      - name: Lint
+        run: ~/.local/bin/ruff check homerow/ tests/
+
+      - name: Test
+        run: python3 -m unittest discover -s tests -v
