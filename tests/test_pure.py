@@ -267,5 +267,50 @@ class ScrollBest(unittest.TestCase):
             self.assertIs(scroll.best([content, sidebar]), content)
 
 
+class SearchPromptCleanup(unittest.TestCase):
+    """SearchPrompt._close must tell the daemon the session is over on every
+    path, not only when nothing was picked.
+
+    Regression: on a successful pick, on_done() -- which clears the daemon's
+    overlay reference and its mode file -- never ran. The next hotkey then
+    saw a "still open" overlay and tried to dismiss it, which replayed
+    on_pick a second time: a successful search click silently fired twice.
+
+    Built via object.__new__ rather than SearchPrompt(...) so this never
+    constructs a real GTK window or touches the display.
+    """
+
+    class StubWindow:
+        def destroy(self):
+            pass
+
+    def make(self, hits, submitted):
+        from homerow import search
+        prompt = object.__new__(search.SearchPrompt)
+        prompt.window = self.StubWindow()
+        prompt._grabbed = False
+        prompt._idle = None
+        prompt.hits = hits
+        prompt.current = 0
+        prompt.submitted = submitted
+        picked, done = [], []
+        prompt.on_pick = picked.append
+        prompt.on_done = lambda: done.append(True)
+        return prompt, picked, done
+
+    def test_successful_pick_still_calls_on_done(self):
+        hit = Fake(name="result")
+        prompt, picked, done = self.make([hit], submitted=True)
+        prompt._close()
+        self.assertEqual(picked, [hit])
+        self.assertEqual(done, [True])
+
+    def test_cancel_calls_on_done_without_picking(self):
+        prompt, picked, done = self.make([Fake(name="result")], submitted=False)
+        prompt._close()
+        self.assertEqual(picked, [])
+        self.assertEqual(done, [True])
+
+
 if __name__ == "__main__":
     unittest.main()
