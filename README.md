@@ -90,10 +90,13 @@ A real text cursor driven by vim motions, over AT-SPI's Text interface.
 | `y` | yank the selection (or the word under the cursor) |
 | `yy` | yank the current line |
 | `1`–`9` / `Tab` | jump between text blocks |
+| `/` | reopen caret search (see below) without leaving caret mode |
 | `Esc` | leave |
 
 Yanking stays in caret mode afterward, same as vim — it doesn't exit, so `yy`
-can be followed by more motion or another yank.
+can be followed by more motion or another yank. `/` works the same way: land
+on a word via caret search, select or yank something, then `/` again to find
+the next thing — no need to back out to Esc and press the hotkey over again.
 
 In apps with their own vim caret mode — qutebrowser, Firefox — it enters
 *theirs* instead, and says so.
