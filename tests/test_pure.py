@@ -416,5 +416,91 @@ class SearchPromptCleanup(unittest.TestCase):
         self.assertEqual(done, [True])
 
 
+class CaretVisualAndYank(unittest.TestCase):
+    """CaretSession's v/V (visual/visual-line) and y/yy (yank/yank-line).
+
+    Regression: _yank() used to call self._close() immediately after
+    copying to the clipboard, so a real "yy" was impossible -- the session
+    would already be destroyed after the first y, before a second keystroke
+    could ever arrive. Yanking now just yanks and stays open, matching vim.
+    """
+
+    LINES = ["Content line 0", "Content line 1", "Content line 2"]
+    TEXT = "\n".join(LINES) + "\n"
+
+    def session(self):
+        from homerow import caret
+        instance = object.__new__(caret.CaretSession)
+        instance.text = self.TEXT
+        instance.length = len(self.TEXT)
+        instance.offset = 0
+        instance.anchor = None
+        instance.linewise = False
+        instance.pending_y = False
+        instance.pending_g = False
+        instance.iface = None
+        instance.window = unittest.mock.Mock()
+
+        starts = [0]
+        for i, ch in enumerate(self.TEXT):
+            if ch == "\n":
+                starts.append(i + 1)
+
+        def line_bounds(offset):
+            start = max(s for s in starts if s <= offset)
+            later = [s - 1 for s in starts if s > offset]
+            end = min(later) if later else len(self.TEXT)
+            return start, end
+
+        instance._line_bounds = line_bounds
+        return instance
+
+    def test_charwise_selection_spans_just_the_marked_range(self):
+        instance = self.session()
+        instance.anchor, instance.offset = 8, 11
+        self.assertEqual(instance._selection(), (8, 12))
+
+    def test_linewise_selection_spans_whole_lines_regardless_of_column(self):
+        instance = self.session()
+        instance.anchor = 8                                  # mid line 0
+        instance.offset = len(self.LINES[0]) + 1 + 5         # mid line 1
+        instance.linewise = True
+        start, end = instance._selection()
+        self.assertEqual(
+            instance.text[start:end], self.LINES[0] + "\n" + self.LINES[1] + "\n")
+
+    def test_yank_copies_and_stays_open(self):
+        from homerow import caret
+        instance = self.session()
+        instance.anchor, instance.offset = 8, 11
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value="line"):
+            instance._yank()
+        set_clip.assert_called_once_with("line")
+        self.assertIsNone(instance.anchor)          # visual mode exited
+        self.assertFalse(instance.linewise)
+
+    def test_yy_yanks_the_current_line(self):
+        from homerow import caret
+        instance = self.session()
+        instance.offset = 5  # somewhere inside line 0
+        expected = self.LINES[0] + "\n"
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value=expected):
+            instance._yank_line()
+        set_clip.assert_called_once_with(expected)
+
+    def test_empty_yank_does_not_touch_the_clipboard(self):
+        # Guards the old sentinel-clipboard bug: an empty span must not
+        # overwrite whatever the user already had copied.
+        from homerow import caret
+        instance = self.session()
+        instance.anchor, instance.offset = 5, 5
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value=""):
+            instance._yank()
+        set_clip.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

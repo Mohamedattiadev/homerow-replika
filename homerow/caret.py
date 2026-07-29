@@ -197,7 +197,9 @@ class CaretSession:
             self.index = 0
         self.offset = 0
         self.anchor = None          # set when visual mode is on
+        self.linewise = False       # True for V (visual line), False for v
         self.pending_g = False
+        self.pending_y = False
 
         set_identity()
         self.colors = theme.palette()
@@ -361,6 +363,7 @@ class CaretSession:
         if key == Gdk.KEY_Escape:
             if self.anchor is not None:
                 self.anchor = None
+                self.linewise = False
                 self.window.queue_draw()
                 return True
             self._close()
@@ -385,13 +388,41 @@ class CaretSession:
             return True
 
         if key == Gdk.KEY_v:
-            self.anchor = None if self.anchor is not None else self.offset
+            self.pending_g = self.pending_y = False
+            if self.anchor is not None and not self.linewise:
+                self.anchor = None
+            else:
+                self.anchor, self.linewise = self.offset, False
+            self.window.queue_draw()
+            return True
+        if key == Gdk.KEY_V:
+            self.pending_g = self.pending_y = False
+            if self.anchor is not None and self.linewise:
+                self.anchor, self.linewise = None, False
+            else:
+                self.anchor, self.linewise = self.offset, True
             self.window.queue_draw()
             return True
         if key == Gdk.KEY_y:
-            self._yank()
+            self.pending_g = False
+            if self.anchor is not None:
+                # Visual mode: y always yanks the selection immediately,
+                # same as vim -- there is no motion left to wait for.
+                self.pending_y = False
+                self._yank()
+                return True
+            # Normal mode: y is a pending operator, same as real vim -- a
+            # lone y is not itself a complete command. Only yy (mirroring
+            # gg) is supported; any other key cancels it, below.
+            if self.pending_y:
+                self.pending_y = False
+                self._yank_line()
+            else:
+                self.pending_y = True
+                self.window.queue_draw()
             return True
         if key == Gdk.KEY_g:
+            self.pending_y = False
             if self.pending_g:
                 self.pending_g = False
                 self.offset = 0
@@ -399,6 +430,9 @@ class CaretSession:
                 self.pending_g = True
                 return True
         else:
+            if self.pending_y:
+                self.pending_y = False
+                self.window.queue_draw()
             self.pending_g = False
 
         if key in (Gdk.KEY_l, Gdk.KEY_Right):
@@ -445,6 +479,7 @@ class CaretSession:
         self.text = _text_of(self.iface, 0, self.length)
         self.offset = 0
         self.anchor = None
+        self.linewise = False
         self._sync_caret()
         self.window.queue_draw()
 
@@ -459,24 +494,53 @@ class CaretSession:
         if self.anchor is None:
             return None
         start, end = sorted((self.anchor, self.offset))
+        if self.linewise:
+            start = self._line_bounds(start)[0]
+            end = self._line_bounds(end)[1]
         return start, min(end + 1, self.length)
 
+    def _set_clipboard(self, text):
+        """Best-effort clipboard write, falling back to xclip if GTK raises.
+
+        Never let an exception here escape uncaught: every caller runs from
+        the key handler, and a raised exception there would abort mid-motion
+        without ever reaching the redraw/state cleanup that follows it.
+        """
+        try:
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(text, -1)
+            clipboard.store()
+        except Exception:
+            _clipboard_fallback(text)
+
     def _yank(self):
+        """Yank the selection, or the word under the cursor if none.
+
+        Matches vim: yanking does not exit caret mode -- you stay put, free
+        to keep navigating or yank again. (This used to close the session
+        immediately after one yank, which made a real yy -- yank, and still
+        be there to yank again -- impossible, since the first y would have
+        already torn the session down before a second keystroke arrived.)
+        """
         span = self._selection()
         if span is None:
             span = self._word_bounds(self.offset)
         text = _text_of(self.iface, *span)
         if text:
-            # An exception here must not skip _close(): it releases the
-            # exclusive keyboard grab, and a session that never reaches that
-            # freezes every hotkey on the desktop until the idle timeout.
-            try:
-                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-                clipboard.set_text(text, -1)
-                clipboard.store()
-            except Exception:
-                _clipboard_fallback(text)
-        self._close()
+            self._set_clipboard(text)
+        self.anchor = None
+        self.linewise = False
+        self.window.queue_draw()
+
+    def _yank_line(self):
+        """yy: yank the current line, cursor-position selection or not."""
+        start, end = self._line_bounds(self.offset)
+        text = _text_of(self.iface, start, min(end + 1, self.length))
+        if text:
+            self._set_clipboard(text)
+        self.anchor = None
+        self.linewise = False
+        self.window.queue_draw()
 
     def _close(self):
         if getattr(self, "_idle", None) is not None:
@@ -564,9 +628,14 @@ class CaretSession:
                 cr.move_to(x + config.PAD_X, y + h - config.PAD_Y - 2)
                 cr.show_text(label)
 
-        mode = "VISUAL" if self.anchor is not None else "CARET"
+        if self.anchor is not None:
+            mode = "VISUAL LINE" if self.linewise else "VISUAL"
+        else:
+            mode = "CARET"
         legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
-                  f"gg/G doc   v select   y yank   esc")
+                  f"gg/G doc   v/V select   y yank   yy line   esc")
+        if self.pending_y:
+            legend = "y…   " + legend
         if len(self.blocks) > 1:
             legend = (f"[{self.index + 1}/{len(self.blocks)} "
                       f"1-9 jump, tab next]   " + legend)
