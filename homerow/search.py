@@ -189,6 +189,9 @@ class SearchPrompt:
     def _on_key(self, _widget, event):
         self._touch()
         key = event.keyval
+        if config.DEBUG_KEYS:
+            x11.debug_log(f"[search] key={Gdk.keyval_name(key)!r} "
+                          f"query={self.query!r} hits={len(self.hits)}")
         if key == Gdk.KEY_Escape:
             self._close()
             return True

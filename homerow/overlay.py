@@ -266,9 +266,11 @@ class Overlay:
         key = event.keyval
         if config.DEBUG_KEYS:
             unicode_point = Gdk.keyval_to_unicode(event.keyval)
-            print(f"homerow: key {key} "
-                  f"{chr(unicode_point) if unicode_point else ''!r} "
-                  f"typed={self.typed!r}", flush=True)
+            char = chr(unicode_point) if unicode_point else ""
+            print(f"homerow: key {key} {char!r} typed={self.typed!r}",
+                  flush=True)
+            x11.debug_log(f"[hint] key={char!r} typed={self.typed!r} "
+                          f"pointer={x11.pointer_position()}")
 
         if key in CANCEL_KEYS:
             self._close()

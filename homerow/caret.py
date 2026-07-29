@@ -354,6 +354,9 @@ class CaretSession:
         self._touch()
         key = normalize_key(event.keyval, event.state)
         moved = True
+        if config.DEBUG_KEYS:
+            x11.debug_log(f"[caret] key={Gdk.keyval_name(key)!r} "
+                          f"offset={self.offset} anchor={self.anchor}")
 
         if key == Gdk.KEY_Escape:
             if self.anchor is not None:
