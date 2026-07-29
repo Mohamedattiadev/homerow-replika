@@ -12,7 +12,10 @@ qutebrowser pages have nothing to put a caret into. Native toolkits and
 Chromium do.
 """
 
+import re
 import subprocess
+import sys
+from dataclasses import dataclass
 
 import cairo
 import gi
@@ -23,7 +26,9 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import draw_legend, normalize_key, screen_size, set_identity  # noqa: E402
+from .overlay import (  # noqa: E402
+    draw_legend, normalize_key, place_chip, screen_size, set_identity,
+)
 
 WORD = Atspi.TextGranularity.WORD
 LINE = Atspi.TextGranularity.LINE
@@ -39,6 +44,70 @@ def _text_of(iface, start, end):
         return Atspi.Text.get_text(iface, start, end) or ""
     except Exception:
         return ""
+
+
+@dataclass
+class WordHit:
+    """One word, inside one text block, that matched a caret-search query.
+
+    Mirrors elements.Element's geometry fields so it can go through
+    overlay.place_chip unchanged, but the target is a caret *position*
+    (block + character offset) rather than a clickable accessible.
+    """
+
+    block: object
+    offset: int
+    word: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+    kind = "word"
+
+    @property
+    def center(self):
+        return self.x + self.w // 2, self.y + self.h // 2
+
+
+_WORD_RE = re.compile(r"\S+")
+
+
+def word_hits(block_texts, query, limit=None):
+    """WordHit for every word across `block_texts` containing `query`.
+
+    `block_texts` is a list of (block, text) pairs, read once up front so
+    repeated searches -- one per keystroke, as the query grows -- don't
+    re-read each block's whole text over D-Bus every time; only the
+    matched words' on-screen extents are new round trips per keystroke,
+    and there are far fewer of those than there is text.
+    """
+    if not query:
+        return []
+    needle = query.lower()
+    limit = limit or config.CARET_SEARCH_MAX_HITS
+    hits = []
+    for block, text in block_texts:
+        iface = block.accessible.get_text_iface()
+        if iface is None:
+            continue
+        for match in _WORD_RE.finditer(text):
+            word = match.group(0)
+            if needle not in word.lower():
+                continue
+            start, end = match.start(), match.end()
+            try:
+                ext = Atspi.Text.get_range_extents(
+                    iface, start, end, Atspi.CoordType.SCREEN)
+            except Exception:
+                continue
+            if ext.width <= 0 or ext.height <= 0:
+                continue
+            hits.append(WordHit(
+                block, start, word, ext.x, ext.y, ext.width, ext.height))
+            if len(hits) >= limit:
+                return hits
+    return hits
 
 
 def collect(screen_w, screen_h, min_chars=None, require_text=True):
@@ -640,6 +709,267 @@ class CaretSession:
             legend = (f"[{self.index + 1}/{len(self.blocks)} "
                       f"1-9 jump, tab next]   " + legend)
         draw_legend(cr, legend, self.width, self.height, self.colors)
+        return True
+
+
+class CaretSearchPrompt:
+    """Type to find a word or link, pick it, and land a caret there.
+
+    Modelled closely on search.SearchPrompt's type-then-pick flow, but the
+    target is a caret position inside a block of text rather than a click --
+    typing "canvas" and picking a hit opens caret mode with the cursor
+    already sitting on that exact word, instead of Tab-cycling through whole
+    blocks by hand to find it.
+    """
+
+    def __init__(self, blocks, on_pick, on_done=None):
+        self.blocks = blocks
+        # Each block's text is read once up front: word_hits() runs again on
+        # every keystroke as the query narrows, and re-reading the same text
+        # over D-Bus that often is exactly the per-keystroke round trip that
+        # made search mode's own indexer need to be a background job.
+        self.block_texts = []
+        for block in blocks:
+            iface = block.accessible.get_text_iface()
+            if iface is None:
+                continue
+            length = iface.get_character_count()
+            self.block_texts.append((block, _text_of(iface, 0, length)))
+
+        self.on_pick = on_pick
+        self.on_done = on_done or (lambda: None)
+        self.query = ""
+        self.hits = []
+        self.current = 0
+        self.submitted = False
+
+        set_identity()
+        self.colors = theme.palette()
+        self.width, self.height = screen_size()
+
+        self.window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        self.window.set_type_hint(Gdk.WindowTypeHint.DOCK)
+        self.window.set_app_paintable(True)
+        self.window.set_decorated(False)
+        self.window.set_keep_above(True)
+        self.window.set_accept_focus(True)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.set_default_size(self.width, self.height)
+
+        screen = Gdk.Screen.get_default()
+        visual = screen.get_rgba_visual()
+        self.translucent = visual is not None
+        if self.translucent:
+            self.window.set_visual(visual)
+
+        self.window.add_events(
+            Gdk.EventMask.KEY_PRESS_MASK
+            | Gdk.EventMask.VISIBILITY_NOTIFY_MASK
+        )
+        self.window.connect("visibility-notify-event", self._on_visibility)
+        self.window.connect("draw", self._on_draw)
+        self.window.connect("key-press-event", self._on_key)
+        self._grabbed = False
+        self._attempts = 0
+
+    def show(self):
+        self.window.show_all()
+        self.window.move(0, 0)
+        self.window.resize(self.width, self.height)
+        self.window.fullscreen()
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            gdk_window.raise_()
+        GLib.idle_add(self._grab)
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
+
+    def dismiss(self):
+        self._close()
+
+    def _on_idle(self):
+        self._idle = None
+        self._close()
+        return False
+
+    def _touch(self):
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
+
+    def _on_visibility(self, _widget, event):
+        if event.state != Gdk.VisibilityState.UNOBSCURED:
+            gdk_window = self.window.get_window()
+            if gdk_window is not None:
+                gdk_window.raise_()
+        return False
+
+    # -- input ------------------------------------------------------------
+
+    def _grab(self):
+        gdk_window = self.window.get_window()
+        if gdk_window is not None:
+            seat = Gdk.Display.get_default().get_default_seat()
+            status = seat.grab(gdk_window, Gdk.SeatCapabilities.KEYBOARD,
+                               False, None, None, None, None)
+            if status == Gdk.GrabStatus.SUCCESS:
+                self._grabbed = True
+                x11.release_modifiers()
+                self.window.present()
+                return False
+        self._attempts += 1
+        if self._attempts > 40:
+            print("homerow: could not grab keyboard", file=sys.stderr)
+            self._close()
+            return False
+        GLib.timeout_add(50, self._grab)
+        return False
+
+    def _on_key(self, _widget, event):
+        self._touch()
+        key = event.keyval
+        if config.DEBUG_KEYS:
+            x11.debug_log(f"[caret-search] key={Gdk.keyval_name(key)!r} "
+                          f"query={self.query!r} hits={len(self.hits)}")
+        if key == Gdk.KEY_Escape:
+            self._close()
+            return True
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if self.hits:
+                self.submitted = True
+                self._close()
+            return True
+        if key in (Gdk.KEY_Tab, Gdk.KEY_Down):
+            if self.hits:
+                self.current = (self.current + 1) % len(self.hits)
+                self.window.queue_draw()
+            return True
+        if key in (Gdk.KEY_ISO_Left_Tab, Gdk.KEY_Up):
+            if self.hits:
+                self.current = (self.current - 1) % len(self.hits)
+                self.window.queue_draw()
+            return True
+        if key == Gdk.KEY_BackSpace:
+            self.query = self.query[:-1]
+            self._refresh()
+            return True
+
+        point = Gdk.keyval_to_unicode(key)
+        char = chr(point) if point else ""
+
+        if char and char in config.CARET_SEARCH_LABELS \
+                and len(self.query) >= config.CARET_SEARCH_MIN_QUERY:
+            index = config.CARET_SEARCH_LABELS.index(char)
+            if index < len(self.hits):
+                self.current = index
+                self.submitted = True
+                self._close()
+            return True
+
+        if char and char.isprintable():
+            self.query += char
+            self._refresh()
+        return True
+
+    def _refresh(self):
+        self.hits = word_hits(self.block_texts, self.query)
+        self.current = 0
+        self.window.queue_draw()
+
+    def _close(self):
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+            self._idle = None
+        if self._grabbed:
+            Gdk.Display.get_default().get_default_seat().ungrab()
+            self._grabbed = False
+            x11.release_modifiers()
+        self.window.destroy()
+        while Gtk.events_pending():
+            Gtk.main_iteration_do(False)
+        Gdk.Display.get_default().sync()
+
+        # Both must run on every path: on_done is what tells the daemon this
+        # session is over (see search.SearchPrompt's own history -- skipping
+        # it after a successful pick once left the daemon's overlay
+        # reference stale, and the next hotkey replayed the pick a second
+        # time).
+        if self.submitted and self.hits:
+            self.on_pick(self.hits[min(self.current, len(self.hits) - 1)])
+        self.on_done()
+
+    # -- drawing ------------------------------------------------------------
+
+    def _draw_labels(self, cr):
+        cr.select_font_face(config.FONT_FAMILY)
+        cr.set_font_size(config.FONT_SIZE)
+        shown = self.hits[:len(config.CARET_SEARCH_LABELS)]
+        element_rects = [(h.x, h.y, h.w, h.h) for h in shown]
+        placed = []
+        for index, hit in enumerate(shown):
+            label = config.CARET_SEARCH_LABELS[index]
+            ext = cr.text_extents(label)
+            w = ext.width + config.PAD_X * 2
+            h = config.FONT_SIZE + config.PAD_Y * 2
+            x, y = place_chip(hit, w, h, self.width, self.height,
+                              index, element_rects, placed)
+            placed.append((x, y, w, h))
+
+            key = "chip" if index == self.current else "chip_matched"
+            cr.set_source_rgba(*self.colors[key])
+            cr.rectangle(x, y, w, h)
+            cr.fill()
+            cr.set_source_rgba(*self.colors["ink"])
+            cr.move_to(x + config.PAD_X, y + h - config.PAD_Y - 2)
+            cr.show_text(label)
+
+    def _on_draw(self, widget, cr):
+        cr.set_operator(1)
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        cr.set_operator(2)
+
+        if config.DIM_BACKGROUND and self.translucent:
+            cr.set_source_rgba(*self.colors["dim"])
+            cr.paint()
+
+        gdk_window = widget.get_window()
+        if gdk_window is not None:
+            _, origin_x, origin_y = gdk_window.get_origin()
+            cr.translate(-origin_x, -origin_y)
+
+        cr.select_font_face(config.FONT_FAMILY)
+        cr.set_font_size(config.FONT_SIZE)
+
+        if len(self.query) >= config.CARET_SEARCH_MIN_QUERY:
+            cr.set_line_width(2)
+            cr.set_source_rgba(*self.colors["chip_matched"])
+            for index, hit in enumerate(self.hits[:config.SEARCH_MAX_OUTLINES]):
+                if index == self.current:
+                    continue
+                cr.rectangle(hit.x, hit.y, hit.w, hit.h)
+            cr.stroke()
+
+            if self.current < len(self.hits):
+                hit = self.hits[self.current]
+                cr.set_source_rgba(*self.colors["chip"])
+                cr.set_line_width(3)
+                cr.rectangle(hit.x - 1, hit.y - 1, hit.w + 2, hit.h + 2)
+                cr.stroke()
+                cr.set_source_rgba(*self.colors["chip"][:3], 0.22)
+                cr.rectangle(hit.x, hit.y, hit.w, hit.h)
+                cr.fill()
+
+            self._draw_labels(cr)
+
+        label = f"caret search: {self.query}_"
+        count = (f"{self.current + 1}/{len(self.hits)}" if self.hits
+                 else f"{len(self.hits)} match"
+                      + ("" if len(self.hits) == 1 else "es"))
+        text = f"{label}    {count}    1-9 pick · tab next · enter jump · esc"
+        draw_legend(cr, text, self.width, self.height, self.colors)
         return True
 
 

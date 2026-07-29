@@ -224,6 +224,16 @@ CARET_ROLES_FALLBACK = [
     "DOCUMENT_FRAME",
 ]
 
+# --- caret search (type to find a word, land the caret there) --------------
+# Stop collecting word matches past this many. Each is a D-Bus round trip for
+# its on-screen extents, paid again on every keystroke as the query narrows.
+CARET_SEARCH_MAX_HITS = 200
+
+# Labels shown beside caret-search matches. Same alphabet as search mode, for
+# the same reason: letters have to stay available for the query.
+CARET_SEARCH_LABELS = SEARCH_LABELS
+CARET_SEARCH_MIN_QUERY = SEARCH_MIN_QUERY
+
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
 # put scroll hints on things that could not scroll. Chromium exposes no

@@ -502,5 +502,82 @@ class CaretVisualAndYank(unittest.TestCase):
         set_clip.assert_not_called()
 
 
+class CaretSearchMatching(unittest.TestCase):
+    """caret.word_hits(): type-to-find matching for caret search.
+
+    Backs the "type a word, pick the labelled hint, land the caret there"
+    flow -- CaretSearchPrompt narrows on every keystroke by calling this,
+    so a wrong match here is a wrong caret position for every user of it.
+    """
+
+    class FakeIface:
+        """Stands in for a real Atspi.Text; get_range_extents is patched at
+        the Atspi.Text class level rather than implemented here, since GI
+        bindings type-check their arguments against the real interface."""
+
+    def block_texts(self, *texts):
+        pairs = []
+        for text in texts:
+            block = Fake(name="")
+            block.accessible = type(
+                "Acc", (), {"get_text_iface": lambda self: self._iface})()
+            block.accessible._iface = self.FakeIface()
+            pairs.append((block, text))
+        return pairs
+
+    def patched(self, hits_fn):
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+
+        class Ext:
+            def __init__(self, x, w):
+                self.x, self.y, self.width, self.height = x, 100, w, 14
+
+        def fake_extents(_iface, start, end, _coord):
+            return Ext(start, end - start)
+
+        return unittest.mock.patch.object(
+            Atspi.Text, "get_range_extents", side_effect=fake_extents)
+
+    def test_matches_are_case_insensitive_substrings(self):
+        from homerow import caret
+        pairs = self.block_texts("the Quick CANVAS jumps over canvas2")
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual([h.word for h in hits], ["CANVAS", "canvas2"])
+
+    def test_empty_query_matches_nothing(self):
+        from homerow import caret
+        pairs = self.block_texts("anything at all")
+        with self.patched(caret.word_hits):
+            self.assertEqual(caret.word_hits(pairs, ""), [])
+
+    def test_matches_span_multiple_blocks_in_order(self):
+        from homerow import caret
+        pairs = self.block_texts("first canvas here", "second canvas there")
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual(len(hits), 2)
+        self.assertIs(hits[0].block, pairs[0][0])
+        self.assertIs(hits[1].block, pairs[1][0])
+
+    def test_offset_points_at_the_start_of_the_matched_word(self):
+        from homerow import caret
+        text = "abc canvas def"
+        pairs = self.block_texts(text)
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual(hits[0].offset, text.index("canvas"))
+
+    def test_hit_cap_stops_collection_early(self):
+        from homerow import caret
+        text = " ".join(f"canvas{i}" for i in range(50))
+        pairs = self.block_texts(text)
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas", limit=5)
+        self.assertEqual(len(hits), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

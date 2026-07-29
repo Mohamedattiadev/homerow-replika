@@ -22,6 +22,7 @@ One key per mode, no chord in the way:
 | `alt+j` | scroll | `shift+J` |
 | `alt+/` | search | `shift+/` |
 | `alt+c` | caret | — |
+| `alt+shift+c` | caret search | — |
 
 `alt` rather than `shift`, because grabbing `shift+<key>` globally on X11 would
 swallow it everywhere you type.
@@ -85,13 +86,37 @@ A real text cursor driven by vim motions, over AT-SPI's Text interface.
 | `w` `b` `e` | by word |
 | `0` `$` | line start / end |
 | `gg` `G` | document start / end |
-| `v` | start selection |
-| `y` | yank to clipboard |
+| `v` / `V` | visual select / visual line select |
+| `y` | yank the selection (or the word under the cursor) |
+| `yy` | yank the current line |
 | `1`–`9` / `Tab` | jump between text blocks |
 | `Esc` | leave |
 
+Yanking stays in caret mode afterward, same as vim — it doesn't exit, so `yy`
+can be followed by more motion or another yank.
+
 In apps with their own vim caret mode — qutebrowser, Firefox — it enters
 *theirs* instead, and says so.
+
+### Caret search
+
+Type to find a word or link anywhere on the page; matches are labelled as
+you type, same as search mode. Picking one doesn't click it — it opens caret
+mode with the cursor already sitting on that exact word, so a long article
+or a page full of links is reachable by name instead of by Tab-cycling
+through whole blocks one at a time.
+
+| Key | Action |
+|---|---|
+| any letter | filter; matches are outlined and numbered |
+| `1`–`9` | jump the caret to that match |
+| `Tab` / `Shift+Tab` | cycle |
+| `Enter` | jump to the current match |
+| `Esc` | cancel |
+
+Bound separately from plain caret mode (`--caret-search`, see Install below)
+so the existing "land on the biggest/nearest block immediately" behavior of
+`--caret` is unchanged.
 
 ## Install
 
@@ -106,10 +131,11 @@ Bind the modes (qtile shown; any WM works — they are just commands):
 
 ```python
 HOMEROW = os.path.expanduser("~/homerow-replika/homerow-hint")
-Key([mod2], "space", lazy.spawn(HOMEROW)),
-Key([mod2], "j",     lazy.spawn(HOMEROW + " --scroll")),
-Key([mod2], "slash", lazy.spawn(HOMEROW + " --search")),
-Key([mod2], "c",     lazy.spawn(HOMEROW + " --caret")),
+Key([mod2], "space",        lazy.spawn(HOMEROW)),
+Key([mod2], "j",            lazy.spawn(HOMEROW + " --scroll")),
+Key([mod2], "slash",        lazy.spawn(HOMEROW + " --search")),
+Key([mod2], "c",            lazy.spawn(HOMEROW + " --caret")),
+Key([mod2, "shift"], "c",   lazy.spawn(HOMEROW + " --caret-search")),
 ```
 
 Start the daemon at login — a line in your autostart, or the unit in
