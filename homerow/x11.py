@@ -14,6 +14,7 @@ breaking.
 import ctypes
 import ctypes.util
 import subprocess
+import sys
 import time
 
 _x11 = None
@@ -44,6 +45,29 @@ class _XWindowAttributes(ctypes.Structure):
         ("do_not_propagate_mask", ctypes.c_long),
         ("override_redirect", ctypes.c_int),
         ("screen", ctypes.c_void_p),
+    ]
+
+
+class _XClientMessageEvent(ctypes.Structure):
+    """Layout-matches Xlib's XClientMessageEvent, padded to XEvent's size.
+
+    XSendEvent takes `XEvent *`, a union of every event struct Xlib knows
+    about; passing something exactly ClientMessage-sized risks Xlib (or the
+    receiving client) reading past the end of it when the value is copied
+    around as if it were the full union. The trailing pad is cheap insurance
+    against that, sized well past the ~96 bytes the fields above actually
+    need on a 64-bit build.
+    """
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("window", ctypes.c_ulong),
+        ("message_type", ctypes.c_ulong),
+        ("format", ctypes.c_int),
+        ("data", ctypes.c_long * 5),
+        ("_pad", ctypes.c_byte * 96),
     ]
 
 
@@ -99,6 +123,11 @@ def _load():
             ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
             ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_uint,
             ctypes.c_int, ctypes.c_int,
+        ]
+        x11.XSendEvent.restype = ctypes.c_int
+        x11.XSendEvent.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long,
+            ctypes.POINTER(_XClientMessageEvent),
         ]
         x11.XStringToKeysym.restype = ctypes.c_ulong
         x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
@@ -269,6 +298,44 @@ def warp_pointer(x, y):
     return True
 
 
+_SUBSTRUCTURE_REDIRECT_NOTIFY = (1 << 20) | (1 << 19)
+_CLIENT_MESSAGE = 33
+
+
+def activate_window(window_id):
+    """Ask the WM to focus (and raise, and switch group to) a window.
+
+    This is the EWMH _NET_ACTIVE_WINDOW protocol -- the same request a pager
+    or `xdotool windowactivate` sends, and the reason it is the right call
+    instead of XSetInputFocus/XRaiseWindow directly: a tiling WM may need to
+    switch groups or unminimize first, and only the WM itself knows how.
+    Sending the ClientMessage in-process instead of spawning xdotool is the
+    same latency trade every other hot path here already makes.
+    """
+    if not _load():
+        return False
+    root = _x11.XDefaultRootWindow(_display)
+    atom = _x11.XInternAtom(_display, b"_NET_ACTIVE_WINDOW", False)
+    event = _XClientMessageEvent()
+    event.type = _CLIENT_MESSAGE
+    event.send_event = 1
+    event.display = _display
+    event.window = window_id
+    event.message_type = atom
+    event.format = 32
+    # source indication 2 == "pager or other tool", per the EWMH spec; the WM
+    # is free to treat that with less deference than a request from the
+    # window's own application, but it is what every other tool sends here.
+    event.data[0] = 2
+    event.data[1] = 0  # timestamp: 0 ("no timestamp") is valid for this source
+    event.data[2] = event.data[3] = event.data[4] = 0
+    sent = _x11.XSendEvent(
+        _display, root, False, _SUBSTRUCTURE_REDIRECT_NOTIFY,
+        ctypes.byref(event))
+    _x11.XFlush(_display)
+    return bool(sent)
+
+
 def _keycode(name):
     keysym = _x11.XStringToKeysym(name.encode())
     if not keysym:
@@ -293,6 +360,89 @@ ALL_MODIFIERS = ("Shift_L", "Shift_R", "Control_L", "Control_R",
                  "Alt_L", "Alt_R", "Super_L", "Super_R", "Meta_L", "Meta_R")
 
 
+def _append_log(line):
+    """Write one line to the daemon's own rotating log file.
+
+    Not stderr: the daemon is started from qtile's autostart.sh with no
+    explicit redirection, so stderr's actual destination depends on how the
+    session was launched and is not something to depend on. Importing
+    `service` here is deferred, not circular -- service already imports this
+    module at load time, so by the time anything is actually driving traffic
+    through here, service is fully loaded.
+    """
+    try:
+        from . import service
+        with open(service.log_path(), "a", encoding="utf-8") as handle:
+            handle.write(line if line.endswith("\n") else line + "\n")
+    except Exception:
+        pass
+
+
+def debug_log(message):
+    """Millisecond-precision timestamped line, for chasing input lag.
+
+    The daemon's own _log() (service.py) stamps to the second -- fine for
+    "a mode opened", useless for "was this keystroke slow", which is exactly
+    what reports of laggy scrolling and erratic pointer behaviour need to
+    tell apart from a genuinely slow scroll animation. Gated by
+    config.DEBUG_KEYS at each call site, not in here, so this stays a plain
+    utility with no config import of its own.
+    """
+    now = time.time()
+    stamp = (time.strftime("%H:%M:%S", time.localtime(now))
+             + f".{int(now * 1000) % 1000:03d}")
+    _append_log(f"{stamp} {message}")
+
+
+def _log_stuck_modifiers():
+    """Record which modifiers the server currently believes are held.
+
+    Read-only diagnostic, not part of the fix -- release_modifiers() below
+    still blindly clears everything regardless of what this finds. It exists
+    because "lose the Win key after hint mode" has been reported live on this
+    desktop but has not reproduced under direct observation.
+
+    Only Super_L/Super_R are worth logging. Alt_L showing up here on every
+    single hint press is routine, not a symptom -- you just pressed the
+    Alt+space that launched it, so of course the server still sees Alt down
+    at that instant; that is what this whole function exists to clear.
+    Logging it would drown the one case that actually matters (mod4/Super,
+    the reported symptom) in noise from the expected case.
+
+    Written straight to the daemon's own rotating log file rather than
+    stderr: the daemon is started from qtile's autostart.sh with no explicit
+    redirection, so stderr's actual destination depends on how the session
+    was launched and is not something to depend on. Importing `service` here
+    is deferred, not circular -- service already imports this module at load
+    time, so by the time a mode is actually driving traffic through this
+    function, service is fully loaded.
+    """
+    if _x11 is None or _display is None:
+        return
+    try:
+        root = _x11.XDefaultRootWindow(_display)
+        root_ret, child_ret = ctypes.c_ulong(), ctypes.c_ulong()
+        rx, ry, wx, wy = (ctypes.c_int() for _ in range(4))
+        mask = ctypes.c_uint()
+        if not _x11.XQueryPointer(
+                _display, root, ctypes.byref(root_ret), ctypes.byref(child_ret),
+                ctypes.byref(rx), ctypes.byref(ry), ctypes.byref(wx),
+                ctypes.byref(wy), ctypes.byref(mask)):
+            return
+        held = [name for bit, name in _MODIFIER_BITS
+                if mask.value & bit and name.startswith("Super")]
+        if not held:
+            return
+        caller = sys._getframe(2)
+        where = f"{caller.f_code.co_filename.split('/')[-1]}:{caller.f_lineno}"
+        _append_log(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"modifiers held at release ({where}): {', '.join(held)} "
+            f"(mask=0x{mask.value:04x})")
+    except Exception:
+        pass
+
+
 def release_modifiers(force=True):
     """Force every held modifier up.
 
@@ -312,6 +462,7 @@ def release_modifiers(force=True):
         # server believes, and the whole failure being fixed here is the
         # server believing wrong. Releasing an already-released key is a
         # no-op, so there is nothing to lose by being blunt.
+        _log_stuck_modifiers()
         for name in ALL_MODIFIERS:
             code = _keycode(name)
             if code:
@@ -360,13 +511,25 @@ def send_combo(combo):
 
 
 def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
-          hold_ms=0, pre_ms=0):
+          hold_ms=0, pre_ms=0, sync=True):
     """Click at (x, y), optionally with modifiers held, `times` times.
 
     `hold_ms` separates press from release. A zero-length press with the
     pointer moving immediately afterwards is what a toolkit interprets as the
     start of a drag -- which is exactly what happened to links: they were
     picked up and dragged instead of followed.
+
+    `sync` controls whether this call waits for the events to actually be
+    played before returning. XTest's `delay` argument is a *server-side*
+    sleep -- queuing 400 delayed events (a scroll-to-edge jump) takes the
+    client under 2ms, but XSync then blocks until the server has finished
+    sleeping through all of them: ~3 real seconds, measured. Called from the
+    GTK key handler that is the only thing standing between a keypress and
+    the overlay redrawing or responding to Escape, that block *is* the
+    overlay for those 3 seconds. XFlush still guarantees the events were
+    sent -- it just does not wait for the server to finish playing them out.
+    Left True by default because click.py's callers do rely on the click
+    having landed before they move the pointer back.
     """
     if not _load() or _xtst is None:
         return False
@@ -391,7 +554,10 @@ def click(button, x=None, y=None, modifiers=(), times=1, delay_ms=0,
         for code in reversed(codes):
             if code:
                 _xtst.XTestFakeKeyEvent(_display, code, False, 0)
-        _x11.XSync(_display, False)
+        if sync:
+            _x11.XSync(_display, False)
+        else:
+            _x11.XFlush(_display)
     return True
 
 

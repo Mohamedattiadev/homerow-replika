@@ -180,6 +180,8 @@ def _collect_x11(screen_w, screen_h, exclude_id):
 
 def activate(target):
     """Focus a window, switching group/workspace if the WM needs to."""
+    if x11.available() and x11.activate_window(target.window_id):
+        return "activate"
     try:
         subprocess.run(
             ["xdotool", "windowactivate", "--sync", str(target.window_id)],
