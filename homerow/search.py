@@ -130,9 +130,28 @@ class SearchPrompt:
         if gdk_window is not None:
             gdk_window.raise_()
         GLib.idle_add(self._grab)
+        # Never hold the keyboard indefinitely. The grab is exclusive, so
+        # while a session is open every other binding on the desktop is dead
+        # -- including the ones that would close it. A session left open by
+        # accident is indistinguishable from the keyboard having broken.
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
 
     def dismiss(self):
         self._close()
+
+    def _on_idle(self):
+        """Close after a spell with no keys: a stuck grab locks the desktop."""
+        self._idle = None
+        self._close()
+        return False
+
+    def _touch(self):
+        """Restart the idle countdown; called on every keystroke."""
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
 
     def _on_visibility(self, _widget, event):
         """Come back to the front if something is stacked over us."""
@@ -152,6 +171,11 @@ class SearchPrompt:
                                False, None, None, None, None)
             if status == Gdk.GrabStatus.SUCCESS:
                 self._grabbed = True
+                # The modifier that launched this is probably still held, and
+                # the grab will swallow its release. Clear it now so typing a
+                # label is not read as alt+label, and so the desktop is never
+                # left believing a modifier is down.
+                x11.release_modifiers()
                 self.window.present()
                 return False
         self._attempts += 1
@@ -163,6 +187,7 @@ class SearchPrompt:
         return False
 
     def _on_key(self, _widget, event):
+        self._touch()
         key = event.keyval
         if key == Gdk.KEY_Escape:
             self._close()
@@ -272,6 +297,9 @@ class SearchPrompt:
         self.window.queue_draw()
 
     def _close(self):
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+            self._idle = None
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False

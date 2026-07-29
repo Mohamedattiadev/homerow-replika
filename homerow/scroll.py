@@ -87,11 +87,40 @@ def collect(screen_w, screen_h):
         return kept
 
     regions = sift(candidates)
-    if not regions:
-        # Nothing obvious scrolls, so pay for the broad roles now.
-        candidates = _shape(query(config.SCROLL_ROLES_FALLBACK), win_x, win_y,
-                            left, top, right, bottom, seen)
-        regions = sift(candidates)
+
+    # Always ask for the broad roles too. Running them only when the first
+    # tier came up empty meant a page whose document scrolls hid its sidebar:
+    # the document answered first, so the SECTION the sidebar lives in was
+    # never looked at. The cost is real but a missing sidebar is worse.
+    extra = _shape(query(config.SCROLL_ROLES_FALLBACK), win_x, win_y,
+                   left, top, right, bottom, seen)
+    regions += sift(extra)
+
+    # Rescue virtualised panes. A list that renders only its visible rows has
+    # no children beyond its box, so measuring content extent proves nothing --
+    # DevDocs' sidebar scrolls hundreds of entries and looks static. The only
+    # way to know is to scroll it, so probe a couple of the biggest rejects,
+    # and only when too little was found to be plausible.
+    if len(regions) < config.SCROLL_RESCUE_BELOW:
+        # Only candidates that sit *beside* what was already found are worth
+        # probing. Ranking by area alone put the page-level wrappers first --
+        # they enclose the region we already have, so probing them just
+        # rediscovers it, and the sidebar never got a turn.
+        rejected = [
+            region for region in (candidates + extra)
+            if region not in regions
+            and not any(_overlapping(region, kept) for kept in regions)
+        ]
+        rejected.sort(key=lambda e: e.w * e.h, reverse=True)
+        # Stop at the first one that actually scrolls. The wrappers around a
+        # sidebar are larger than the sidebar itself, so ranking by area alone
+        # spends the budget on boxes that do nothing.
+        for region in rejected[:config.SCROLL_RESCUE_MAX]:
+            if _scrolls(region):
+                region.scroll_y = True
+                region.scroll_x = False
+                regions.append(region)
+                break
 
     # Collapse regions that would scroll the same thing. A page's document and
     # its content pane usually differ only by a margin, and offering both means
@@ -188,6 +217,40 @@ def _position(child):
         return ext.y
     except Exception:
         return None
+
+
+def _overlapping(a, b, threshold=0.25):
+    """True if two regions share a meaningful part of the smaller one."""
+    left, right = max(a.x, b.x), min(a.x + a.w, b.x + b.w)
+    top, bottom = max(a.y, b.y), min(a.y + a.h, b.y + b.h)
+    if right <= left or bottom <= top:
+        return False
+    shared = (right - left) * (bottom - top)
+    smaller = min(a.w * a.h, b.w * b.h)
+    return bool(smaller) and shared / smaller >= threshold
+
+
+def _scrolls(region):
+    """Scroll the region a little and see whether anything inside moved.
+
+    Both directions are tried: a pane already at its bottom does not move when
+    scrolled down, and would look unscrollable when it plainly is not.
+    """
+    watchers = _probe_children(region)
+    if not watchers:
+        return False
+    x, y = region.center
+    for forward, back in ((WHEEL_DOWN, WHEEL_UP), (WHEEL_UP, WHEEL_DOWN)):
+        before = [_position(w) for w in watchers]
+        _wheel(x, y, forward, config.SCROLL_PROBE_CLICKS)
+        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        after = [_position(w) for w in watchers]
+        _wheel(x, y, back, config.SCROLL_PROBE_CLICKS)
+        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        if any(b is not None and a is not None and abs(a - b) > 2
+               for b, a in zip(before, after)):
+            return True
+    return False
 
 
 def verify(regions):
@@ -457,6 +520,12 @@ class ScrollSession:
             # the outline appeared but nothing moved.
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
         GLib.idle_add(self._grab)
+        # Never hold the keyboard indefinitely. The grab is exclusive, so
+        # while a session is open every other binding on the desktop is dead
+        # -- including the ones that would close it. A session left open by
+        # accident is indistinguishable from the keyboard having broken.
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
 
     # -- input ----------------------------------------------------------
 
@@ -468,6 +537,11 @@ class ScrollSession:
                          False, None, None, None, None) == \
                     Gdk.GrabStatus.SUCCESS:
                 self._grabbed = True
+                # The modifier that launched this is probably still held, and
+                # the grab will swallow its release. Clear it now so typing a
+                # label is not read as alt+label, and so the desktop is never
+                # left believing a modifier is down.
+                x11.release_modifiers()
                 self.window.present()
                 return False
         self._attempts += 1
@@ -478,6 +552,7 @@ class ScrollSession:
         return False
 
     def _on_key(self, _widget, event):
+        self._touch()
         key = event.keyval
 
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
@@ -541,6 +616,19 @@ class ScrollSession:
         _wheel(x, y, button, clicks)
         self.window.queue_draw()
 
+    def _on_idle(self):
+        """Close after a spell with no keys: a stuck grab locks the desktop."""
+        self._idle = None
+        self._close()
+        return False
+
+    def _touch(self):
+        """Restart the idle countdown; called on every keystroke."""
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+        self._idle = GLib.timeout_add_seconds(
+            config.IDLE_TIMEOUT_S, self._on_idle)
+
     def _on_visibility(self, _widget, event):
         """Re-raise when something covers us.
 
@@ -559,6 +647,9 @@ class ScrollSession:
         self._close()
 
     def _close(self):
+        if getattr(self, "_idle", None) is not None:
+            GLib.source_remove(self._idle)
+            self._idle = None
         if self._grabbed:
             Gdk.Display.get_default().get_default_seat().ungrab()
             self._grabbed = False

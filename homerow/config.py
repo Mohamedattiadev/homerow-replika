@@ -104,11 +104,18 @@ SCROLL_MAX_CANDIDATES = 10
 # candidate, so the page visibly jitters and entering the mode costs about a
 # second. Off by default: duplicate regions are a smaller annoyance than that.
 SCROLL_VERIFY = False
+
+# Probe rejected candidates only when this few regions were found, and only
+# this many of them. Virtualised lists render just their visible rows, so no
+# amount of measuring reveals that they scroll -- but probing every candidate
+# would jitter the page and cost a second.
+SCROLL_RESCUE_BELOW = 2
+SCROLL_RESCUE_MAX = 5
 # Smooth scrolling animates a wheel click over a couple of hundred
 # milliseconds, so a short settle samples mid-animation and sees nothing move.
-SCROLL_PROBE_SETTLE_MS = 260
+SCROLL_PROBE_SETTLE_MS = 120
 # One click may not shift a sticky header at all; a few guarantee movement.
-SCROLL_PROBE_CLICKS = 3
+SCROLL_PROBE_CLICKS = 2
 # How many descendants to look through for something whose position moves.
 SCROLL_PROBE_SEARCH = 40
 
@@ -320,6 +327,11 @@ CLICK_SETTLE_MS = 120
 
 # Log every key the overlay receives. Useful when hints appear but typing them
 # does nothing, which usually means the keyboard grab is not exclusive.
+# A mode closes itself after this long with no keypress. Its keyboard grab is
+# exclusive, so while it is open every other binding on the desktop is dead --
+# a session left open by accident looks exactly like the keyboard breaking.
+IDLE_TIMEOUT_S = 12
+
 DEBUG_KEYS = False
 
 # The daemon always logs to $XDG_STATE_HOME/homerow/homerow.log, rotating at

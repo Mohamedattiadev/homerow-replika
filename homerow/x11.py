@@ -289,7 +289,11 @@ _MODIFIER_BITS = (
 )
 
 
-def release_modifiers():
+ALL_MODIFIERS = ("Shift_L", "Shift_R", "Control_L", "Control_R",
+                 "Alt_L", "Alt_R", "Super_L", "Super_R", "Meta_L", "Meta_R")
+
+
+def release_modifiers(force=True):
     """Force every held modifier up.
 
     A keyboard grab taken while the hotkey's own modifier is still physically
@@ -302,6 +306,19 @@ def release_modifiers():
     """
     if not _load() or _xtst is None:
         return
+    if force:
+        # Release every modifier unconditionally. Reading the pointer mask
+        # first sounds tidier but is unreliable: the mask reflects what the
+        # server believes, and the whole failure being fixed here is the
+        # server believing wrong. Releasing an already-released key is a
+        # no-op, so there is nothing to lose by being blunt.
+        for name in ALL_MODIFIERS:
+            code = _keycode(name)
+            if code:
+                _xtst.XTestFakeKeyEvent(_display, code, False, 0)
+        _x11.XFlush(_display)
+        return
+
     root = _x11.XDefaultRootWindow(_display)
     root_ret, child_ret = ctypes.c_ulong(), ctypes.c_ulong()
     rx, ry, wx, wy = (ctypes.c_int() for _ in range(4))
