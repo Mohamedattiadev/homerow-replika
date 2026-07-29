@@ -405,6 +405,12 @@ CLICK_SETTLE_MS = 120
 # a session left open by accident looks exactly like the keyboard breaking.
 IDLE_TIMEOUT_S = 12
 
+# How often, while a mode is open, to check whether the workspace changed under
+# it. A mode's whole picture of the screen belongs to the window that was in
+# front when it opened, so switching workspace closes it. One in-process X
+# property read per tick, and only while something is actually open.
+WORKSPACE_POLL_MS = 250
+
 DEBUG_KEYS = False
 
 # The daemon always logs to $XDG_STATE_HOME/homerow/homerow.log, rotating at

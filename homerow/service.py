@@ -76,6 +76,8 @@ class Daemon:
     def __init__(self, debug=False):
         self.debug = debug
         self.overlay = None
+        self._desktop = None
+        self._desktop_watch = None
         self.path = socket_path()
         self.log = _open_log()
 
@@ -138,6 +140,46 @@ class Daemon:
                 handle.write(name)
         except OSError:
             pass
+        self._watch_workspace()
+
+    def _watch_workspace(self):
+        """Close the open mode if the workspace changes under it.
+
+        Everything a mode knows -- which regions scroll, where the hints are,
+        which text block holds the caret -- describes the window that was in
+        front when it opened. Switch workspace and all of it is about a window
+        that is not on screen any more, while the overlay keeps the keyboard
+        grabbed over whatever is. Nothing about that is recoverable, so the
+        only sensible thing is to stop.
+        """
+        self._unwatch_workspace()
+        self._desktop = x11.current_desktop()
+        if self._desktop is None:
+            return                       # WM publishes no desktop; nothing to watch
+        self._desktop_watch = GLib.timeout_add(
+            config.WORKSPACE_POLL_MS, self._check_workspace)
+
+    def _unwatch_workspace(self):
+        if getattr(self, "_desktop_watch", None) is not None:
+            GLib.source_remove(self._desktop_watch)
+            self._desktop_watch = None
+
+    def _check_workspace(self):
+        if self.overlay is None:
+            self._desktop_watch = None
+            return False
+        now = x11.current_desktop()
+        if now is not None and now != self._desktop:
+            self._log(f"workspace changed ({self._desktop} -> {now}); "
+                      f"closing the open mode")
+            self._desktop_watch = None
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                self.overlay = None
+                self._clear_mode()
+            return False
+        return True
 
     def _clear_mode(self):
         try:
@@ -492,6 +534,7 @@ class Daemon:
 
     def _finished(self):
         self.overlay = None
+        self._unwatch_workspace()
         self._clear_mode()
 
     def _log(self, message):

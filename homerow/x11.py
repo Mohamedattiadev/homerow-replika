@@ -189,6 +189,21 @@ def active_window_id():
     return values[0] if values else None
 
 
+def current_desktop():
+    """Index of the workspace on screen, or None where the WM publishes none.
+
+    Read rather than subscribed to: a mode already polls nothing, and adding a
+    root-window event filter would mean living with whatever GDK does to root
+    events. One cheap in-process property read every couple of hundred
+    milliseconds, only while a mode is open, is simpler to reason about.
+    """
+    if not _load():
+        return None
+    root = _x11.XDefaultRootWindow(_display)
+    values = _property(root, "_NET_CURRENT_DESKTOP")
+    return values[0] if values else None
+
+
 def screen_size():
     """Root window size, for judging whether a window is really on screen."""
     if not _load():
