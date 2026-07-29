@@ -95,6 +95,15 @@ SCROLL_ROLES_FALLBACK = [
 # D-Bus round trips and small containers are never what you meant to scroll.
 SCROLL_MAX_CANDIDATES = 10
 
+# Overall wall-clock budget for one scroll.collect() pass. Atspi.set_timeout()
+# bounds each individual D-Bus call, but collect() makes many of them --
+# overflow tests, rescue probes, verify()'s scroll-and-watch -- each easily
+# fast enough alone to dodge that per-call cap, yet summing to a real stall
+# when the AT-SPI service is merely slow rather than hung. Costlier stages
+# check this deadline and stop early, biggest-first, rather than let a slow
+# desktop make scroll mode feel frozen.
+SCROLL_COLLECT_BUDGET_MS = 2500
+
 # Two nested regions this close in area are treated as one scroller: a page's
 # document and its content pane differ only by a margin, and offering both
 # gives two labels that behave identically.
@@ -112,7 +121,14 @@ SCROLL_VERIFY = True
 # amount of measuring reveals that they scroll -- but probing every candidate
 # would jitter the page and cost a second.
 SCROLL_RESCUE_BELOW = 2
-SCROLL_RESCUE_MAX = 2
+# Live-measured on devdocs.io: _overflows() reported nothing scrollable at
+# all (0 regions), yet the actual content pane genuinely scrolls -- confirmed
+# by probing it directly. It ranked 3rd by area behind two non-scrolling
+# page-level wrapper candidates (the whole toolbar+page area, and the whole
+# document including the sidebar), so a budget of 2 spent both slots on
+# wrappers and never reached it. Raised so a couple of wrapper levels above
+# the real scroller no longer exhausts the budget before reaching it.
+SCROLL_RESCUE_MAX = 5
 
 # Probe both directions. Trying only downward made the result depend on where
 # the page happened to be scrolled: a pane already at its bottom looked
@@ -207,6 +223,16 @@ CARET_ROLES_FALLBACK = [
     "LABEL", "LIST_ITEM", "TABLE_CELL", "SECTION", "DOCUMENT_WEB",
     "DOCUMENT_FRAME",
 ]
+
+# --- caret search (type to find a word, land the caret there) --------------
+# Stop collecting word matches past this many. Each is a D-Bus round trip for
+# its on-screen extents, paid again on every keystroke as the query narrows.
+CARET_SEARCH_MAX_HITS = 200
+
+# Labels shown beside caret-search matches. Same alphabet as search mode, for
+# the same reason: letters have to stay available for the query.
+CARET_SEARCH_LABELS = SEARCH_LABELS
+CARET_SEARCH_MIN_QUERY = SEARCH_MIN_QUERY
 
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it

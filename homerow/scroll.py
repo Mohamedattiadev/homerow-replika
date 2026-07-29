@@ -35,7 +35,18 @@ def _roles(names):
 
 
 def collect(screen_w, screen_h):
-    """Scrollable regions in the focused window, largest first."""
+    """Scrollable regions in the focused window, largest first.
+
+    Atspi.set_timeout() (see service.py) bounds each individual D-Bus call,
+    but this makes many of them -- overflow tests, rescue probes, verify()'s
+    scroll-and-watch -- each easily fast enough alone to dodge that cap, yet
+    summing to a real stall on an AT-SPI service that is merely slow, not
+    hung. A single overall deadline for the whole pass covers that case the
+    per-call cap cannot; costlier stages (rescue, verify) check it and stop
+    early rather than run over budget, biggest-first so what gets dropped
+    under time pressure is the least-likely-to-matter candidate.
+    """
+    deadline = time.monotonic() + config.SCROLL_COLLECT_BUDGET_MS / 1000
     window = elements.active_window()
     if window is None:
         return []
@@ -85,6 +96,8 @@ def collect(screen_w, screen_h):
         items.sort(key=lambda e: e.w * e.h, reverse=True)
         kept = []
         for region in items[:config.SCROLL_MAX_CANDIDATES]:
+            if time.monotonic() > deadline:
+                break
             vertical, horizontal = _overflows(region)
             if vertical or horizontal:
                 region.scroll_y = vertical
@@ -98,16 +111,19 @@ def collect(screen_w, screen_h):
     # tier came up empty meant a page whose document scrolls hid its sidebar:
     # the document answered first, so the SECTION the sidebar lives in was
     # never looked at. The cost is real but a missing sidebar is worse.
-    extra = _shape(query(config.SCROLL_ROLES_FALLBACK), win_x, win_y,
-                   left, top, right, bottom, seen)
-    regions += sift(extra)
+    if time.monotonic() < deadline:
+        extra = _shape(query(config.SCROLL_ROLES_FALLBACK), win_x, win_y,
+                       left, top, right, bottom, seen)
+        regions += sift(extra)
+    else:
+        extra = []
 
     # Rescue virtualised panes. A list that renders only its visible rows has
     # no children beyond its box, so measuring content extent proves nothing --
     # DevDocs' sidebar scrolls hundreds of entries and looks static. The only
     # way to know is to scroll it, so probe a couple of the biggest rejects,
     # and only when too little was found to be plausible.
-    if len(regions) < config.SCROLL_RESCUE_BELOW:
+    if len(regions) < config.SCROLL_RESCUE_BELOW and time.monotonic() < deadline:
         # Only candidates that sit *beside* what was already found are worth
         # probing. Ranking by area alone put the page-level wrappers first --
         # they enclose the region we already have, so probing them just
@@ -118,19 +134,27 @@ def collect(screen_w, screen_h):
             and not any(_overlapping(region, kept) for kept in regions)
         ]
         rejected.sort(key=lambda e: e.w * e.h, reverse=True)
-        # Stop at the first one that actually scrolls. The wrappers around a
-        # sidebar are larger than the sidebar itself, so ranking by area alone
-        # spends the budget on boxes that do nothing.
+        # Keep every one that actually scrolls, not just the first. A page
+        # can have more than one virtualised pane -- devdocs.io's sidebar and
+        # its content pane both render only their visible rows -- and
+        # stopping at the first success would rescue the content pane and
+        # leave the sidebar looking unscrollable forever. Skip a candidate
+        # that overlaps one already rescued: the wrappers around a sidebar
+        # are larger than the sidebar itself, so ranking by area alone can
+        # still put a wrapper right after the real thing, and it would
+        # otherwise "rescue" the same scroller a second time.
         shortlist = rejected[:config.SCROLL_RESCUE_MAX]
-        rescued = None
+        rescued = []
         for region in shortlist:
-            if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
-                rescued = region
+            if time.monotonic() > deadline:
                 break
-        if rescued is not None:
-            rescued.scroll_y = True
-            rescued.scroll_x = False
-            regions.append(rescued)
+            if any(_overlapping(region, kept) for kept in rescued):
+                continue
+            if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
+                region.scroll_y = True
+                region.scroll_x = False
+                rescued.append(region)
+        regions.extend(rescued)
 
     # Collapse regions that would scroll the same thing. A page's document and
     # its content pane usually differ only by a margin, and offering both means
@@ -156,7 +180,7 @@ def collect(screen_w, screen_h):
 
     distinct.sort(key=lambda e: e.w * e.h, reverse=True)
     if config.SCROLL_VERIFY:
-        distinct = verify(distinct)
+        distinct = verify(distinct, deadline)
     return distinct
 
 
@@ -268,7 +292,7 @@ def _scrolls(region, both_ways=False):
     return False
 
 
-def verify(regions):
+def verify(regions, deadline=None):
     """Keep regions that really scroll, one per actual scroller.
 
     Geometry cannot tell a scrollable pane from a tall column merely flowing
@@ -277,6 +301,11 @@ def verify(regions):
     single click and every watcher is re-read. Regions that move the same
     watchers are the same scroller; regions that move nothing do not scroll.
     The click is undone immediately.
+
+    `deadline` (a time.monotonic() cutoff) stops testing further candidates
+    once collect()'s overall time budget runs out -- regions arrive
+    biggest-first, so what goes untested under time pressure is the
+    least-likely-to-matter one, not the primary target.
     """
     if len(regions) < 2:
         return regions
@@ -289,8 +318,10 @@ def verify(regions):
     if not watchers:
         return regions
 
-    signatures = []
+    tested = []
     for region in regions:
+        if deadline is not None and time.monotonic() > deadline:
+            break
         before = [_position(w) for w in watchers]
         x, y = region.center
         _wheel(x, y, WHEEL_DOWN, config.SCROLL_PROBE_CLICKS)
@@ -301,10 +332,10 @@ def verify(regions):
         moved = frozenset(
             index for index, (b, a) in enumerate(zip(before, after))
             if b is not None and a is not None and abs(a - b) > 2)
-        signatures.append(moved)
+        tested.append((region, moved))
 
     kept, seen = [], []
-    for region, moved in zip(regions, signatures):
+    for region, moved in tested:
         if not moved:
             continue                       # scrolls nothing
         if any(moved & other for other in seen):
@@ -479,6 +510,18 @@ def best(regions):
                  if r.x <= px < r.x + r.w and r.y <= py < r.y + r.h]
         if under:
             return min(under, key=lambda r: r.w * r.h)
+        # The pointer is over something AT-SPI never surfaced as a candidate
+        # -- a sidebar built from a widget the role/overflow probes didn't
+        # recognise, say. Falling back to the largest known region would
+        # silently scroll the content pane instead of what's under the
+        # cursor. The whole window covers the pointer too, and
+        # ScrollSession._wheel_target() prefers the real cursor position
+        # whenever it falls inside self.region -- so this still lands the
+        # wheel event exactly where the user is looking, the way native
+        # wheel scrolling would, rather than wherever detection guessed.
+        window = window_region()
+        if window is not None:
+            return window
     return regions[0]
 
 
@@ -707,10 +750,16 @@ class ScrollSession:
         (scroll.best()) is to enter on the region already under the pointer
         -- the common case needed no warp at all, and got one every single
         j/k anyway. Preferring the pointer's current position when it is
-        already inside the region avoids that; the center is still the
-        fallback, since it is the one point guaranteed to land inside the
-        region when the pointer has drifted outside it (Tab switched
-        regions, or something else nudged the pointer mid-session).
+        already inside the region avoids that.
+
+        When the pointer really is outside the region (Tab switched regions,
+        or the window-fallback region in scroll.best() was picked because
+        nothing was detected where the pointer actually was), clamp the
+        pointer's own position into the region rather than teleporting to
+        its exact center: on a large pane the center can be far from wherever
+        the user's hand actually was, and a full teleport there is a much
+        bigger, more disorienting jump than nudging just the axis (or axes)
+        that were actually out of bounds.
         """
         region = self.region
         position = _pointer_position()
@@ -719,6 +768,9 @@ class ScrollSession:
             if region.x <= px < region.x + region.w \
                     and region.y <= py < region.y + region.h:
                 return px, py
+            x = min(max(px, region.x), region.x + region.w - 1)
+            y = min(max(py, region.y), region.y + region.h - 1)
+            return x, y
         return region.center
 
     def _on_idle(self):

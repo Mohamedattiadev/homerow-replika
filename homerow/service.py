@@ -174,6 +174,8 @@ class Daemon:
             GLib.idle_add(self._search)
         elif command == "caret":
             GLib.idle_add(self._caret)
+        elif command == "caret_search":
+            GLib.idle_add(self._caret_search)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
         return True
@@ -334,6 +336,63 @@ class Daemon:
         start(caret.best(blocks))
         return False
 
+    def _caret_search(self):
+        """Type to find a word, pick it, and land a caret exactly there."""
+        if self.overlay is not None:
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        started = time.perf_counter()
+        width, height = screen_size()
+
+        native = _native_caret_key()
+        if native:
+            self._log(f"handing caret off to the app's own mode ({native})")
+            x11.send_combo(native)
+            _notify("Caret mode: using this app's own vim mode.")
+            return False
+
+        try:
+            blocks = caret.collect(width, height)
+        except Exception as error:
+            print(f"homerow: caret scan failed: {error!r}", file=sys.stderr)
+            return False
+
+        if not blocks:
+            self._log("no text to put a caret in")
+            _notify("No text here — this app publishes no text through "
+                    "accessibility.")
+            return False
+
+        self._log(f"{len(blocks)} text blocks in "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms; "
+                  f"entering caret search")
+
+        def on_pick(hit):
+            # Deferred: this fires from inside CaretSearchPrompt._close(),
+            # whose on_done runs right after and would clear self.overlay
+            # the instant we set it here otherwise -- see _enter_scroll for
+            # the same reasoning.
+            def go():
+                session = caret.CaretSession(
+                    hit.block, self._finished, blocks=blocks)
+                session.offset = hit.offset
+                session._sync_caret()
+                self.overlay = session
+                self._set_mode("caret")
+                session.show()
+                return False
+            GLib.idle_add(go)
+
+        self.overlay = caret.CaretSearchPrompt(blocks, on_pick, self._finished)
+        self._set_mode("caret-search")
+        self.overlay.show()
+        return False
+
     def _scroll(self):
         if self.overlay is not None:
             self._log("overlay already open; replacing it")
@@ -367,6 +426,13 @@ class Daemon:
         # makes this feel immediate rather than like a dialog; Tab inside the
         # session reaches the others, so a wrong guess costs one key.
         chosen = scroll.best(regions)
+        # best() can return a whole-window fallback that isn't one of the
+        # detected candidates (pointer sat over something AT-SPI didn't
+        # recognise as scrollable) -- fold it into the Tab list so cycling
+        # still reaches the regions that WERE detected, instead of Tab's
+        # first press silently discarding the choice just made.
+        if chosen not in regions:
+            regions = [chosen] + regions
         self._log(f"{len(regions)} scrollable region(s) in "
                   f"{(time.perf_counter() - started) * 1000:.0f}ms; "
                   f"entering scroll mode")

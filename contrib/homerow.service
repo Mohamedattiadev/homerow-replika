@@ -1,13 +1,15 @@
 [Unit]
 Description=homerow keyboard hint daemon
-Documentation=file:///home/ati/Attia-Pro/Projects/Homerow_replika/README.md
+Documentation=file://%h/homerow-replika/README.md
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/Attia-Pro/Projects/Homerow_replika/homerow-daemon
-ExecStop=%h/Attia-Pro/Projects/Homerow_replika/homerow-daemon --quit
+# Matches the clone path the README's Install section uses. Adjust both
+# lines if you cloned homerow-replika somewhere else.
+ExecStart=%h/homerow-replika/homerow-daemon
+ExecStop=%h/homerow-replika/homerow-daemon --quit
 Restart=on-failure
 RestartSec=2
 # The daemon needs the X display and the accessibility bus of the running

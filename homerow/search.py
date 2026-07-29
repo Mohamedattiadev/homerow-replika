@@ -74,10 +74,10 @@ def matches(elements, query, names=None):
 class SearchPrompt:
     """Collects a query, then hands the surviving elements to a callback."""
 
-    def __init__(self, elements, on_pick, on_cancel=None):
+    def __init__(self, elements, on_pick, on_done=None):
         self.elements = elements
         self.on_pick = on_pick
-        self.on_cancel = on_cancel or (lambda: None)
+        self.on_done = on_done or (lambda: None)
         self.query = ""
         self.hits = list(elements)
         self.current = 0
@@ -314,10 +314,15 @@ class SearchPrompt:
             Gtk.main_iteration_do(False)
         Gdk.Display.get_default().sync()
 
+        # Both must run on every path, not either/or: on_done is what tells
+        # the daemon this session is over (clears its overlay reference and
+        # the mode file), and skipping it after a successful pick left both
+        # stuck -- the next hotkey saw a "still open" overlay, and dismissing
+        # that stale session re-ran on_pick a second time, re-clicking
+        # whatever was picked here.
         if self.submitted and self.hits:
             self.on_pick(self.hits[min(self.current, len(self.hits) - 1)])
-        else:
-            self.on_cancel()
+        self.on_done()
 
     # -- drawing --------------------------------------------------------
 

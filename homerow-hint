@@ -4,8 +4,9 @@
 # This is deliberately not Python: the interpreter plus PyGObject imports cost
 # ~435ms, which was the entire reason hints felt sluggish. nc costs ~2ms.
 #
-# Falls back to starting the daemon if none is running, and hands --list /
-# --debug to the standalone CLI, which needs the full stack anyway.
+# Falls back to starting the daemon if none is running, and hands
+# --list/--debug/--help/--version to the standalone CLI, which needs the
+# full stack anyway.
 
 set -eu
 
@@ -24,7 +25,10 @@ for arg in "$@"; do
         --caret)
             COMMAND=caret
             ;;
-        --list | --debug | --standalone)
+        --caret-search)
+            COMMAND=caret_search
+            ;;
+        -l | --list | -d | --debug | --standalone | -h | --help | -v | --version)
             exec python3 "$DIR/homerow-cli" "$@"
             ;;
     esac

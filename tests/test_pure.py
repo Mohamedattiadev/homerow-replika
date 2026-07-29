@@ -11,6 +11,7 @@ Run with:  python3 -m unittest discover -s tests -v
 import os
 import sys
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -228,6 +229,364 @@ class ScrollOverflow(unittest.TestCase):
         # main scroll target on most pages.
         self.assertEqual(scroll._overflows(self.Region(300, 400, [])),
                          (True, True))
+
+
+class ScrollWheelTarget(unittest.TestCase):
+    """ScrollSession._wheel_target() decides where the synthetic wheel event
+    lands, which also decides whether/how far the real pointer gets warped.
+
+    Regression: this used to fall back to region.center whenever the pointer
+    was outside the region -- on a large pane that is a big, disorienting
+    teleport, reported live as "the mouse acts weird when I start scrolling".
+    Clamping the pointer's own position into the region instead keeps the
+    jump to just the axis (or axes) that were actually out of bounds.
+    """
+
+    def session(self, region):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        return instance
+
+    def test_pointer_already_inside_is_used_unchanged(self):
+        from homerow import scroll
+        region = Fake(x=0, y=0, w=200, h=200)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 60)):
+            self.assertEqual(instance._wheel_target(), (50, 60))
+
+    def test_pointer_outside_is_clamped_not_teleported_to_center(self):
+        from homerow import scroll
+        region = Fake(x=200, y=200, w=800, h=800)   # center is (600, 600)
+        instance = self.session(region)
+        # Just past the region's left edge, vertically already inside it:
+        # only x should move, landing at the edge -- nowhere near the center.
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 250)):
+            x, y = instance._wheel_target()
+        self.assertEqual((x, y), (200, 250))
+
+    def test_no_pointer_info_falls_back_to_center(self):
+        from homerow import scroll
+        region = Fake(x=200, y=200, w=800, h=800)
+        instance = self.session(region)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=None):
+            self.assertEqual(instance._wheel_target(), region.center)
+
+
+class ScrollBest(unittest.TestCase):
+    """scroll.best picks which detected region a session opens on.
+
+    The case that matters most is the pointer sitting over something AT-SPI
+    never surfaced as a candidate at all -- an undetected sidebar, say --
+    where falling back to the largest region would silently scroll the
+    content pane instead of what the user is actually looking at.
+    """
+
+    def test_pointer_over_a_candidate_wins(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        sidebar = Fake(x=0, y=0, w=200, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 50)):
+            self.assertIs(scroll.best([content, sidebar]), sidebar)
+
+    def test_pointer_over_nothing_detected_falls_back_to_the_window(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        window = Fake(x=0, y=0, w=1000, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 50)), \
+             unittest.mock.patch.object(
+                scroll, "window_region", return_value=window):
+            self.assertIs(scroll.best([content]), window)
+
+    def test_no_pointer_falls_back_to_largest(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        sidebar = Fake(x=0, y=0, w=200, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=None):
+            self.assertIs(scroll.best([content, sidebar]), content)
+
+
+class ScrollVerifyDeadline(unittest.TestCase):
+    """scroll.verify() must stop probing once collect()'s time budget is up.
+
+    Atspi.set_timeout() bounds each individual D-Bus call, but verify() makes
+    several of them per candidate -- each easily fast enough alone to dodge
+    that cap, yet summing to a real stall when the AT-SPI service is merely
+    slow, not hung. An expired deadline should short-circuit before any wheel
+    event is even sent, and fail open (return the untested regions) rather
+    than report them as non-scrolling.
+    """
+
+    class FakeExt:
+        def __init__(self, y):
+            self.x, self.y, self.width, self.height = 0, y, 10, 10
+
+    class FakeChild:
+        def __init__(self, y):
+            self._y = y
+
+        def get_component_iface(self):
+            return self
+
+        def get_extents(self, _coord):
+            return ScrollVerifyDeadline.FakeExt(self._y)
+
+    class FakeAccessible:
+        def __init__(self, y):
+            self._child = ScrollVerifyDeadline.FakeChild(y)
+
+        def get_child_count(self):
+            return 1
+
+        def get_child_at_index(self, _index):
+            return self._child
+
+    def region(self, y):
+        fake = Fake(x=0, y=0, w=100, h=100)
+        fake.accessible = self.FakeAccessible(y)
+        return fake
+
+    def test_expired_deadline_skips_probing_and_keeps_everything(self):
+        from homerow import scroll
+        import time
+        regions = [self.region(0), self.region(50)]
+        with unittest.mock.patch.object(scroll, "_wheel") as wheel:
+            result = scroll.verify(regions, deadline=time.monotonic() - 1)
+        wheel.assert_not_called()
+        self.assertEqual(result, regions)
+
+    def test_no_deadline_behaves_as_before(self):
+        # Passing no deadline (collect()'s only caller always passes one, but
+        # nothing else should require it) must not change existing behaviour.
+        from homerow import scroll
+        regions = [self.region(0), self.region(50)]
+        with unittest.mock.patch.object(scroll, "_wheel"):
+            result = scroll.verify(regions)
+        self.assertEqual(len(result), len(regions))
+
+
+class SearchPromptCleanup(unittest.TestCase):
+    """SearchPrompt._close must tell the daemon the session is over on every
+    path, not only when nothing was picked.
+
+    Regression: on a successful pick, on_done() -- which clears the daemon's
+    overlay reference and its mode file -- never ran. The next hotkey then
+    saw a "still open" overlay and tried to dismiss it, which replayed
+    on_pick a second time: a successful search click silently fired twice.
+
+    Built via object.__new__ rather than SearchPrompt(...) so this never
+    constructs a real GTK window or touches the display.
+    """
+
+    class StubWindow:
+        def destroy(self):
+            pass
+
+    def make(self, hits, submitted):
+        from homerow import search
+        prompt = object.__new__(search.SearchPrompt)
+        prompt.window = self.StubWindow()
+        prompt._grabbed = False
+        prompt._idle = None
+        prompt.hits = hits
+        prompt.current = 0
+        prompt.submitted = submitted
+        picked, done = [], []
+        prompt.on_pick = picked.append
+        prompt.on_done = lambda: done.append(True)
+        return prompt, picked, done
+
+    def _close(self, prompt):
+        # _close() ends with Gdk.Display.get_default().sync() unconditionally
+        # -- fine on a real desktop (this file's usual dev environment), but
+        # CI runs headless with no display at all, where get_default()
+        # returns None. Patched here rather than skipped so the test still
+        # runs in CI instead of being silently absent from it.
+        from homerow import search
+        with unittest.mock.patch.object(search.Gdk.Display, "get_default"):
+            prompt._close()
+
+    def test_successful_pick_still_calls_on_done(self):
+        hit = Fake(name="result")
+        prompt, picked, done = self.make([hit], submitted=True)
+        self._close(prompt)
+        self.assertEqual(picked, [hit])
+        self.assertEqual(done, [True])
+
+    def test_cancel_calls_on_done_without_picking(self):
+        prompt, picked, done = self.make([Fake(name="result")], submitted=False)
+        self._close(prompt)
+        self.assertEqual(picked, [])
+        self.assertEqual(done, [True])
+
+
+class CaretVisualAndYank(unittest.TestCase):
+    """CaretSession's v/V (visual/visual-line) and y/yy (yank/yank-line).
+
+    Regression: _yank() used to call self._close() immediately after
+    copying to the clipboard, so a real "yy" was impossible -- the session
+    would already be destroyed after the first y, before a second keystroke
+    could ever arrive. Yanking now just yanks and stays open, matching vim.
+    """
+
+    LINES = ["Content line 0", "Content line 1", "Content line 2"]
+    TEXT = "\n".join(LINES) + "\n"
+
+    def session(self):
+        from homerow import caret
+        instance = object.__new__(caret.CaretSession)
+        instance.text = self.TEXT
+        instance.length = len(self.TEXT)
+        instance.offset = 0
+        instance.anchor = None
+        instance.linewise = False
+        instance.pending_y = False
+        instance.pending_g = False
+        instance.iface = None
+        instance.window = unittest.mock.Mock()
+
+        starts = [0]
+        for i, ch in enumerate(self.TEXT):
+            if ch == "\n":
+                starts.append(i + 1)
+
+        def line_bounds(offset):
+            start = max(s for s in starts if s <= offset)
+            later = [s - 1 for s in starts if s > offset]
+            end = min(later) if later else len(self.TEXT)
+            return start, end
+
+        instance._line_bounds = line_bounds
+        return instance
+
+    def test_charwise_selection_spans_just_the_marked_range(self):
+        instance = self.session()
+        instance.anchor, instance.offset = 8, 11
+        self.assertEqual(instance._selection(), (8, 12))
+
+    def test_linewise_selection_spans_whole_lines_regardless_of_column(self):
+        instance = self.session()
+        instance.anchor = 8                                  # mid line 0
+        instance.offset = len(self.LINES[0]) + 1 + 5         # mid line 1
+        instance.linewise = True
+        start, end = instance._selection()
+        self.assertEqual(
+            instance.text[start:end], self.LINES[0] + "\n" + self.LINES[1] + "\n")
+
+    def test_yank_copies_and_stays_open(self):
+        from homerow import caret
+        instance = self.session()
+        instance.anchor, instance.offset = 8, 11
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value="line"):
+            instance._yank()
+        set_clip.assert_called_once_with("line")
+        self.assertIsNone(instance.anchor)          # visual mode exited
+        self.assertFalse(instance.linewise)
+
+    def test_yy_yanks_the_current_line(self):
+        from homerow import caret
+        instance = self.session()
+        instance.offset = 5  # somewhere inside line 0
+        expected = self.LINES[0] + "\n"
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value=expected):
+            instance._yank_line()
+        set_clip.assert_called_once_with(expected)
+
+    def test_empty_yank_does_not_touch_the_clipboard(self):
+        # Guards the old sentinel-clipboard bug: an empty span must not
+        # overwrite whatever the user already had copied.
+        from homerow import caret
+        instance = self.session()
+        instance.anchor, instance.offset = 5, 5
+        with unittest.mock.patch.object(instance, "_set_clipboard") as set_clip, \
+             unittest.mock.patch.object(caret, "_text_of", return_value=""):
+            instance._yank()
+        set_clip.assert_not_called()
+
+
+class CaretSearchMatching(unittest.TestCase):
+    """caret.word_hits(): type-to-find matching for caret search.
+
+    Backs the "type a word, pick the labelled hint, land the caret there"
+    flow -- CaretSearchPrompt narrows on every keystroke by calling this,
+    so a wrong match here is a wrong caret position for every user of it.
+    """
+
+    class FakeIface:
+        """Stands in for a real Atspi.Text; get_range_extents is patched at
+        the Atspi.Text class level rather than implemented here, since GI
+        bindings type-check their arguments against the real interface."""
+
+    def block_texts(self, *texts):
+        pairs = []
+        for text in texts:
+            block = Fake(name="")
+            block.accessible = type(
+                "Acc", (), {"get_text_iface": lambda self: self._iface})()
+            block.accessible._iface = self.FakeIface()
+            pairs.append((block, text))
+        return pairs
+
+    def patched(self, hits_fn):
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+
+        class Ext:
+            def __init__(self, x, w):
+                self.x, self.y, self.width, self.height = x, 100, w, 14
+
+        def fake_extents(_iface, start, end, _coord):
+            return Ext(start, end - start)
+
+        return unittest.mock.patch.object(
+            Atspi.Text, "get_range_extents", side_effect=fake_extents)
+
+    def test_matches_are_case_insensitive_substrings(self):
+        from homerow import caret
+        pairs = self.block_texts("the Quick CANVAS jumps over canvas2")
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual([h.word for h in hits], ["CANVAS", "canvas2"])
+
+    def test_empty_query_matches_nothing(self):
+        from homerow import caret
+        pairs = self.block_texts("anything at all")
+        with self.patched(caret.word_hits):
+            self.assertEqual(caret.word_hits(pairs, ""), [])
+
+    def test_matches_span_multiple_blocks_in_order(self):
+        from homerow import caret
+        pairs = self.block_texts("first canvas here", "second canvas there")
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual(len(hits), 2)
+        self.assertIs(hits[0].block, pairs[0][0])
+        self.assertIs(hits[1].block, pairs[1][0])
+
+    def test_offset_points_at_the_start_of_the_matched_word(self):
+        from homerow import caret
+        text = "abc canvas def"
+        pairs = self.block_texts(text)
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas")
+        self.assertEqual(hits[0].offset, text.index("canvas"))
+
+    def test_hit_cap_stops_collection_early(self):
+        from homerow import caret
+        text = " ".join(f"canvas{i}" for i in range(50))
+        pairs = self.block_texts(text)
+        with self.patched(caret.word_hits):
+            hits = caret.word_hits(pairs, "canvas", limit=5)
+        self.assertEqual(len(hits), 5)
 
 
 if __name__ == "__main__":
