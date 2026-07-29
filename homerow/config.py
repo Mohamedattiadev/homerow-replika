@@ -95,6 +95,15 @@ SCROLL_ROLES_FALLBACK = [
 # D-Bus round trips and small containers are never what you meant to scroll.
 SCROLL_MAX_CANDIDATES = 10
 
+# Overall wall-clock budget for one scroll.collect() pass. Atspi.set_timeout()
+# bounds each individual D-Bus call, but collect() makes many of them --
+# overflow tests, rescue probes, verify()'s scroll-and-watch -- each easily
+# fast enough alone to dodge that per-call cap, yet summing to a real stall
+# when the AT-SPI service is merely slow rather than hung. Costlier stages
+# check this deadline and stop early, biggest-first, rather than let a slow
+# desktop make scroll mode feel frozen.
+SCROLL_COLLECT_BUDGET_MS = 2500
+
 # Two nested regions this close in area are treated as one scroller: a page's
 # document and its content pane differ only by a margin, and offering both
 # gives two labels that behave identically.

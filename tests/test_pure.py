@@ -267,6 +267,65 @@ class ScrollBest(unittest.TestCase):
             self.assertIs(scroll.best([content, sidebar]), content)
 
 
+class ScrollVerifyDeadline(unittest.TestCase):
+    """scroll.verify() must stop probing once collect()'s time budget is up.
+
+    Atspi.set_timeout() bounds each individual D-Bus call, but verify() makes
+    several of them per candidate -- each easily fast enough alone to dodge
+    that cap, yet summing to a real stall when the AT-SPI service is merely
+    slow, not hung. An expired deadline should short-circuit before any wheel
+    event is even sent, and fail open (return the untested regions) rather
+    than report them as non-scrolling.
+    """
+
+    class FakeExt:
+        def __init__(self, y):
+            self.x, self.y, self.width, self.height = 0, y, 10, 10
+
+    class FakeChild:
+        def __init__(self, y):
+            self._y = y
+
+        def get_component_iface(self):
+            return self
+
+        def get_extents(self, _coord):
+            return ScrollVerifyDeadline.FakeExt(self._y)
+
+    class FakeAccessible:
+        def __init__(self, y):
+            self._child = ScrollVerifyDeadline.FakeChild(y)
+
+        def get_child_count(self):
+            return 1
+
+        def get_child_at_index(self, _index):
+            return self._child
+
+    def region(self, y):
+        fake = Fake(x=0, y=0, w=100, h=100)
+        fake.accessible = self.FakeAccessible(y)
+        return fake
+
+    def test_expired_deadline_skips_probing_and_keeps_everything(self):
+        from homerow import scroll
+        import time
+        regions = [self.region(0), self.region(50)]
+        with unittest.mock.patch.object(scroll, "_wheel") as wheel:
+            result = scroll.verify(regions, deadline=time.monotonic() - 1)
+        wheel.assert_not_called()
+        self.assertEqual(result, regions)
+
+    def test_no_deadline_behaves_as_before(self):
+        # Passing no deadline (collect()'s only caller always passes one, but
+        # nothing else should require it) must not change existing behaviour.
+        from homerow import scroll
+        regions = [self.region(0), self.region(50)]
+        with unittest.mock.patch.object(scroll, "_wheel"):
+            result = scroll.verify(regions)
+        self.assertEqual(len(result), len(regions))
+
+
 class SearchPromptCleanup(unittest.TestCase):
     """SearchPrompt._close must tell the daemon the session is over on every
     path, not only when nothing was picked.
