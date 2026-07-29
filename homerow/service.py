@@ -367,6 +367,13 @@ class Daemon:
         # makes this feel immediate rather than like a dialog; Tab inside the
         # session reaches the others, so a wrong guess costs one key.
         chosen = scroll.best(regions)
+        # best() can return a whole-window fallback that isn't one of the
+        # detected candidates (pointer sat over something AT-SPI didn't
+        # recognise as scrollable) -- fold it into the Tab list so cycling
+        # still reaches the regions that WERE detected, instead of Tab's
+        # first press silently discarding the choice just made.
+        if chosen not in regions:
+            regions = [chosen] + regions
         self._log(f"{len(regions)} scrollable region(s) in "
                   f"{(time.perf_counter() - started) * 1000:.0f}ms; "
                   f"entering scroll mode")

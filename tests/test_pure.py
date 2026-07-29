@@ -11,6 +11,7 @@ Run with:  python3 -m unittest discover -s tests -v
 import os
 import sys
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -228,6 +229,42 @@ class ScrollOverflow(unittest.TestCase):
         # main scroll target on most pages.
         self.assertEqual(scroll._overflows(self.Region(300, 400, [])),
                          (True, True))
+
+
+class ScrollBest(unittest.TestCase):
+    """scroll.best picks which detected region a session opens on.
+
+    The case that matters most is the pointer sitting over something AT-SPI
+    never surfaced as a candidate at all -- an undetected sidebar, say --
+    where falling back to the largest region would silently scroll the
+    content pane instead of what the user is actually looking at.
+    """
+
+    def test_pointer_over_a_candidate_wins(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        sidebar = Fake(x=0, y=0, w=200, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 50)):
+            self.assertIs(scroll.best([content, sidebar]), sidebar)
+
+    def test_pointer_over_nothing_detected_falls_back_to_the_window(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        window = Fake(x=0, y=0, w=1000, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(50, 50)), \
+             unittest.mock.patch.object(
+                scroll, "window_region", return_value=window):
+            self.assertIs(scroll.best([content]), window)
+
+    def test_no_pointer_falls_back_to_largest(self):
+        from homerow import scroll
+        content = Fake(x=200, y=0, w=800, h=600)
+        sidebar = Fake(x=0, y=0, w=200, h=600)
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=None):
+            self.assertIs(scroll.best([content, sidebar]), content)
 
 
 if __name__ == "__main__":

@@ -479,6 +479,18 @@ def best(regions):
                  if r.x <= px < r.x + r.w and r.y <= py < r.y + r.h]
         if under:
             return min(under, key=lambda r: r.w * r.h)
+        # The pointer is over something AT-SPI never surfaced as a candidate
+        # -- a sidebar built from a widget the role/overflow probes didn't
+        # recognise, say. Falling back to the largest known region would
+        # silently scroll the content pane instead of what's under the
+        # cursor. The whole window covers the pointer too, and
+        # ScrollSession._wheel_target() prefers the real cursor position
+        # whenever it falls inside self.region -- so this still lands the
+        # wheel event exactly where the user is looking, the way native
+        # wheel scrolling would, rather than wherever detection guessed.
+        window = window_region()
+        if window is not None:
+            return window
     return regions[0]
 
 
