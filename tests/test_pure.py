@@ -15,7 +15,7 @@ import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from homerow import hints, search  # noqa: E402
+from homerow import config, hints, search  # noqa: E402
 
 
 class Fake:
@@ -242,10 +242,11 @@ class ScrollWheelTarget(unittest.TestCase):
     jump to just the axis (or axes) that were actually out of bounds.
     """
 
-    def session(self, region):
+    def session(self, region, regions=None):
         from homerow import scroll
         instance = object.__new__(scroll.ScrollSession)
         instance.region = region
+        instance.regions = list(regions) if regions else [region]
         return instance
 
     def test_pointer_already_inside_is_used_unchanged(self):
@@ -274,6 +275,58 @@ class ScrollWheelTarget(unittest.TestCase):
         with unittest.mock.patch.object(
                 scroll, "_pointer_position", return_value=None):
             self.assertEqual(instance._wheel_target(), region.center)
+
+    def test_pointer_over_an_enclosed_sibling_steps_off_it(self):
+        from homerow import scroll
+        # devdocs.io live: only the sidebar gets detected, so best() opens on
+        # the whole-window fallback. With the pointer resting on the sidebar,
+        # aiming the wheel there scrolled the sidebar for BOTH Tab entries --
+        # Tab looked broken. The window's target must land beside the sidebar.
+        sidebar = Fake(x=0, y=144, w=336, h=623)
+        window = Fake(x=0, y=0, w=1366, h=768)
+        instance = self.session(window, [window, sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            x, y = instance._wheel_target()
+        self.assertFalse(sidebar.x <= x < sidebar.x + sidebar.w
+                         and sidebar.y <= y < sidebar.y + sidebar.h)
+        self.assertTrue(window.x <= x < window.x + window.w
+                        and window.y <= y < window.y + window.h)
+
+    def test_stepping_off_a_sibling_moves_as_little_as_possible(self):
+        from homerow import scroll
+        sidebar = Fake(x=0, y=0, w=300, h=768)
+        window = Fake(x=0, y=0, w=1366, h=768)
+        instance = self.session(window, [window, sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            x, y = instance._wheel_target()
+        # Just past the sidebar's edge -- clear of the drag handle sitting on
+        # it -- rather than teleported to the far side or the window's exact
+        # center: the cursor visibly moves either way, so it should move the
+        # short way.
+        self.assertEqual((x, y), (300 + config.SCROLL_TARGET_MARGIN, 400))
+
+    def test_pointer_inside_the_enclosing_pane_is_left_alone(self):
+        from homerow import scroll
+        # The reverse case: the session is on the sidebar and the pointer is
+        # already on it. The pane around it encloses this region rather than
+        # the other way round, so it is not in the way.
+        sidebar = Fake(x=0, y=144, w=336, h=623)
+        window = Fake(x=0, y=0, w=1366, h=768)
+        instance = self.session(sidebar, [window, sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(150, 400)):
+            self.assertEqual(instance._wheel_target(), (150, 400))
+
+    def test_blockers_covering_everything_still_yield_a_target(self):
+        from homerow import scroll
+        # Degenerate, but _clear_point must never return None: there is always
+        # a wheel event to send somewhere.
+        wrapper = Fake(x=0, y=0, w=400, h=400)
+        cover = Fake(x=0, y=0, w=400, h=400)
+        self.assertEqual(scroll._clear_point(wrapper, [cover], (10, 10)),
+                         wrapper.center)
 
 
 class ScrollBest(unittest.TestCase):
@@ -310,6 +363,42 @@ class ScrollBest(unittest.TestCase):
         with unittest.mock.patch.object(
                 scroll, "_pointer_position", return_value=None):
             self.assertIs(scroll.best([content, sidebar]), content)
+
+
+class ScrollWindowFallbackTabStop(unittest.TestCase):
+    """The whole window stays reachable by Tab even when regions were found.
+
+    Live on devdocs.io/html-global-attributes: detection found the sidebar and
+    not the content pane, and with the pointer resting on the sidebar best()
+    opened on it -- leaving a one-entry Tab list, so scroll mode could only
+    ever scroll the sidebar.
+    """
+
+    def test_window_is_appended_when_it_is_not_already_offered(self):
+        from homerow import scroll
+        sidebar = Fake(x=0, y=144, w=336, h=623)
+        window = Fake(x=0, y=0, w=1366, h=768)
+        with unittest.mock.patch.object(
+                scroll, "window_region", return_value=window):
+            regions = scroll.with_window_fallback([sidebar])
+        # Last, so Tab reaches the precisely-outlined regions first.
+        self.assertEqual(regions, [sidebar, window])
+
+    def test_window_is_not_duplicated(self):
+        from homerow import scroll
+        document = Fake(x=0, y=8, w=1366, h=755)
+        window = Fake(x=0, y=0, w=1366, h=768)
+        with unittest.mock.patch.object(
+                scroll, "window_region", return_value=window):
+            regions = scroll.with_window_fallback([document])
+        self.assertEqual(regions, [document])
+
+    def test_no_window_reported_changes_nothing(self):
+        from homerow import scroll
+        sidebar = Fake(x=0, y=144, w=336, h=623)
+        with unittest.mock.patch.object(
+                scroll, "window_region", return_value=None):
+            self.assertEqual(scroll.with_window_fallback([sidebar]), [sidebar])
 
 
 class ScrollVerifyDeadline(unittest.TestCase):

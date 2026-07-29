@@ -37,6 +37,27 @@ def _roles(names):
 def collect(screen_w, screen_h):
     """Scrollable regions in the focused window, largest first.
 
+    Puts the pointer back where it started. Every overflow probe, rescue and
+    verify pass warps it to the candidate it is testing, and the last one to
+    run used to leave it there -- so by the time best() asked "what is under
+    the pointer?", the answer was "whatever was probed last", not where the
+    user's hand actually was. Live on devdocs.io: entering with the pointer on
+    the sidebar left it at (840,444) in the content pane, so scroll mode opened
+    on the content pane every time and the sidebar could only be reached by
+    Tab. That is the "it scrolls the wrong thing because of the mouse position"
+    report, and it also yanked the visible cursor across the screen on entry.
+    """
+    origin = _pointer_position()
+    try:
+        return _collect(screen_w, screen_h)
+    finally:
+        if origin:
+            _restore_pointer(origin)
+
+
+def _collect(screen_w, screen_h):
+    """The actual pass; see collect() for why it is wrapped.
+
     Atspi.set_timeout() (see service.py) bounds each individual D-Bus call,
     but this makes many of them -- overflow tests, rescue probes, verify()'s
     scroll-and-watch -- each easily fast enough alone to dodge that cap, yet
@@ -355,6 +376,50 @@ def _same_scroller(a, b):
     return min(area_a, area_b) / max(area_a, area_b) >= config.SCROLL_SAME_RATIO
 
 
+def _inside(region, x, y):
+    return (region.x <= x < region.x + region.w
+            and region.y <= y < region.y + region.h)
+
+
+def _clear_point(region, blockers, position):
+    """A point inside `region` but over none of `blockers`, nearest `position`.
+
+    Sampled rather than solved exactly: the shape left over once a sidebar
+    (or two) is subtracted from a pane is not a rectangle, and a handful of
+    probes finds a usable spot on every real layout while staying trivial to
+    reason about. The samples are the points just off each blocker's edges,
+    which is where the cursor should end up in the ordinary
+    pointer-resting-on-the-sidebar case, plus a coarse grid for anything less
+    tidy. Whichever valid one is nearest the pointer wins, so the cursor moves
+    as little as the geometry allows -- the same reason the clamp above exists.
+    """
+    px, py = position
+    steps = [(i + 0.5) / config.SCROLL_TARGET_GRID
+             for i in range(config.SCROLL_TARGET_GRID)]
+    samples = [(int(region.x + region.w * fx), int(region.y + region.h * fy))
+               for fy in steps for fx in steps]
+    # Clear of the edge, not on it: the pixel immediately past a sidebar is
+    # often the drag handle that resizes it, and a wheel event there does
+    # nothing at all -- which looks exactly like the bug this fixes.
+    step = config.SCROLL_TARGET_MARGIN
+    for other in blockers:
+        samples += [(other.x - step, py), (other.x + other.w + step, py),
+                    (px, other.y - step), (px, other.y + other.h + step)]
+
+    best_point, best_distance = None, None
+    for x, y in samples:
+        if not _inside(region, x, y):
+            continue
+        if any(_inside(other, x, y) for other in blockers):
+            continue
+        distance = (x - px) ** 2 + (y - py) ** 2
+        if best_distance is None or distance < best_distance:
+            best_point, best_distance = (x, y), distance
+    # Every sample was blocked -- the siblings cover this region completely,
+    # so there is nowhere better to aim than its middle.
+    return best_point or region.center
+
+
 def _contains(outer, inner):
     margin = config.SCROLL_CONTAIN_MARGIN
     return (outer.x - margin <= inner.x
@@ -523,6 +588,32 @@ def best(regions):
         if window is not None:
             return window
     return regions[0]
+
+
+def with_window_fallback(regions):
+    """`regions` plus the whole window, as a last Tab stop.
+
+    Detection routinely finds only some of a page's scrollers -- on
+    devdocs.io/html-global-attributes it found the sidebar and not the content
+    pane. When the one it found is also the one under the pointer, best()
+    opens on it and the Tab list holds nothing else, so scroll mode can only
+    ever scroll the sidebar and the content pane is unreachable. Keeping the
+    window in the list means whatever went undetected is always one Tab away:
+    the window covers it, and ScrollSession._wheel_target() steps the aim off
+    the scrollers that WERE detected.
+
+    Appended last, so cycling reaches the real, precisely-outlined regions
+    first, and skipped when a detected region already spans the window --
+    there it would just be a duplicate of something already offered.
+    """
+    if not config.SCROLL_FALLBACK_TO_WINDOW:
+        return regions
+    window = window_region()
+    if window is None:
+        return regions
+    if any(_same_scroller(window, region) for region in regions):
+        return regions
+    return list(regions) + [window]
 
 
 def window_region():
@@ -760,18 +851,41 @@ class ScrollSession:
         the user's hand actually was, and a full teleport there is a much
         bigger, more disorienting jump than nudging just the axis (or axes)
         that were actually out of bounds.
+
+        Being inside the region is not enough on its own, though. A wheel
+        event goes to whatever is under the pointer, so when the pointer sits
+        over a *different* scroller that happens to live inside this region --
+        the whole-window fallback encloses a page's sidebar, for instance --
+        aiming there scrolls that inner scroller, not the region the outline
+        is drawn around. Reported live on devdocs.io: with the pointer resting
+        on the sidebar, both Tab entries scrolled the sidebar, so Tab looked
+        broken. So step off any enclosed sibling first.
         """
         region = self.region
         position = _pointer_position()
         if position:
             px, py = position
-            if region.x <= px < region.x + region.w \
-                    and region.y <= py < region.y + region.h:
-                return px, py
             x = min(max(px, region.x), region.x + region.w - 1)
             y = min(max(py, region.y), region.y + region.h - 1)
-            return x, y
+            blockers = self._enclosed_siblings()
+            if not any(_inside(other, x, y) for other in blockers):
+                return x, y
+            return _clear_point(region, blockers, (px, py))
         return region.center
+
+    def _enclosed_siblings(self):
+        """Other Tab candidates that live inside the current region.
+
+        Only regions this one encloses count: when the current region is
+        itself the inner scroller, the pane around it is not in the way --
+        the pointer being over it is exactly right.
+        """
+        region = self.region
+        return [
+            other for other in self.regions
+            if other is not region
+            and _contains(region, other) and not _contains(other, region)
+        ]
 
     def _on_idle(self):
         """Close after a spell with no keys: a stuck grab locks the desktop."""

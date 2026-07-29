@@ -159,6 +159,16 @@ SCROLL_CONTAIN_MARGIN = 24
 # other rather than one inside the other.
 SCROLL_BESIDE_OVERLAP = 0.25
 
+# Samples per axis when looking for a spot inside the current region that is
+# not covered by another scroller inside it (see scroll._clear_point). 7 puts
+# a probe roughly every 200px across a 1366px pane -- fine enough to find the
+# gap beside a sidebar, coarse enough to stay a handful of comparisons.
+SCROLL_TARGET_GRID = 7
+
+# How far past a sidebar's edge to aim when stepping off it. On the edge
+# itself is often its drag handle, where a wheel event does nothing.
+SCROLL_TARGET_MARGIN = 12
+
 # --- search mode -----------------------------------------------------------
 # Names are read this many per idle tick, so the prompt stays responsive while
 # indexing a page with hundreds of elements.

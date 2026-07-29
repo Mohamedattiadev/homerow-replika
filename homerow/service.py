@@ -435,6 +435,7 @@ class Daemon:
         # first press silently discarding the choice just made.
         if chosen not in regions:
             regions = [chosen] + regions
+        regions = scroll.with_window_fallback(regions)
         self._log(f"{len(regions)} scrollable region(s) in "
                   f"{(time.perf_counter() - started) * 1000:.0f}ms; "
                   f"entering scroll mode")
