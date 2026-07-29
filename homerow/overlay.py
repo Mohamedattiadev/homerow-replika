@@ -23,6 +23,14 @@ from . import config, theme, x11  # noqa: E402
 CANCEL_KEYS = {Gdk.KEY_Escape}
 BUTTON_PREFIXES = {",": 3, ".": 2}  # right, middle
 
+# Shown whenever hint mode is idle -- i.e. not already displaying the filter
+# or a picker's own prompt. Scroll, caret and search all keep a legend on
+# screen the whole time; hint mode used to show nothing until you started
+# typing, which meant the one mode most likely to be used cold had no
+# on-screen reminder of shift/ctrl/,/. at all.
+HINT_LEGEND = ("label click · shift+ new tab · ctrl+ bg tab · "
+               ", right-click · . middle-click · type to filter · esc")
+
 
 def normalize_key(key, state):
     """Recover the intended letter from an accidental Caps Lock.
@@ -389,38 +397,18 @@ class Overlay:
         if self.filter:
             self._draw_filter(cr)
         elif self.prompt:
-            self._draw_banner(cr, self.prompt)
+            draw_legend(cr, self.prompt, self.width, self.height, self.colors)
+        else:
+            draw_legend(cr, HINT_LEGEND, self.width, self.height, self.colors)
         return True
-
-    def _draw_banner(self, cr, text):
-        ext = cr.text_extents(text)
-        pad = 8
-        w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
-        x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - config.LEGEND_MARGIN, 0)
-        cr.set_source_rgba(*self.colors["chip"])
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_source_rgba(*self.colors["ink"])
-        cr.move_to(x + pad, y + h - pad - 2)
-        cr.show_text(text)
 
     def _draw_filter(self, cr):
         """Show what is being filtered on, and how much survived."""
         count = len(self.elements)
         text = (f"filter: {self.filter}_    {count} left"
                 if count else f"filter: {self.filter}_    no match")
-        ext = cr.text_extents(text)
-        pad = 8
-        w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
-        x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - config.LEGEND_MARGIN, 0)
-        cr.set_source_rgba(*self.colors["chip" if count else "chip_window"])
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_source_rgba(*self.colors["ink"])
-        cr.move_to(x + pad, y + h - pad - 2)
-        cr.show_text(text)
+        draw_legend(cr, text, self.width, self.height, self.colors,
+                    chip="chip" if count else "chip_window")
 
     def _draw_hint(self, cr, element, label, index, element_rects, placed):
         ext = cr.text_extents(label)
@@ -454,6 +442,29 @@ class Overlay:
             cr.move_to(cx, baseline)
             cr.show_text(char)
             cx += cr.text_extents(char).x_advance
+
+
+def draw_legend(cr, text, width, height, colors, chip="chip"):
+    """Bottom-center pill of text: every mode's legend/prompt/status line.
+
+    Scroll, search, caret and hint mode each used to draw this by hand, and
+    had drifted -- scroll's pill was a few pixels shorter than the others'.
+    One shape, drawn once, is what keeps that from happening again.
+    """
+    cr.select_font_face(config.FONT_FAMILY)
+    cr.set_font_size(config.FONT_SIZE)
+    ext = cr.text_extents(text)
+    pad = 8
+    w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
+    x = max((width - w) // 2, 0)
+    y = max(height - h - config.LEGEND_MARGIN, 0)
+
+    cr.set_source_rgba(*colors[chip])
+    _rounded_rect(cr, x, y, w, h, config.RADIUS)
+    cr.fill()
+    cr.set_source_rgba(*colors["ink"])
+    cr.move_to(x + pad, y + h - pad - 2)
+    cr.show_text(text)
 
 
 def _rects_overlap(a, b):

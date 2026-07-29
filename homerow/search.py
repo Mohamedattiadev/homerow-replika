@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, theme, x11  # noqa: E402
-from .overlay import place_chip, screen_size, set_identity  # noqa: E402
+from .overlay import draw_legend, place_chip, screen_size, set_identity  # noqa: E402
 
 
 def _score(haystack, terms):
@@ -373,16 +373,5 @@ class SearchPrompt:
         if self.indexed < len(self.elements):
             count += f"  (reading {self.indexed}/{len(self.elements)})"
         text = f"{label}    {count}    1-9 pick · tab next · enter click · esc"
-        ext = cr.text_extents(text)
-        pad = 8
-        w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
-        x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - config.LEGEND_MARGIN, 0)
-
-        cr.set_source_rgba(*self.colors["chip"])
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_source_rgba(*self.colors["ink"])
-        cr.move_to(x + pad, y + h - pad - 2)
-        cr.show_text(text)
+        draw_legend(cr, text, self.width, self.height, self.colors)
         return True

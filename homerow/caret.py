@@ -23,7 +23,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import normalize_key, screen_size, set_identity  # noqa: E402
+from .overlay import draw_legend, normalize_key, screen_size, set_identity  # noqa: E402
 
 WORD = Atspi.TextGranularity.WORD
 LINE = Atspi.TextGranularity.LINE
@@ -560,19 +560,7 @@ class CaretSession:
         if len(self.blocks) > 1:
             legend = (f"[{self.index + 1}/{len(self.blocks)} "
                       f"1-9 jump, tab next]   " + legend)
-        cr.select_font_face(config.FONT_FAMILY)
-        cr.set_font_size(config.FONT_SIZE)
-        text_ext = cr.text_extents(legend)
-        pad = 8
-        w, h = text_ext.width + pad * 2, config.FONT_SIZE + pad * 2
-        x = max((self.width - w) // 2, 0)
-        y = max(self.height - h - config.LEGEND_MARGIN, 0)
-        cr.set_source_rgba(*self.colors["chip"])
-        cr.rectangle(x, y, w, h)
-        cr.fill()
-        cr.set_source_rgba(*self.colors["ink"])
-        cr.move_to(x + pad, y + h - pad - 2)
-        cr.show_text(legend)
+        draw_legend(cr, legend, self.width, self.height, self.colors)
         return True
 
 
