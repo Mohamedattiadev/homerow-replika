@@ -74,6 +74,10 @@ class Daemon:
             os.unlink(self.path)
 
         Atspi.init()
+        # Without a cap, one hung app's accessibility service blocks every
+        # AT-SPI call forever -- and every mode makes those calls synchronously
+        # on this same main loop, so it takes the whole daemon down with it.
+        Atspi.set_timeout(config.ATSPI_CALL_TIMEOUT_MS, config.ATSPI_CALL_TIMEOUT_MS)
 
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(self.path)
@@ -429,7 +433,16 @@ def _native_caret_key():
 
 
 def _active_window_id():
-    """X id of the focused window, so it is not offered as a switch target."""
+    """X id of the focused window, so it is not offered as a switch target.
+
+    x11.active_window_id() is the same ctypes call elements.active_window()
+    already made a moment earlier in the same request (~0.3ms); shelling out
+    to xdotool here as well cost an extra ~10-30ms process spawn on every
+    single hint press for no new information, so that fallback is now only
+    used on the systems where the ctypes binding is unavailable.
+    """
+    if x11.available():
+        return x11.active_window_id()
     import subprocess
     try:
         result = subprocess.run(

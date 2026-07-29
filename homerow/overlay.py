@@ -359,10 +359,14 @@ class Overlay:
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
 
-        for element, label in zip(self.elements, self.labels):
+        # All rects up front: placement needs to avoid every element's own
+        # area, not just the one whose chip is being placed.
+        element_rects = [(e.x, e.y, e.w, e.h) for e in self.elements]
+        placed = []
+        for index, (element, label) in enumerate(zip(self.elements, self.labels)):
             if self.typed and not label.startswith(self.typed):
                 continue
-            self._draw_hint(cr, element, label)
+            self._draw_hint(cr, element, label, index, element_rects, placed)
 
         if self.filter:
             self._draw_filter(cr)
@@ -400,24 +404,14 @@ class Overlay:
         cr.move_to(x + pad, y + h - pad - 2)
         cr.show_text(text)
 
-    def _draw_hint(self, cr, element, label):
+    def _draw_hint(self, cr, element, label, index, element_rects, placed):
         ext = cr.text_extents(label)
         w = ext.width + config.PAD_X * 2
         h = config.FONT_SIZE + config.PAD_Y * 2
 
-        # Sitting the chip in the margin keeps the target's own first
-        # characters legible; overlapping them made dense lists hard to read.
-        # Vertically centred so it reads as belonging to that row.
-        if config.HINT_PLACEMENT == "margin":
-            x = element.x - w - config.HINT_GAP
-            y = element.y + (element.h - h) // 2
-            if x < 0:
-                x = element.x + config.HINT_GAP
-        else:
-            x, y = element.x, element.y
-
-        x = min(max(x, 0), max(self.width - w, 0))
-        y = min(max(y, 0), max(self.height - h, 0))
+        x, y = place_chip(element, w, h, self.width, self.height,
+                          index, element_rects, placed)
+        placed.append((x, y, w, h))
 
         is_window = getattr(element, "kind", "element") == "window"
         if self.typed:
@@ -442,6 +436,55 @@ class Overlay:
             cr.move_to(cx, baseline)
             cr.show_text(char)
             cx += cr.text_extents(char).x_advance
+
+
+def _rects_overlap(a, b):
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
+    """First collision-free spot for a chip labelling `element`.
+
+    Shared by hint mode and search mode, so a fix to one does not quietly
+    stay broken in the other.
+
+    The plain left-margin rule (still tried first) only ever avoided the
+    screen edge, not neighbours -- a dense toolbar or two nav links a few
+    pixels apart put one chip on top of the next element's text, or on top
+    of another chip. Each candidate here is rejected if it overlaps an
+    already-placed chip or any *other* element's own rectangle; the first
+    clean one wins. If nothing is clean -- a genuinely packed corner -- the
+    original left-margin spot is used anyway, clamped to the screen, since a
+    slightly-overlapping chip beats one that never got drawn.
+    """
+    gap = config.HINT_GAP
+    candidates = [
+        (element.x - w - gap, element.y + (element.h - h) // 2),  # left
+        (element.x + element.w + gap, element.y + (element.h - h) // 2),  # right
+        (element.x, element.y - h - gap),  # above
+        (element.x, element.y + element.h + gap),  # below
+        (element.x, element.y),  # inside, last resort
+    ]
+
+    fallback = None
+    for x, y in candidates:
+        x = min(max(x, 0), max(screen_w - w, 0))
+        y = min(max(y, 0), max(screen_h - h, 0))
+        if fallback is None:
+            fallback = (x, y)
+        rect = (x, y, w, h)
+        if any(_rects_overlap(rect, other) for other in placed):
+            continue
+        if any(
+            other_index != index
+            and _rects_overlap(rect, element_rects[other_index])
+            for other_index in range(len(element_rects))
+        ):
+            continue
+        return x, y
+    return fallback
 
 
 def _rounded_rect(cr, x, y, w, h, r):

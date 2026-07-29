@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, theme, x11  # noqa: E402
-from .overlay import screen_size, set_identity  # noqa: E402
+from .overlay import place_chip, screen_size, set_identity  # noqa: E402
 
 
 def _score(haystack, terms):
@@ -236,17 +236,17 @@ class SearchPrompt:
         """Number the first few matches so one keypress can pick any of them."""
         cr.select_font_face(config.FONT_FAMILY)
         cr.set_font_size(config.FONT_SIZE)
-        for index, element in enumerate(self.hits[:len(config.SEARCH_LABELS)]):
+        shown = self.hits[:len(config.SEARCH_LABELS)]
+        element_rects = [(e.x, e.y, e.w, e.h) for e in shown]
+        placed = []
+        for index, element in enumerate(shown):
             label = config.SEARCH_LABELS[index]
             ext = cr.text_extents(label)
             w = ext.width + config.PAD_X * 2
             h = config.FONT_SIZE + config.PAD_Y * 2
-            x = element.x - w - config.HINT_GAP
-            y = element.y + (element.h - h) // 2
-            if x < 0:
-                x = element.x + config.HINT_GAP
-            x = min(max(x, 0), max(self.width - w, 0))
-            y = min(max(y, 0), max(self.height - h, 0))
+            x, y = place_chip(element, w, h, self.width, self.height,
+                              index, element_rects, placed)
+            placed.append((x, y, w, h))
 
             key = "chip" if index == self.current else "chip_matched"
             cr.set_source_rgba(*self.colors[key])

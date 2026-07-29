@@ -100,10 +100,12 @@ SCROLL_MAX_CANDIDATES = 10
 # gives two labels that behave identically.
 # Scroll each candidate and watch what moves, instead of guessing from
 # geometry. It is the only way to tell a scrollable pane from a tall column
-# flowing inside one -- but it scrolls the page and puts it back for every
-# candidate, so the page visibly jitters and entering the mode costs about a
-# second. Off by default: duplicate regions are a smaller annoyance than that.
-SCROLL_VERIFY = False
+# flowing inside one, and the only way to catch a region whose geometry looks
+# independent but which is really a nested child of a scroller already found
+# -- but it scrolls the page and puts it back for every candidate, so the
+# page visibly jitters and entering the mode costs about a second. On by
+# default: a wrong or duplicate region is worse than that jitter.
+SCROLL_VERIFY = True
 
 # Probe rejected candidates only when this few regions were found, and only
 # this many of them. Virtualised lists render just their visible rows, so no
@@ -283,12 +285,17 @@ MAX_ELEMENTS = 400
 # D-Bus round trip per node, so this caps the damage on a big tree.
 WALK_BUDGET_MS = 400
 
+# Hard cap on any single AT-SPI D-Bus call, set once via Atspi.set_timeout at
+# daemon startup. Without it a frozen or hung app's accessibility service
+# blocks a call forever -- and every AT-SPI call in this codebase is
+# synchronous on the daemon's one GLib main loop, so that one app hangs every
+# mode for every window until it answers. Bounded to this instead: worst case
+# is a stall this long, not a dead daemon that needs a manual restart.
+ATSPI_CALL_TIMEOUT_MS = 3000
+
 # Appearance
-# Where a chip sits relative to its target.
-#   "margin" - just outside the left edge, falling back inside at the screen
-#              edge. Keeps the target's own first characters readable.
-#   "inside" - overlapping the target's top-left corner.
-HINT_PLACEMENT = "margin"
+# Gap between a chip and the edge of the target it labels, and between a
+# chip and any neighbour it was placed to avoid (see overlay.place_chip).
 HINT_GAP = 2
 
 FONT_FAMILY = "monospace"
