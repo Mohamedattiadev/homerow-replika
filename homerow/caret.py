@@ -67,15 +67,16 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
     # a short list -- and walking for it cost ~2.5s, which is unusable.
     # Same foreground-tab restriction as hint mode: a browser keeping five
     # tabs alive otherwise offers five pages of text stacked on one viewport.
-    scope = app
+    frame = elements.active_frame(app, (win_x, win_y, win_w, win_h))
+    scope = frame if frame is not None else app
     try:
         title = x11.window_name(x11.active_window_id() or 0) if \
             x11.available() else ""
-        document = elements.active_document(app, title)
+        document = elements.active_document(scope, title)
         if document is not None:
             scope = document
     except Exception:
-        scope = app
+        pass
 
     collection = scope.get_collection_iface()
     if collection is None:

@@ -163,6 +163,61 @@ def _app_for_pid(pid):
     return None
 
 
+def active_frame(app, window_rect):
+    """The top-level frame for the focused window, or None.
+
+    An application with several windows reports them all, and a window manager
+    that stacks them puts several at the very same coordinates -- Brave here
+    had six frames, three sharing one rectangle. Clipping results to the
+    focused window's rectangle therefore lets the other windows through, so
+    hints and scroll regions arrive from windows that are not on screen.
+
+    Apps that mark a frame ACTIVE answer this directly; for the rest, the
+    frame whose geometry matches the focused window is the best available
+    signal.
+    """
+    try:
+        count = app.get_child_count()
+    except Exception:
+        return None
+    if count < 2:
+        return None
+
+    frames = []
+    for index in range(count):
+        try:
+            frame = app.get_child_at_index(index)
+            states = frame.get_state_set()
+            if not states.contains(Atspi.StateType.SHOWING):
+                continue
+            frames.append((frame, states))
+        except Exception:
+            continue
+
+    for frame, states in frames:
+        if states.contains(Atspi.StateType.ACTIVE):
+            return frame
+
+    if window_rect is None:
+        return None
+    wx, wy, ww, wh = window_rect
+    best, best_score = None, None
+    for frame, _ in frames:
+        try:
+            ext = frame.get_component_iface().get_extents(
+                Atspi.CoordType.SCREEN)
+        except Exception:
+            continue
+        score = (abs(ext.x - wx) + abs(ext.y - wy)
+                 + abs(ext.width - ww) + abs(ext.height - wh))
+        if best_score is None or score < best_score:
+            best, best_score = frame, score
+    # Only trust a close match; a wildly different frame means we cannot tell.
+    if best is not None and best_score is not None and best_score <= 80:
+        return best
+    return None
+
+
 def active_document(app, window_title):
     """The document node for the foreground tab, or None.
 
@@ -409,12 +464,18 @@ def collect(screen_w, screen_h):
     # Restrict to the foreground tab when the app keeps several alive, but
     # keep the chrome around the page -- tab bar, url bar, status line -- by
     # taking anything outside the document's rectangle from the whole app.
+    # Narrow to the focused window first, then to its foreground tab.
+    scope = app
+    frame = active_frame(app, (win_x, win_y, win_w, win_h))
+    if frame is not None:
+        scope = frame
+
     document = None
     doc_rect = None
     try:
         title = x11.window_name(x11.active_window_id() or 0) if \
             x11.available() else ""
-        document = active_document(app, title)
+        document = active_document(scope, title)
         if document is not None:
             ext = document.get_component_iface().get_extents(
                 Atspi.CoordType.SCREEN)
@@ -425,11 +486,11 @@ def collect(screen_w, screen_h):
     try:
         if document is not None:
             matches = list(_candidates(document))
-            for accessible, ext in _extents(_candidates(app), win_x, win_y):
+            for accessible, ext in _extents(_candidates(scope), win_x, win_y):
                 if not _inside(ext, doc_rect):
                     matches.append(accessible)
         else:
-            matches = _candidates(app)
+            matches = _candidates(scope)
     except Exception:
         return []
 

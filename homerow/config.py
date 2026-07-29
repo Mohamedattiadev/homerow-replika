@@ -110,10 +110,10 @@ SCROLL_VERIFY = False
 # amount of measuring reveals that they scroll -- but probing every candidate
 # would jitter the page and cost a second.
 SCROLL_RESCUE_BELOW = 2
-SCROLL_RESCUE_MAX = 5
+SCROLL_RESCUE_MAX = 3
 # Smooth scrolling animates a wheel click over a couple of hundred
 # milliseconds, so a short settle samples mid-animation and sees nothing move.
-SCROLL_PROBE_SETTLE_MS = 120
+SCROLL_PROBE_SETTLE_MS = 90
 # One click may not shift a sticky header at all; a few guarantee movement.
 SCROLL_PROBE_CLICKS = 2
 # How many descendants to look through for something whose position moves.

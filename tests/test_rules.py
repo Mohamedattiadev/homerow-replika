@@ -300,5 +300,79 @@ class NestedScrollerRule(unittest.TestCase):
         self.assertFalse(scroll._same_scroller(pane, widget))
 
 
+class WindowScopeRule(unittest.TestCase):
+    """elements.active_frame keeps other windows of the same app out.
+
+    Brave reported six frames, three of them sharing one rectangle, so
+    clipping results to the focused window's geometry let three windows'
+    worth of hints through at once.
+    """
+
+    class Frame:
+        def __init__(self, x, y, w, h, active=False, showing=True):
+            self.rect = (x, y, w, h)
+            self.active, self.showing = active, showing
+            self.x, self.y, self.width, self.height = x, y, w, h
+
+        def get_state_set(self):
+            return self
+
+        def contains(self, state):
+            import gi
+            gi.require_version("Atspi", "2.0")
+            from gi.repository import Atspi
+            if state == Atspi.StateType.ACTIVE:
+                return self.active
+            if state == Atspi.StateType.SHOWING:
+                return self.showing
+            return False
+
+        def get_component_iface(self):
+            return self
+
+        def get_extents(self, _coord):
+            return self
+
+    class App:
+        def __init__(self, frames):
+            self.frames = frames
+
+        def get_child_count(self):
+            return len(self.frames)
+
+        def get_child_at_index(self, index):
+            return self.frames[index]
+
+    def test_active_frame_wins_outright(self):
+        from homerow import elements
+        wanted = self.Frame(0, 38, 1366, 730, active=True)
+        app = self.App([self.Frame(0, 38, 1366, 730), wanted,
+                        self.Frame(0, 38, 1366, 730)])
+        self.assertIs(elements.active_frame(app, (0, 38, 1366, 730)), wanted)
+
+    def test_geometry_decides_when_none_is_marked_active(self):
+        from homerow import elements
+        wanted = self.Frame(204, 111, 952, 580)
+        app = self.App([self.Frame(0, 38, 1366, 730), wanted])
+        self.assertIs(elements.active_frame(app, (204, 111, 952, 580)), wanted)
+
+    def test_single_frame_needs_no_scoping(self):
+        from homerow import elements
+        app = self.App([self.Frame(0, 38, 1366, 730)])
+        self.assertIsNone(elements.active_frame(app, (0, 38, 1366, 730)))
+
+    def test_no_close_match_falls_back_to_the_whole_app(self):
+        from homerow import elements
+        app = self.App([self.Frame(0, 0, 100, 100),
+                        self.Frame(500, 500, 100, 100)])
+        self.assertIsNone(elements.active_frame(app, (0, 38, 1366, 730)))
+
+    def test_hidden_frames_are_ignored(self):
+        from homerow import elements
+        visible = self.Frame(0, 38, 1366, 730)
+        app = self.App([self.Frame(0, 38, 1366, 730, showing=False), visible])
+        self.assertIs(elements.active_frame(app, (0, 38, 1366, 730)), visible)
+
+
 if __name__ == "__main__":
     unittest.main()

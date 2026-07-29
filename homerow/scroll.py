@@ -45,7 +45,13 @@ def collect(screen_w, screen_h):
     if app is None:
         return []
 
-    collection = app.get_collection_iface()
+    # Scope to the focused window: an app with several windows reports them
+    # all, often at identical coordinates, so clipping by rectangle alone lets
+    # regions in from windows that are not on screen.
+    frame = elements.active_frame(app, (win_x, win_y, win_w, win_h))
+    scope = frame if frame is not None else app
+
+    collection = scope.get_collection_iface()
     if collection is None:
         return []
 
@@ -115,12 +121,21 @@ def collect(screen_w, screen_h):
         # Stop at the first one that actually scrolls. The wrappers around a
         # sidebar are larger than the sidebar itself, so ranking by area alone
         # spends the budget on boxes that do nothing.
-        for region in rejected[:config.SCROLL_RESCUE_MAX]:
+        shortlist = rejected[:config.SCROLL_RESCUE_MAX]
+        rescued = None
+        for region in shortlist:
             if _scrolls(region):
-                region.scroll_y = True
-                region.scroll_x = False
-                regions.append(region)
+                rescued = region
                 break
+        if rescued is None and shortlist:
+            # Nothing moved downward; the likeliest candidate may simply be
+            # sitting at its bottom already, so give that one an upward try.
+            if _scrolls(shortlist[0], both_ways=True):
+                rescued = shortlist[0]
+        if rescued is not None:
+            rescued.scroll_y = True
+            rescued.scroll_x = False
+            regions.append(rescued)
 
     # Collapse regions that would scroll the same thing. A page's document and
     # its content pane usually differ only by a margin, and offering both means
@@ -230,17 +245,20 @@ def _overlapping(a, b, threshold=0.25):
     return bool(smaller) and shared / smaller >= threshold
 
 
-def _scrolls(region):
+def _scrolls(region, both_ways=False):
     """Scroll the region a little and see whether anything inside moved.
 
-    Both directions are tried: a pane already at its bottom does not move when
-    scrolled down, and would look unscrollable when it plainly is not.
+    `both_ways` retries upward for a pane already at its bottom, which does not
+    move when scrolled down and would look unscrollable when it plainly is not.
+    It doubles the cost, so it is saved for the retry pass rather than paid on
+    every candidate.
     """
     watchers = _probe_children(region)
     if not watchers:
         return False
     x, y = region.center
-    for forward, back in ((WHEEL_DOWN, WHEEL_UP), (WHEEL_UP, WHEEL_DOWN)):
+    passes = ((WHEEL_DOWN, WHEEL_UP), (WHEEL_UP, WHEEL_DOWN))
+    for forward, back in (passes if both_ways else passes[:1]):
         before = [_position(w) for w in watchers]
         _wheel(x, y, forward, config.SCROLL_PROBE_CLICKS)
         time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
