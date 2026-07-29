@@ -42,6 +42,21 @@ def socket_path():
     return os.path.join(runtime, "homerow.sock")
 
 
+def mode_path():
+    """Where the name of the currently-open mode is written, for a bar widget
+    to poll.
+
+    Runtime dir, not the persistent state dir the log lives in: this is live
+    state, not a record, and should not survive past this login session if
+    the daemon dies mid-mode. Absence (not an empty file) means idle, so a
+    poller's check is a bare `open()` that fails shut -- a leftover file from
+    a killed daemon cannot be mistaken for a mode that is actually running,
+    because run() below clears it unconditionally on every startup.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return os.path.join(runtime, "homerow-mode")
+
+
 def is_running(path=None):
     """True if a daemon is already answering on the socket."""
     path = path or socket_path()
@@ -72,6 +87,10 @@ class Daemon:
         # Nothing answered, so any socket file left behind is stale.
         if os.path.exists(self.path):
             os.unlink(self.path)
+        # Likewise a mode file: if the last daemon died mid-mode, its overlay
+        # died with it, so nothing is actually open even though this file
+        # says otherwise.
+        self._clear_mode()
 
         Atspi.init()
         # Without a cap, one hung app's accessibility service blocks every
@@ -109,6 +128,20 @@ class Daemon:
             pass
         try:
             os.unlink(self.path)
+        except OSError:
+            pass
+        self._clear_mode()
+
+    def _set_mode(self, name):
+        try:
+            with open(mode_path(), "w", encoding="utf-8") as handle:
+                handle.write(name)
+        except OSError:
+            pass
+
+    def _clear_mode(self):
+        try:
+            os.unlink(mode_path())
         except OSError:
             pass
 
@@ -184,6 +217,7 @@ class Daemon:
         window_count = len(switchable)
         labels = hints.assign(found)
         self.overlay = Overlay(found, labels, self._choose, self._finished)
+        self._set_mode("hint")
         self.overlay.show()
         shown = time.perf_counter()
         self._log(
@@ -248,6 +282,7 @@ class Daemon:
         self.overlay = search.SearchPrompt(
             found, on_pick, self._finished,
         )
+        self._set_mode("search")
         self.overlay.show()
         return False
 
@@ -291,6 +326,7 @@ class Daemon:
             def go():
                 self.overlay = caret.CaretSession(
                     block, self._finished, blocks=blocks)
+                self._set_mode("caret")
                 self.overlay.show()
                 return False
             GLib.idle_add(go)
@@ -344,6 +380,7 @@ class Daemon:
         def start():
             self.overlay = scroll.ScrollSession(
                 region, self._finished, regions=regions)
+            self._set_mode("scroll")
             self.overlay.show()
             return False
         GLib.idle_add(start)
@@ -351,23 +388,30 @@ class Daemon:
     def _choose(self, element, button, modifiers):
         method = click.perform(element, button, modifiers)
         self._log(f"clicked button={button} mods={modifiers} via {method}")
-        self._release_chord_if_typing(element)
+        self._release_chord_if_done(element)
 
-    def _release_chord_if_typing(self, element):
-        """Leave the qtile chord when the click lands in a text field.
+    def _release_chord_if_done(self, element):
+        """Leave the qtile chord on a text field, or a switch to another window.
 
-        The chord stays active between actions so h/s/f keep working, but a
-        focused text field needs those letters to be letters. Clicking into one
-        and then having `h` open hint mode instead of typing `h` is worse than
-        reopening the chord, so this exits it -- and only in that case.
+        The chord stays active between actions so h/s/f keep working across a
+        chain of clicks in the *same* window -- but a focused text field needs
+        those letters to be letters, and a window switch is just as much "done
+        with the chord" as that: h/s/f in a freshly-focused window are still
+        going to want to be homerow's own bindings again from a fresh alt+space,
+        not silently reopen a chord this window never asked for. Reopening
+        the chord in either case is worse than leaving it, so this exits it --
+        and only in these two cases.
         """
-        try:
-            role = element.role
-        except Exception:
-            return
-        if role not in config.TEXT_ENTRY_ROLES:
-            return
-        self._log(f"clicked a {role}; leaving the chord so typing works")
+        if getattr(element, "kind", "element") == "window":
+            self._log("switched window; leaving the chord")
+        else:
+            try:
+                role = element.role
+            except Exception:
+                return
+            if role not in config.TEXT_ENTRY_ROLES:
+                return
+            self._log(f"clicked a {role}; leaving the chord so typing works")
         try:
             import subprocess
             subprocess.run(
@@ -379,9 +423,13 @@ class Daemon:
 
     def _finished(self):
         self.overlay = None
+        self._clear_mode()
 
     def _log(self, message):
-        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
+        now = time.time()
+        stamp = (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+                 + f".{int(now * 1000) % 1000:03d}")
+        line = f"{stamp} {message}"
         if self.debug:
             print(f"homerow: {message}", flush=True)
         if self.log is not None:
