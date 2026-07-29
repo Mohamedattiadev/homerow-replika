@@ -512,6 +512,42 @@ class CaretVisualAndYank(unittest.TestCase):
         set_clip.assert_not_called()
 
 
+class CaretSearchReopen(unittest.TestCase):
+    """/ inside caret mode reopens caret search instead of requiring Esc
+    then the hotkey again from scratch to look for something else.
+
+    on_search must run before on_done, mirroring search.SearchPrompt's
+    on_pick/on_done ordering: on_done is what clears the daemon's overlay
+    reference, so if it ran first, the new session on_search schedules
+    would have its assignment wiped the instant it landed.
+    """
+
+    def session(self):
+        from homerow import caret
+        instance = object.__new__(caret.CaretSession)
+        instance.window = unittest.mock.Mock()
+        instance._grabbed = False
+        instance._idle = None
+        calls = []
+        instance.on_done = lambda: calls.append("done")
+        instance.on_search = lambda: calls.append("search")
+        return instance, calls
+
+    def test_reopen_search_calls_on_search_before_on_done(self):
+        from homerow import caret
+        instance, calls = self.session()
+        with unittest.mock.patch.object(caret.Gdk.Display, "get_default"):
+            instance._close(reopen_search=True)
+        self.assertEqual(calls, ["search", "done"])
+
+    def test_plain_close_never_calls_on_search(self):
+        from homerow import caret
+        instance, calls = self.session()
+        with unittest.mock.patch.object(caret.Gdk.Display, "get_default"):
+            instance._close()
+        self.assertEqual(calls, ["done"])
+
+
 class CaretSearchMatching(unittest.TestCase):
     """caret.word_hits(): type-to-find matching for caret search.
 

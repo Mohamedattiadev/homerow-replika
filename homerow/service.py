@@ -327,7 +327,8 @@ class Daemon:
         def start(block):
             def go():
                 self.overlay = caret.CaretSession(
-                    block, self._finished, blocks=blocks)
+                    block, self._finished, blocks=blocks,
+                    on_search=lambda: GLib.idle_add(self._caret_search))
                 self._set_mode("caret")
                 self.overlay.show()
                 return False
@@ -379,7 +380,8 @@ class Daemon:
             # the same reasoning.
             def go():
                 session = caret.CaretSession(
-                    hit.block, self._finished, blocks=blocks)
+                    hit.block, self._finished, blocks=blocks,
+                    on_search=lambda: GLib.idle_add(self._caret_search))
                 session.offset = hit.offset
                 session._sync_caret()
                 self.overlay = session

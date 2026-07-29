@@ -253,9 +253,14 @@ def _pointer_position():
 class CaretSession:
     """A vim-style caret over one text element."""
 
-    def __init__(self, element, on_done=None, blocks=None):
+    def __init__(self, element, on_done=None, blocks=None, on_search=None):
         self.element = element
         self.on_done = on_done or (lambda: None)
+        # / reopens caret search from inside caret mode, so landing on one
+        # word and then wanting a different one doesn't mean leaving the
+        # mode entirely and pressing the hotkey again from scratch -- see
+        # _on_key's Gdk.KEY_slash handling.
+        self.on_search = on_search or (lambda: None)
         self.iface = element.accessible.get_text_iface()
         self.length = self.iface.get_character_count() if self.iface else 0
         self.text = _text_of(self.iface, 0, self.length)
@@ -437,6 +442,12 @@ class CaretSession:
                 return True
             self._close()
             return True
+        if key == Gdk.KEY_slash:
+            # Reopen caret search from here, same as vim's / -- landing on
+            # one word and then wanting a different one shouldn't mean
+            # backing all the way out and pressing the hotkey again.
+            self._close(reopen_search=True)
+            return True
         # Digits jump straight to a block. Tab was the only way to reach one,
         # which on a page with dozens of blocks meant pressing it dozens of
         # times. Digits are free here: the motions are all letters.
@@ -611,7 +622,7 @@ class CaretSession:
         self.linewise = False
         self.window.queue_draw()
 
-    def _close(self):
+    def _close(self, reopen_search=False):
         if getattr(self, "_idle", None) is not None:
             GLib.source_remove(self._idle)
             self._idle = None
@@ -625,6 +636,14 @@ class CaretSession:
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
         Gdk.Display.get_default().sync()
+        # Both must run, same reasoning as search.SearchPrompt's on_pick/
+        # on_done: on_done is what tells the daemon this session is over
+        # (clears its overlay reference and mode file), and on_search --
+        # which schedules the *next* session via GLib.idle_add -- has to be
+        # called before it, not after, or on_done would clear the overlay
+        # reference the instant the new session sets it.
+        if reopen_search:
+            self.on_search()
         self.on_done()
 
     # -- drawing --------------------------------------------------------
@@ -702,7 +721,7 @@ class CaretSession:
         else:
             mode = "CARET"
         legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
-                  f"gg/G doc   v/V select   y yank   yy line   esc")
+                  f"gg/G doc   v/V select   y yank   yy line   / search   esc")
         if self.pending_y:
             legend = "y…   " + legend
         if len(self.blocks) > 1:
