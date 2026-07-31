@@ -244,6 +244,113 @@ CARET_SEARCH_MAX_HITS = 200
 CARET_SEARCH_LABELS = SEARCH_LABELS
 CARET_SEARCH_MIN_QUERY = SEARCH_MIN_QUERY
 
+# --- edit (open a field in nvim, on top of the field) ----------------------
+# Edit mode asks for the EDITABLE *state* and does not filter by role at all.
+# A role list was tried first and kept missing things for no good reason:
+# GitHub's "Go to file" is a `combo box`, Chromium's contenteditables are
+# `section`s, and every role added to the list only revealed the next one it
+# lacked. The state is the thing actually being asked about, so it decides,
+# and the list below subtracts rather than adds.
+#
+# The safety consequence is that PASSWORD_TEXT now comes back from the match
+# rule and is refused in Python instead. edit.collect fails closed for this
+# reason: an element whose role cannot be read is skipped, not kept.
+EDIT_SKIP_ROLES = {"password text", "terminal"}
+
+# Below this a field is a layout artefact rather than something to write in.
+EDIT_MIN_SIZE = 12
+
+# Extension on the temp file, which is what gives nvim its filetype -- and
+# with it wrapping, spellcheck and whatever else the user's config attaches
+# to prose. Most fields being edited at this length are prose.
+EDIT_SUFFIX = ".md"
+
+# Used when neither $VISUAL nor $EDITOR is set.
+EDIT_EDITOR = "nvim"
+
+# The editor is sized in character cells measured off the running terminal,
+# not in pixels, so it comes out as close to the field's own rectangle as a
+# usable editor can be. A fixed pixel floor was tried first and is what made
+# a one-line omnibox open a 720x400 window sitting over half the page --
+# unmistakably a terminal that had appeared, rather than the field becoming
+# an editor.
+EDIT_MIN_COLS = 32
+EDIT_MIN_ROWS = 6
+
+# A field shorter than this many rows is edited in "compact" nvim: no
+# statusline, no line numbers, no sign column. One line of chrome around one
+# line of text is most of the box, and hiding it is the difference between
+# the field looking like nvim and nvim looking like a window over the field.
+EDIT_COMPACT_ROWS = 3
+# cmdheight=0 is the row this actually wins back: without it nvim reserves a
+# row for the command line, and a one-line field cannot spare one.
+#
+# laststatus=0 is asked for and does not stick, which is why compact still
+# budgets two rows below. A statusline plugin sets laststatus itself, after
+# this and after VimEnter -- measured against the real config here, lualine
+# leaves it at 3 (global statusline) however late this is applied. Rather
+# than fight a plugin whose whole job is owning that row, the row is paid
+# for. The setting stays because someone without such a plugin does get it.
+# nomore and shortmess are not cosmetic here, they are what makes a short
+# window usable at all: with three rows nvim pauses on `-- More --` for
+# almost any message it prints, including the one it prints on writing the
+# file, and every keystroke after that goes to the pager instead of the
+# buffer. It reads exactly like the editor having frozen.
+EDIT_COMPACT_SETTINGS = (
+    "autocmd VimEnter * ++once silent! set laststatus=0 cmdheight=0 "
+    "nomore shortmess+=aoOtTIcF "
+    "nonumber norelativenumber signcolumn=no nocursorline"
+)
+
+# Rows a compact editor gets. Three of these are spoken for before any text
+# is visible -- statusline (which a plugin will not give up, see
+# EDIT_COMPACT_SETTINGS), command line, and one line of buffer -- so three
+# was the floor and read as a slot rather than an editor. Five leaves room
+# to see what you are writing. Raise it for a roomier box; the window is
+# still anchored on the field either way.
+EDIT_COMPACT_MIN_ROWS = 5
+# Editors the compact settings above are valid for; anything else is launched
+# untouched rather than handed flags it will not understand.
+EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}
+
+# Normal-mode shortcuts for the one thing this buffer exists to do. <buffer>
+# is the important part: they live on the scratch buffer and nothing else, so
+# `q` is still macro recording and `<Space>` is still the leader everywhere
+# else in the same nvim -- including in another window of it.
+#
+# Both write rather than quitting bare, and `:q!` remains the way to discard:
+# an edit thrown away silently is the worse mistake to make on a keystroke
+# this short.
+#
+# Both also *quit*, because the field is only written when the editor exits
+# -- a `:w` that stays open would report success and change nothing on
+# screen, which is worse than not offering it.
+EDIT_KEYMAPS = [
+    "nnoremap <buffer> q :wq<CR>",
+    "nnoremap <buffer> <Space>w :wq<CR>",
+]
+
+EDIT_BORDER = 2
+
+# WM_WINDOW_ROLE on the editor window. WM_CLASS is `homerow` for every window
+# this process opens, so a compositor or tiling rule that wants to treat the
+# editor differently from the hint overlay has to match on something, and
+# this is it.
+EDIT_WM_ROLE = "homerow-edit"
+
+# Paste-path timings. Focus is polled rather than waited out: the keystrokes
+# go wherever focus actually is, so guessing an interval was slow when it
+# guessed high and lost the edit into another window when it guessed low.
+EDIT_FOCUS_POLL_MS = 20
+EDIT_FOCUS_TRIES = 30          # ~600ms before giving up and trying anyway
+EDIT_KEY_DELAY_MS = 50
+# How long the borrowed clipboard is held before the user's own contents go
+# back. Long enough that the application has read the paste it was sent.
+EDIT_RESTORE_DELAY_MS = 500
+
+EDIT_SELECT_ALL = "ctrl+a"
+EDIT_PASTE = "ctrl+v"
+
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
 # put scroll hints on things that could not scroll. Chromium exposes no

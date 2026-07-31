@@ -817,5 +817,231 @@ class CaretSearchMatching(unittest.TestCase):
         self.assertEqual(len(hits), 5)
 
 
+class EditWriteBack(unittest.TestCase):
+    """The parts of edit mode that decide what text goes back into a field."""
+
+    def test_editor_added_newline_comes_off(self):
+        from homerow import edit
+        # The case that matters: a one-line search box, where a stray newline
+        # is not whitespace but a submit.
+        self.assertEqual(edit.strip_added_newline("query", "edited\n"),
+                         "edited")
+
+    def test_newline_the_field_already_had_is_kept(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("a\n", "b\n"), "b\n")
+
+    def test_only_one_newline_comes_off(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("q", "a\n\n"), "a\n")
+
+    def test_text_without_a_trailing_newline_is_untouched(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("q", "abc"), "abc")
+
+    def test_empty_original_still_loses_the_added_newline(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("", "typed\n"), "typed")
+
+
+class EditWindowPlacement(unittest.TestCase):
+    def test_a_one_line_field_stays_a_one_line_box(self):
+        from homerow import edit
+        # The omnibox case, and the whole point of measuring in cells: a
+        # 28px-tall field must not open a 400px-tall editor over the page.
+        field = Fake(x=100, y=200, w=565, h=28)
+        # One row of a 17px cell plus the border.
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 17 + 4)
+        self.assertEqual((w, h), (565, 28))
+
+    def test_anchor_is_the_field_corner(self):
+        from homerow import edit
+        field = Fake(x=100, y=200, w=565, h=28)
+        x, y, _, _ = edit.frame_rect(field, 1920, 1080, 260, 21)
+        self.assertEqual((x, y), (100, 200))
+
+    def test_a_tiny_field_grows_to_the_floor(self):
+        from homerow import edit
+        field = Fake(x=10, y=10, w=40, h=8)
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 21)
+        self.assertEqual((w, h), (260, 21))
+
+    def test_large_field_keeps_its_own_size(self):
+        from homerow import edit
+        field = Fake(x=10, y=10, w=900, h=600)
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 120)
+        self.assertEqual((w, h), (900, 600))
+
+    def test_field_near_an_edge_is_pushed_back_on_screen(self):
+        from homerow import edit
+        field = Fake(x=1800, y=1050, w=400, h=300)
+        x, y, w, h = edit.frame_rect(field, 1920, 1080, 260, 120)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertLessEqual(x + w, 1920)
+        self.assertLessEqual(y + h, 1080)
+
+    def test_editor_wider_than_the_screen_still_starts_on_it(self):
+        from homerow import edit
+        field = Fake(x=50, y=50, w=10, h=10)
+        x, y, _, _ = edit.frame_rect(field, 400, 300, 720, 400)
+        self.assertEqual((x, y), (0, 0))
+
+
+class EditCompactMode(unittest.TestCase):
+    def test_a_single_line_field_is_compact(self):
+        from homerow import edit
+        self.assertTrue(edit.compact_rows(28, 17, 3))
+
+    def test_a_textarea_is_not_compact(self):
+        from homerow import edit
+        self.assertFalse(edit.compact_rows(220, 17, 3))
+
+    def test_an_unmeasured_cell_is_never_compact(self):
+        from homerow import edit
+        self.assertFalse(edit.compact_rows(28, 0, 3))
+
+    def test_compact_hides_chrome_for_vim(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        self.assertIn("-c", argv)
+        self.assertIn(config.EDIT_COMPACT_SETTINGS, argv)
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_compact_leaves_a_non_vim_editor_alone(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="helix", compact=True)
+        self.assertEqual(argv, ["helix", "/tmp/f.md"])
+
+    def test_a_full_size_field_gets_no_compact_flags(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim", compact=False)
+        self.assertNotIn(config.EDIT_COMPACT_SETTINGS, argv)
+
+    def test_save_shortcuts_are_present_whatever_the_size(self):
+        from homerow import edit
+        for compact in (True, False):
+            argv = edit.editor_argv("/tmp/f.md", editor="nvim",
+                                    compact=compact)
+            for mapping in config.EDIT_KEYMAPS:
+                self.assertIn(mapping, argv)
+
+    def test_both_q_and_space_w_are_mapped(self):
+        joined = " ".join(config.EDIT_KEYMAPS)
+        self.assertIn("> q :", joined)
+        self.assertIn("<Space>w", joined)
+
+    def test_the_mappings_are_buffer_local(self):
+        # Otherwise they would shadow macro recording and the leader key in
+        # the user's own nvim.
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn("<buffer>", mapping)
+
+    def test_the_shortcuts_write_rather_than_discarding(self):
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn("wq", mapping)
+
+    def test_a_non_vim_editor_gets_no_mapping(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="helix", compact=False)
+        self.assertEqual(argv, ["helix", "/tmp/f.md"])
+
+    def test_an_absolute_editor_path_is_still_recognised(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="/usr/bin/nvim",
+                                compact=True)
+        self.assertIn("-c", argv)
+
+
+class EditorCommand(unittest.TestCase):
+    def test_visual_wins_over_editor(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"VISUAL": "helix", "EDITOR": "vim"}):
+            self.assertEqual(edit.editor_argv("/tmp/f.md"),
+                             ["helix", "/tmp/f.md"])
+
+    def test_editor_is_used_when_visual_is_unset(self):
+        from homerow import edit
+        env = dict(os.environ)
+        env.pop("VISUAL", None)
+        env["EDITOR"] = "vim"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            argv = edit.editor_argv("/tmp/f.md")
+        self.assertEqual(argv[0], "vim")
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_an_editor_with_arguments_is_split(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim -u NONE")
+        self.assertEqual(argv[:3], ["nvim", "-u", "NONE"])
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_falls_back_to_the_configured_editor(self):
+        from homerow import edit
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("VISUAL", "EDITOR")}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            argv = edit.editor_argv("/tmp/f.md")
+        self.assertEqual(argv[0], config.EDIT_EDITOR)
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+
+class EditDismissal(unittest.TestCase):
+    """A dismissed editor must never write its buffer into the field.
+
+    Two editors were once open over one field at the same time; both wrote
+    back two milliseconds apart, and the abandoned one landed last and
+    overwrote the real edit.
+    """
+
+    def session(self):
+        from homerow import edit
+        # Built without __init__: constructing one needs a display, a VTE
+        # widget and a temp file, none of which this is about.
+        session = edit.EditSession.__new__(edit.EditSession)
+        session.closed = True          # so _close() is a no-op
+        session._dismissed = False
+        session.original = "real contents"
+        session.path = "/nonexistent/homerow-test.md"
+        session.written = []
+        session.on_write = session.written.append
+        session.on_done = lambda: None
+        session._log = lambda _m: None
+        return session
+
+    def test_dismissed_session_does_not_write_back(self):
+        session = self.session()
+        session.dismiss()
+        session._on_child_exited(None, 0)
+        self.assertEqual(session.written, [])
+
+    def test_dismissal_is_what_suppresses_it_not_the_exit_status(self):
+        session = self.session()
+        session._dismissed = True
+        session._on_child_exited(None, 0)
+        self.assertEqual(session.written, [])
+
+    def test_an_editor_that_was_killed_does_not_write_back(self):
+        session = self.session()
+        session._on_child_exited(None, 9)
+        self.assertEqual(session.written, [])
+
+    def test_only_edit_sessions_claim_unsaved_work(self):
+        from homerow import edit, overlay
+        self.assertTrue(edit.EditSession.holds_unsaved_work)
+        self.assertFalse(
+            getattr(overlay.Overlay, "holds_unsaved_work", False))
+
+
+class EditSafety(unittest.TestCase):
+    def test_password_fields_are_refused(self):
+        # Edit mode writes a field's contents to a temp file. The match rule
+        # no longer filters by role, so this set is the only thing standing
+        # between a password field and disk.
+        self.assertIn("password text", config.EDIT_SKIP_ROLES)
+        self.assertIn("terminal", config.EDIT_SKIP_ROLES)
+
+
 if __name__ == "__main__":
     unittest.main()

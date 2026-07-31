@@ -28,6 +28,9 @@ for arg in "$@"; do
         --caret-search)
             COMMAND=caret_search
             ;;
+        --edit)
+            COMMAND=edit
+            ;;
         -l | --list | -d | --debug | --standalone | -h | --help | -v | --version)
             exec python3 "$DIR/homerow-cli" "$@"
             ;;

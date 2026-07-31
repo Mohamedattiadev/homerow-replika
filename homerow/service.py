@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
 from . import (  # noqa: E402
-    caret, click, config, elements, hints, scroll, search, windows, x11,
+    caret, click, config, edit, elements, hints, scroll, search, windows, x11,
 )
 from .overlay import Overlay, screen_size  # noqa: E402
 
@@ -55,6 +55,10 @@ def mode_path():
     """
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     return os.path.join(runtime, "homerow-mode")
+
+
+_MODE_COMMANDS = frozenset(
+    {"hint", "scroll", "search", "caret", "caret_search", "edit"})
 
 
 def is_running(path=None):
@@ -93,6 +97,11 @@ class Daemon:
         # died with it, so nothing is actually open even though this file
         # says otherwise.
         self._clear_mode()
+        # Likewise any edit buffer: a daemon killed mid-edit leaves the
+        # contents of a field sitting in /tmp with nothing to clean it up.
+        stale = edit.sweep_temp_files()
+        if stale:
+            self._log(f"removed {stale} stale edit buffer(s)")
 
         Atspi.init()
         # Without a cap, one hung app's accessibility service blocks every
@@ -169,6 +178,13 @@ class Daemon:
             self._desktop_watch = None
             return False
         now = x11.current_desktop()
+        # An edit session opts out. Everything else on screen describes a
+        # window that is no longer in front and is unrecoverable once it goes,
+        # but an editor holds unsaved work -- closing it because the user
+        # glanced at another workspace would throw away what they typed, and
+        # the write-back targets the original window by id anyway.
+        if not getattr(self.overlay, "follows_workspace", True):
+            return True
         if now is not None and now != self._desktop:
             self._log(f"workspace changed ({self._desktop} -> {now}); "
                       f"closing the open mode")
@@ -208,6 +224,18 @@ class Daemon:
             except OSError:
                 pass
 
+        # Every mode below opens by replacing whatever is already open. That
+        # is right for an overlay, which holds nothing, and wrong for an
+        # editor, which holds text the user has typed and not saved. Pressing
+        # the edit key twice used to leave two editors running over one field
+        # and both wrote back, so the abandoned buffer overwrote the real
+        # edit. Nothing gets to replace an editor; close it first.
+        if command in _MODE_COMMANDS and \
+                getattr(self.overlay, "holds_unsaved_work", False):
+            self._log(f"editor open; ignoring {command}")
+            _notify("An editor is open — :wq or :q! first.")
+            return True
+
         if command == "hint":
             GLib.idle_add(self._hint)
         elif command == "scroll":
@@ -218,6 +246,8 @@ class Daemon:
             GLib.idle_add(self._caret)
         elif command == "caret_search":
             GLib.idle_add(self._caret_search)
+        elif command == "edit":
+            GLib.idle_add(self._edit)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
         return True
@@ -436,6 +466,90 @@ class Daemon:
         self._set_mode("caret-search")
         self.overlay.show()
         return False
+
+    def _edit(self):
+        if self.overlay is not None:
+            self._log("overlay already open; replacing it")
+            try:
+                self.overlay.dismiss()
+            except Exception:
+                pass
+            self.overlay = None
+
+        if not edit.available():
+            self._log("no VTE; cannot host an editor")
+            _notify("Edit mode needs the VTE terminal widget "
+                    "(gir1.2-vte-2.91).")
+            return False
+
+        started = time.perf_counter()
+        width, height = screen_size()
+        try:
+            fields = edit.collect(width, height)
+        except Exception as error:
+            print(f"homerow: edit scan failed: {error!r}", file=sys.stderr)
+            return False
+
+        if not fields:
+            self._log("no editable fields here")
+            _notify("No editable field here — this app publishes none through "
+                    "accessibility.")
+            return False
+
+        self._log(f"{len(fields)} editable fields in "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms")
+
+        # Which window to hand the text back to. Read now, while it is still
+        # the focused one: the editor takes focus the moment it opens, so by
+        # the time there is anything to write back the answer has changed.
+        window_id = _active_window_id()
+
+        # One field needs no picking. Hinting a single target is a keystroke
+        # asking which of one thing you meant.
+        if len(fields) == 1:
+            self._log("one field; skipping the picker")
+            self._open_editor(fields[0], window_id)
+            return False
+
+        def on_choose(field, _button, _modifiers):
+            self._open_editor(field, window_id)
+
+        self.overlay = Overlay(
+            fields, hints.assign(fields), on_choose, self._finished,
+            prompt="edit in nvim",
+        )
+        self._set_mode("edit")
+        self.overlay.show()
+        return False
+
+    def _open_editor(self, field, window_id):
+        """Open one field's contents in the editor, and write back on exit."""
+        try:
+            original = edit.read(field.accessible)
+        except Exception as error:
+            self._log(f"could not read the field: {error!r}")
+            _notify("Could not read that field.")
+            return
+
+        how = edit.strategy(field.accessible)
+        self._log(f"editing {len(original)} chars; write-back via {how}")
+
+        def on_write(edited):
+            used = edit.write(field, edited, window_id, log=self._log)
+            self._log(f"wrote {len(edited)} chars back via {used}")
+
+        def go():
+            session = edit.EditSession(
+                field, original, on_done=self._finished, on_write=on_write,
+                log=self._log)
+            self.overlay = session
+            self._set_mode("edit")
+            session.show()
+            return False
+
+        # After the picker, not during: the overlay has to be gone before the
+        # editor opens, or the editor is the window underneath it.
+        GLib.idle_add(go)
 
     def _scroll(self):
         if self.overlay is not None:
