@@ -296,11 +296,31 @@ EDIT_COMPACT_ROWS = 3
 # almost any message it prints, including the one it prints on writing the
 # file, and every keystroke after that goes to the pager instead of the
 # buffer. It reads exactly like the editor having frozen.
-EDIT_COMPACT_SETTINGS = (
-    "autocmd VimEnter * ++once silent! set laststatus=0 cmdheight=0 "
-    "nomore shortmess+=aoOtTIcF "
+EDIT_COMPACT_SET = (
+    "set laststatus=0 cmdheight=0 nomore shortmess+=aoOtTIcF "
     "nonumber norelativenumber signcolumn=no nocursorline"
 )
+# Cold start has to defer these past the user's config; a warm server has
+# already passed VimEnter and applies EDIT_COMPACT_SET directly.
+EDIT_COMPACT_SETTINGS = f"autocmd VimEnter * ++once silent! {EDIT_COMPACT_SET}"
+
+# Keep a headless nvim running so opening a field does not pay for loading
+# the user's config every time -- measured at 285ms here, which was most of
+# the delay between pressing the key and being able to type. The editor in
+# the field is then a remote UI attaching to it, which costs single-digit
+# milliseconds because it loads no config of its own.
+#
+# The server is replaced after every session rather than reused: a dismissed
+# editor leaves a modified buffer behind, and the next `:edit` into it fails
+# with E37. Restarting costs nothing that is on the critical path.
+EDIT_WARM_SERVER = True
+EDIT_WARM_SOCKET = "homerow-nvim.sock"
+
+# Push the field's new contents on every `:w`, not only when the editor
+# closes. Only ever done where AT-SPI can write the field directly: the paste
+# path would have to steal focus away from the editor mid-edit to type into
+# the field, which is worse than waiting for the close.
+EDIT_LIVE_WRITE = True
 
 # Rows a compact editor gets. Three of these are spoken for before any text
 # is visible -- statusline (which a plugin will not give up, see

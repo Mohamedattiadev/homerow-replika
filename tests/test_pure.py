@@ -987,6 +987,43 @@ class EditorCommand(unittest.TestCase):
         self.assertEqual(argv[-1], "/tmp/f.md")
 
 
+class WarmEditor(unittest.TestCase):
+    """The warm nvim server that opening a field attaches to."""
+
+    def test_only_vim_speaks_the_remote_protocol(self):
+        from homerow import edit
+        self.assertTrue(edit.is_vim_like("nvim"))
+        self.assertTrue(edit.is_vim_like("/usr/bin/nvim"))
+        self.assertTrue(edit.is_vim_like("nvim -u NONE"))
+        self.assertFalse(edit.is_vim_like("helix"))
+        self.assertFalse(edit.is_vim_like(""))
+
+    def test_visual_still_wins_when_resolving(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"VISUAL": "helix", "EDITOR": "vim"}):
+            self.assertEqual(edit.resolve_editor(), "helix")
+        self.assertEqual(edit.resolve_editor("nvim"), "nvim")
+
+    def test_commands_become_a_vim_list(self):
+        from homerow import edit
+        self.assertEqual(edit._vim_list(["a", "b"]), "['a','b']")
+
+    def test_quotes_in_a_command_are_escaped(self):
+        from homerow import edit
+        # A path with an apostrophe would otherwise end the string literal
+        # and the rest would be parsed as vimscript.
+        self.assertEqual(edit._vim_list(["edit /tmp/it's.md"]),
+                         "['edit /tmp/it''s.md']")
+
+    def test_the_socket_lives_in_the_runtime_dir(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"XDG_RUNTIME_DIR": "/run/user/42"}):
+            self.assertEqual(edit.warm_socket_path(),
+                             "/run/user/42/" + config.EDIT_WARM_SOCKET)
+
+
 class EditDismissal(unittest.TestCase):
     """A dismissed editor must never write its buffer into the field.
 

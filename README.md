@@ -156,9 +156,18 @@ and `<Space>` is still your leader everywhere else in the same nvim. They
 write rather than discarding, because an edit thrown away silently is the
 worse mistake to make on a keystroke that short.
 
-They also close, rather than only writing: the field is updated when the
-editor exits, so a `:w` that stayed open would report success and change
-nothing on screen.
+In a GTK or Qt field, `:w` pushes the text into the field without closing, so
+you can watch it land and keep editing. In a browser it does not: updating a
+Chromium field means typing into it, and stealing focus away from the editor
+mid-edit is worse than waiting — there, the field updates when you close.
+
+**Opening is warm.** A headless nvim is started with the daemon and the
+editor in the field is a remote UI attaching to it, so opening a field does
+not pay to load your config — measured at 285ms here, which was most of the
+delay before you could type. The server is replaced after each session
+rather than reused, because a dismissed editor leaves a modified buffer that
+the next `:edit` would fail on. If anything about that path fails, the mode
+falls back to starting nvim from cold.
 
 With exactly one editable field on screen there is nothing to pick, so it
 opens straight away. While an editor is open no other homerow mode will

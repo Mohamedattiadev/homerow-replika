@@ -102,6 +102,11 @@ class Daemon:
         stale = edit.sweep_temp_files()
         if stale:
             self._log(f"removed {stale} stale edit buffer(s)")
+        # Load the user's editor config now, so the first field opened does
+        # not wait for it. Failure here is not fatal: edit mode falls back to
+        # starting an editor from cold.
+        if edit.start_warm(log=self._log):
+            self._log("warming an editor for edit mode")
 
         Atspi.init()
         # Without a cap, one hung app's accessibility service blocks every
@@ -133,6 +138,7 @@ class Daemon:
         return 0
 
     def _cleanup(self):
+        edit.stop_warm()
         try:
             self.server.close()
         except OSError:

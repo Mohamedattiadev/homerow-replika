@@ -28,7 +28,7 @@ import gi
 gi.require_version("Atspi", "2.0")
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Atspi, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
 from .overlay import screen_size, set_identity  # noqa: E402
@@ -167,6 +167,114 @@ def collect(screen_w, screen_h):
     return found
 
 
+def resolve_editor(editor=None):
+    """$VISUAL, then $EDITOR, then the configured default."""
+    return editor or os.environ.get("VISUAL") or \
+        os.environ.get("EDITOR") or config.EDIT_EDITOR
+
+
+def is_vim_like(editor):
+    argv = editor.split()
+    return bool(argv) and \
+        os.path.basename(argv[0]) in config.EDIT_VIM_LIKE
+
+
+def warm_socket_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return os.path.join(runtime, config.EDIT_WARM_SOCKET)
+
+
+_warm = {"proc": None}
+
+
+def warm_alive():
+    proc = _warm["proc"]
+    return (proc is not None and proc.poll() is None
+            and os.path.exists(warm_socket_path()))
+
+
+def start_warm(editor=None, log=None):
+    """Start the headless nvim that the next edit will attach to.
+
+    Called at daemon startup and again after every session, so the cost of
+    loading the user's config is always already paid by the time a field is
+    opened rather than being paid in front of them.
+    """
+    log = log or (lambda _m: None)
+    if not config.EDIT_WARM_SERVER or warm_alive():
+        return False
+    editor = resolve_editor(editor)
+    if not is_vim_like(editor):
+        return False           # only nvim speaks --listen/--remote-ui
+    socket_path = warm_socket_path()
+    try:
+        os.unlink(socket_path)
+    except OSError:
+        pass
+    import subprocess
+    try:
+        _warm["proc"] = subprocess.Popen(
+            editor.split() + ["--headless", "--listen", socket_path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except (OSError, ValueError) as error:
+        log(f"could not start the warm editor: {error!r}")
+        _warm["proc"] = None
+        return False
+    return True
+
+
+def stop_warm():
+    """Kill the warm server, if any. Its buffer state is not reusable."""
+    proc = _warm["proc"]
+    _warm["proc"] = None
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        os.unlink(warm_socket_path())
+    except OSError:
+        pass
+
+
+def _vim_list(items):
+    """A vimscript list literal of strings."""
+    return "[" + ",".join(
+        "'" + item.replace("'", "''") + "'" for item in items) + "]"
+
+
+def warm_open(path, compact, editor=None, log=None):
+    """Load `path` into the warm server, set up as a cold nvim would be.
+
+    One remote-expr rather than several: each is a process spawn, and the
+    whole point of this path is the milliseconds.
+    """
+    log = log or (lambda _m: None)
+    editor = resolve_editor(editor)
+    commands = [f"edit {path}"] + list(config.EDIT_KEYMAPS)
+    if compact:
+        commands.append(f"silent! {config.EDIT_COMPACT_SET}")
+    import subprocess
+    try:
+        result = subprocess.run(
+            editor.split() + ["--server", warm_socket_path(),
+                              "--remote-expr", f"execute({_vim_list(commands)})"],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"warm editor did not answer: {error!r}")
+        return False
+    if result.returncode != 0:
+        log(f"warm editor refused the file: "
+            f"{result.stderr.decode('utf-8', 'replace').strip()[:120]}")
+        return False
+    return True
+
+
 def sweep_temp_files():
     """Delete edit buffers left behind by a daemon that died mid-edit.
 
@@ -262,8 +370,7 @@ def editor_argv(path, editor=None, compact=False):
     out to an editor does -- someone whose $EDITOR is helix should get helix,
     and gets it without the vim-only flags below.
     """
-    editor = editor or os.environ.get("VISUAL") or \
-        os.environ.get("EDITOR") or config.EDIT_EDITOR
+    editor = resolve_editor(editor)
     argv = editor.split()
     if argv and os.path.basename(argv[0]) in config.EDIT_VIM_LIKE:
         # -c, not --cmd: these have to run *after* the user's config, or
@@ -338,6 +445,9 @@ def _write_paste(field, text, window_id, log):
         x11.send_combo(config.EDIT_SELECT_ALL)
 
     def paste():
+        held = clipboard.wait_for_text()
+        log(f"pasting: clipboard holds {0 if held is None else len(held)} "
+            f"chars, wanted {len(text)}")
         x11.send_combo(config.EDIT_PASTE)
 
     def restore():
@@ -448,6 +558,11 @@ class EditSession:
         self._log = log or (lambda _message: None)
         self.closed = False
         self._dismissed = False
+        self.warm = False
+        self._monitor = None
+        # What the field is believed to hold. Live writes move it, so the
+        # write on close does not repeat one that already landed.
+        self._sent = original
 
         handle, self.path = tempfile.mkstemp(
             prefix="homerow-", suffix=config.EDIT_SUFFIX)
@@ -554,6 +669,22 @@ class EditSession:
         self.window.move(x, y)
         self.window.resize(w, h)
 
+    def _argv(self):
+        """Attach to the warm server if there is one, else start cold.
+
+        Falling back rather than failing: the warm path has more that can go
+        wrong (no server, a server that will not take the file) and none of
+        it is worth losing the mode over.
+        """
+        editor = resolve_editor()
+        if warm_alive() and is_vim_like(editor):
+            if warm_open(self.path, self.compact, editor, self._log):
+                self.warm = True
+                return editor.split() + [
+                    "--server", warm_socket_path(), "--remote-ui"]
+            self._log("falling back to a cold editor")
+        return editor_argv(self.path, compact=self.compact)
+
     def show(self):
         self.window.show_all()
         self._fit()
@@ -566,7 +697,8 @@ class EditSession:
             pass
         self.terminal.grab_focus()
 
-        argv = editor_argv(self.path, compact=self.compact)
+        argv = self._argv()
+        self._watch_for_saves()
         self._log(f"editing in {' '.join(argv)}")
         try:
             # Positional, and the order is not the one Python introspection
@@ -588,6 +720,43 @@ class EditSession:
         if error is not None or pid == -1:
             self._log(f"editor failed to start: {error!r}")
             self._close()
+
+    def _watch_for_saves(self):
+        """Push the field on every `:w`, where that can be done quietly.
+
+        Only for fields AT-SPI can write directly. The paste path would have
+        to pull focus off the editor and type into the field to do this,
+        which in the middle of an edit is worse than waiting for the close --
+        so in a browser `:w` still only saves, and the field updates when the
+        editor exits.
+        """
+        if not config.EDIT_LIVE_WRITE:
+            return
+        if strategy(self.field.accessible) != EDITABLE_TEXT:
+            return
+        try:
+            handle = Gio.File.new_for_path(self.path)
+            self._monitor = handle.monitor_file(
+                Gio.FileMonitorFlags.NONE, None)
+            self._monitor.connect("changed", self._on_file_changed)
+        except Exception as error:
+            self._log(f"no live write-back: {error!r}")
+            self._monitor = None
+
+    def _on_file_changed(self, _monitor, _file, _other, event):
+        if event != Gio.FileMonitorEvent.CHANGES_DONE_HINT:
+            return
+        if self.closed or self._dismissed:
+            return
+        try:
+            with open(self.path, encoding="utf-8") as temp:
+                edited = strip_added_newline(self.original, temp.read())
+        except OSError:
+            return
+        if edited == self._sent:
+            return
+        self._sent = edited
+        self.on_write(edited)
 
     def _on_child_exited(self, _terminal, status):
         """The editor exited; take whatever it left on disk."""
@@ -613,9 +782,12 @@ class EditSession:
             self._log(f"editor exited {status}; not writing back")
             return
         edited = strip_added_newline(self.original, edited)
-        if edited == self.original:
-            self._log("unchanged; nothing to write back")
+        if edited == self._sent:
+            # Either nothing was changed, or a `:w` already pushed exactly
+            # this and repeating it would be a second write for no reason.
+            self._log("nothing further to write back")
             return
+        self._sent = edited
         self.on_write(edited)
 
     def dismiss(self):
@@ -635,10 +807,23 @@ class EditSession:
         if self.closed:
             return
         self.closed = True
+        if self._monitor is not None:
+            try:
+                self._monitor.cancel()
+            except Exception:
+                pass
+            self._monitor = None
         try:
             self.window.destroy()
         except Exception:
             pass
+        if self.warm:
+            # The server's buffer state is not reusable -- a dismissed editor
+            # leaves it modified, and the next `:edit` into it fails -- so it
+            # is replaced rather than kept. The new one warms up in the
+            # background, off the path of anything the user is waiting for.
+            stop_warm()
+            start_warm(log=self._log)
         # The field's contents were on disk; they should not stay there.
         try:
             os.unlink(self.path)
