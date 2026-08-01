@@ -372,6 +372,36 @@ EDIT_LEARN_DELAY_MS = 600
 EDIT_COMPACT_TEXT_ROWS = 1
 EDIT_COMPACT_MAX_ROWS = 12
 
+# Grow the box as the buffer grows, up to EDIT_COMPACT_MAX_ROWS.
+#
+# This was left out at first, on the reasoning that resizing a window under
+# somebody who has started reading is worse than letting the editor scroll --
+# which is true of the *chrome* measurement, where the window is already the
+# right size and the change buys nothing. It is not true here. A field opened
+# at its minimum has a few rows; press Enter past the last one and the line
+# you were writing scrolls out of sight, and getting it back means k. No
+# other text field on the desktop behaves that way, and "it is really an
+# editor" is not an answer to that -- the box is standing in for a text
+# field, so it has to grow like one.
+#
+# It only ever grows. Shrinking it when a line is deleted is the resize that
+# has nothing to offer and moves the text under the cursor, and that is the
+# case the original reasoning was actually about.
+EDIT_GROW = True
+
+# nvim writes the rows it needs here whenever the buffer changes, and homerow
+# watches the file. The alternative is asking over the socket on a timer,
+# which is a process spawn per ask (~65ms) for an answer that is usually the
+# same as last time. This is homerow's own buffer-local autocmd, applied the
+# same way its <buffer> mappings are -- nothing is added to the user's
+# config, and nothing is asked of it.
+EDIT_ROWS_SUFFIX = ".rows"
+# nvim_win_text_height counts *screen* lines, so a line that wraps grows the
+# box too. It landed in nvim 0.10; line('$') is the fallback and misses only
+# wrapping.
+EDIT_ROWS_EXPR = ("exists('*nvim_win_text_height') ? "
+                  "nvim_win_text_height(0, {}).all : line('$')")
+
 # How long after a write-back before the field is read again to check it
 # landed. The paste path is asynchronous -- it focuses the window and presses
 # keys at it -- so the characters have not arrived yet when write() returns.

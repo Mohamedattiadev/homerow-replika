@@ -48,6 +48,36 @@ def _vte():
     return Vte
 
 
+def warm_widget(log=None):
+    """Build and throw away one terminal, to pay its one-off cost early.
+
+    The first Vte.Terminal in a process costs ~345ms to create and realize --
+    fonts, the widget's own class setup -- and every one after it costs ~9ms.
+    Measured over two sessions in one process: 581ms to spawn the editor, then
+    83ms. That first payment landed on whoever pressed alt+e first, which is
+    the press that decides whether the mode feels instant.
+
+    Realized rather than shown: realizing is what loads the fonts, and a
+    window that is never mapped never appears and never takes focus. Called
+    at daemon startup beside start_warm, for the same reason and with the
+    same shape -- if it fails, the first field is merely as slow as it used
+    to be.
+    """
+    log = log or (lambda _m: None)
+    try:
+        window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        window.set_decorated(False)
+        terminal = _vte().Terminal()
+        window.add(terminal)
+        window.realize()
+        terminal.realize()
+        window.destroy()
+    except Exception as error:
+        log(f"could not warm the terminal widget: {error!r}")
+        return False
+    return True
+
+
 def available():
     """True if there is a terminal widget to host the editor in."""
     try:
@@ -360,6 +390,47 @@ def wait_warm(timeout_ms=None, log=None):
     return False
 
 
+def prime_warm(log=None):
+    """Make the warm server open one throwaway buffer, so the next is fast.
+
+    A server that answers is not a server that is ready. Answering `1` costs
+    nothing, but the first real `:edit` pays for filetype detection and every
+    plugin that lazy-loads on a buffer appearing -- measured here at 356ms
+    against 60ms and 42ms for the two after it. That is the same 300ms the
+    warm server exists to remove, arriving one step later than the thing that
+    was supposed to remove it.
+
+    Done on a scratch file with the same suffix, so the same filetype plugins
+    load, and the buffer is wiped afterwards: a leftover modified buffer is
+    what makes the next `:edit` fail with E37, which is why this server is
+    replaced after every session in the first place.
+    """
+    log = log or (lambda _m: None)
+    if not warm_alive():
+        return False
+    editor = resolve_editor()
+    if not is_vim_like(editor):
+        return False
+    handle, path = tempfile.mkstemp(prefix="homerow-prime-",
+                                    suffix=config.EDIT_SUFFIX)
+    os.close(handle)
+    try:
+        subprocess.run(
+            editor.split() + [
+                "--server", warm_socket_path(), "--remote-expr",
+                f"execute({_vim_list([f'edit {path}', 'silent! bwipeout!'])})"],
+            capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"could not prime the warm editor: {error!r}")
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return True
+
+
 def stop_warm():
     """Kill the warm server, if any. Its buffer state is not reusable."""
     proc = _warm["proc"]
@@ -396,6 +467,41 @@ def _vim_list(items):
         "'" + item.replace("'", "''") + "'" for item in items) + "]"
 
 
+def rows_path(path):
+    """Where the editor reports how many rows it needs, for `path`."""
+    return path + config.EDIT_ROWS_SUFFIX
+
+
+def rows_watch(path):
+    """The autocmd that makes the editor report its height as it is typed in.
+
+    Buffer-local, like the mappings beside it, and homerow's own -- see
+    config.EDIT_GROW. Returns None when growing is switched off.
+    """
+    if not config.EDIT_GROW:
+        return None
+    return ("autocmd TextChanged,TextChangedI <buffer> silent! call "
+            f"writefile([{config.EDIT_ROWS_EXPR}], '{rows_path(path)}')")
+
+
+def setup_commands(path, compact, cursor=None):
+    """Everything the editor is told about this buffer, warm or cold.
+
+    One list, so the two paths cannot drift: a mapping that only works on a
+    cold editor is worse than one that works nowhere, because it is the path
+    nobody takes.
+    """
+    commands = list(config.EDIT_KEYMAPS)
+    watch = rows_watch(path)
+    if watch:
+        commands.append(watch)
+    if compact:
+        commands.append(f"silent! {config.EDIT_COMPACT_SET}")
+    if cursor:
+        commands.append("call cursor({}, {})".format(*cursor))
+    return commands
+
+
 def warm_open(path, compact, editor=None, log=None, cursor=None):
     """Load `path` into the warm server, set up as a cold nvim would be.
 
@@ -404,11 +510,7 @@ def warm_open(path, compact, editor=None, log=None, cursor=None):
     """
     log = log or (lambda _m: None)
     editor = resolve_editor(editor)
-    commands = [f"edit {path}"] + list(config.EDIT_KEYMAPS)
-    if compact:
-        commands.append(f"silent! {config.EDIT_COMPACT_SET}")
-    if cursor:
-        commands.append("call cursor({}, {})".format(*cursor))
+    commands = [f"edit {path}"] + setup_commands(path, compact, cursor)
     import subprocess
     try:
         result = subprocess.run(
@@ -588,6 +690,23 @@ def cell_padding(terminal):
     return horizontal, vertical
 
 
+def compact_height(text_rows, chrome):
+    """Total rows a compact box gets, for `text_rows` rows of text.
+
+    Floored, and the floor is the point. Sizing the box to exactly the text
+    it opens with gives a one-line field one row to type on, and one row is
+    not an editor -- it is a slot. Press Enter in it and the line you were
+    writing scrolls out of sight, and getting it back means k, which is not
+    what pressing Enter in a text field does anywhere else on the desktop.
+
+    Capped at the other end so a long field does not open a window over half
+    the page; past the cap the editor scrolls, which is what an editor is
+    for.
+    """
+    return max(config.EDIT_COMPACT_MIN_ROWS,
+               min(config.EDIT_COMPACT_MAX_ROWS, text_rows + chrome))
+
+
 def compact_rows(field_h, char_h, threshold):
     """True if this field is too short to spend rows on editor chrome."""
     if char_h <= 0:
@@ -611,6 +730,9 @@ def editor_argv(path, editor=None, compact=False, cursor=None):
         # it to.
         for mapping in config.EDIT_KEYMAPS:
             argv += ["-c", mapping]
+        watch = rows_watch(path)
+        if watch:
+            argv += ["-c", watch]
         if compact:
             argv += ["-c", config.EDIT_COMPACT_SETTINGS]
         if cursor:
@@ -888,6 +1010,12 @@ class EditSession:
         self._dismissed = False
         self.warm = False
         self._monitor = None
+        # Set by _fit, and only used to grow the box afterwards.
+        self._rows = 0
+        self._cell_h = 0
+        self._chrome_px = 0
+        self._chrome_rows = 0
+        self._rows_monitor = None
         # What the field is believed to hold. Live writes move it, so the
         # write on close does not repeat one that already landed.
         self._sent = original
@@ -992,12 +1120,18 @@ class EditSession:
             # over the page anyway, so it can be taller than the thing it
             # sits on -- it just should not be taller than it needs to be.
             cols = max(1, (self.field.w - chrome_w) // char_w)
-            rows = min(config.EDIT_COMPACT_MAX_ROWS,
-                       max(config.EDIT_COMPACT_TEXT_ROWS,
-                           wrapped_rows(self.original, cols))) + chrome
+            text = max(config.EDIT_COMPACT_TEXT_ROWS,
+                       wrapped_rows(self.original, cols))
+            rows = compact_height(text, chrome)
             self._log(f"{wrapped_rows(self.original, cols)} row(s) of text "
                       f"+ {chrome} the editor keeps; using {rows}")
         min_h = rows * char_h + chrome_h
+        # Kept so the box can grow later without measuring any of it again:
+        # growing has to be cheap, it happens while somebody is typing.
+        self._cell_h = char_h
+        self._chrome_px = chrome_h
+        self._chrome_rows = chrome
+        self._rows = rows
 
         screen_w, screen_h = screen_size()
         x, y, w, h = frame_rect(self.field, screen_w, screen_h, min_w, min_h)
@@ -1053,6 +1187,7 @@ class EditSession:
 
         argv = self._argv()
         self._watch_for_saves()
+        self._watch_for_growth()
         self._log(f"editing in {' '.join(argv)}")
         try:
             # Positional, and the order is not the one Python introspection
@@ -1085,6 +1220,59 @@ class EditSession:
         if not self.closed:
             learn_chrome(log=self._log)
         return False
+
+    def _watch_for_growth(self):
+        """Grow the box as the buffer grows -- see config.EDIT_GROW.
+
+        Only in a compact box. A full-size one already opened at the height
+        the field asked for, and nothing there is standing in for a one-line
+        text field.
+        """
+        if not config.EDIT_GROW or not self.compact:
+            return
+        try:
+            handle = Gio.File.new_for_path(rows_path(self.path))
+            self._rows_monitor = handle.monitor_file(
+                Gio.FileMonitorFlags.NONE, None)
+            self._rows_monitor.connect("changed", self._on_rows_changed)
+        except Exception as error:
+            self._log(f"the box will not grow: {error!r}")
+            self._rows_monitor = None
+
+    def _on_rows_changed(self, _monitor, _file, _other, _event):
+        if self.closed:
+            return
+        try:
+            with open(rows_path(self.path), encoding="utf-8") as handle:
+                wanted = int(handle.read().strip())
+        except (OSError, ValueError):
+            return          # half-written, or written while we were reading
+        self._grow(wanted)
+
+    def _grow(self, text_rows):
+        """Make the box `text_rows` rows of text tall, if that is taller.
+
+        Never shorter. Shrinking is the resize with nothing to offer: it
+        moves the text under the cursor to reclaim space nobody asked for.
+        """
+        if self.closed or self._cell_h <= 0:
+            return
+        rows = compact_height(text_rows, self._chrome_rows)
+        if rows <= self._rows:
+            return
+        screen_w, screen_h = screen_size()
+        height = rows * self._cell_h + self._chrome_px
+        x, y, w, h = frame_rect(self.field, screen_w, screen_h,
+                                self.field.w, height)
+        self._rows = rows
+        try:
+            self.terminal.set_size(self.terminal.get_column_count(), rows)
+            self.window.move(x, y)
+            self.window.resize(w, h)
+        except Exception as error:
+            self._log(f"could not grow the box: {error!r}")
+            return
+        self._log(f"grew to {rows} rows for {text_rows} row(s) of text")
 
     def _watch_for_saves(self):
         """Push the field on every `:w`, where that can be done quietly.
@@ -1217,12 +1405,14 @@ class EditSession:
         if self.closed:
             return
         self.closed = True
-        if self._monitor is not None:
-            try:
-                self._monitor.cancel()
-            except Exception:
-                pass
-            self._monitor = None
+        for name in ("_monitor", "_rows_monitor"):
+            monitor = getattr(self, name, None)
+            if monitor is not None:
+                try:
+                    monitor.cancel()
+                except Exception:
+                    pass
+            setattr(self, name, None)
         try:
             self.window.destroy()
         except Exception:
@@ -1242,6 +1432,9 @@ class EditSession:
             # the socket costs nothing here (this is the close, nobody is
             # typing) and spares the next open.
             wait_warm(log=self._log)
+            # And a server that answers is not a server that is ready -- see
+            # prime_warm. Also free here, for the same reason.
+            prime_warm(log=self._log)
         # The field's contents were on disk; they should not stay there --
         # unless this is the one case that deliberately left them, where the
         # file is the only copy of the edit (see close_for_workspace). The
@@ -1251,4 +1444,8 @@ class EditSession:
                 os.unlink(self.path)
             except OSError:
                 pass
+        try:
+            os.unlink(rows_path(self.path))
+        except OSError:
+            pass
         self.on_done()

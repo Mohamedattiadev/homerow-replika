@@ -172,15 +172,30 @@ and nothing is written.
 
 The window is measured in character cells off the running terminal, so it
 comes out the width of the field and as few rows as the editor can work in.
-A one-line field gets a small box, sized to the content it opens with —
-wrapping counted — up to a cap. Two rows are budgeted for whatever the editor
-keeps for itself (a statusline, a command line), so your text is visible
-whatever your config does.
+Two rows are budgeted for whatever the editor keeps for itself (a statusline,
+a command line), so your text is visible whatever your config does.
 
-The box does **not** grow as you type past it; the editor scrolls, the way an
-editor in any other window does. A box that resized itself under your cursor
-would move the text you were reading to make room for text you had not
-written yet, and nvim already has a good answer for running out of room.
+**It grows as you type**, up to a cap, and never shrinks. This was left out
+at first on the reasoning that resizing a window under somebody who has
+started reading is worse than letting the editor scroll — which is true of
+the chrome measurement below, where the window is already the right size and
+the change buys nothing, and false here. A one-line field sized to exactly
+its one line gives you one row to type on; press Enter and the line you were
+writing scrolls out of sight, and getting it back means `k`. No other text
+field on the desktop behaves that way, and "it is really an editor" is not an
+answer — the box is standing in for a text field, so it has to grow like one.
+It only grows: shrinking when a line is deleted is the resize that has
+nothing to offer and moves the text under your cursor.
+
+nvim reports the rows it needs on every change, through a `<buffer>` autocmd
+homerow adds to its own session — the same way its `<buffer>` mappings work,
+and still nothing added to your config. The alternative was asking over the
+socket on a timer, which is a process spawn per ask for an answer that is
+usually the same as last time.
+
+There is also a floor, because three rows read as a slot rather than an
+editor: a compact box opens at five, which leaves room to see what you are
+writing.
 
 Sizing it means counting three things and getting all three right: the cell,
 the frame homerow draws, and the padding the terminal widget keeps for
@@ -225,13 +240,31 @@ you can watch it land and keep editing. In a browser it does not: updating a
 Chromium field means typing into it, and stealing focus away from the editor
 mid-edit is worse than waiting — there, the field updates when you close.
 
-**Opening is warm.** A headless nvim is started with the daemon and the
-editor in the field is a remote UI attaching to it, so opening a field does
-not pay to load your config — measured at 285ms here, which was most of the
-delay before you could type. The server is replaced after each session
-rather than reused, because a dismissed editor leaves a modified buffer that
-the next `:edit` would fail on. If anything about that path fails, the mode
-falls back to starting nvim from cold.
+**Opening is warm — all three expensive things, not just one.** A headless
+nvim is started with the daemon and the editor in the field is a remote UI
+attaching to it, so opening a field does not pay to load your config. The
+server is replaced after each session rather than reused, because a dismissed
+editor leaves a modified buffer that the next `:edit` would fail on. If
+anything about that path fails, the mode falls back to starting nvim from
+cold.
+
+That covered the config load and left two more, both of which landed on
+whoever pressed `alt+e` first — the press that decides whether the mode feels
+instant. The first `Vte.Terminal` in a process costs ~345ms to create and
+realize (fonts, the widget's class setup) and every one after it costs ~9ms.
+And a server that *answers* is not a server that is *ready*: answering `1`
+costs nothing, but its first real `:edit` pays for filetype detection and
+every plugin that lazy-loads on a buffer appearing — 356ms, against 60ms and
+42ms for the two after it. Both are now paid at daemon startup, where nobody
+is waiting: one terminal is built and thrown away, and the server is made to
+open and wipe one scratch buffer.
+
+Measured over two sessions in one process, keypress to editor spawn:
+
+| | first field | every field after |
+|---|---|---|
+| before | 581ms | 83ms |
+| after | **88ms** | 86ms |
 
 **Reap the old server before starting its replacement.** nvim unlinks its
 listen socket as it exits, and the replacement listens on the same path — so

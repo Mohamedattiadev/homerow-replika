@@ -1404,6 +1404,128 @@ class EditTerminalTrim(unittest.TestCase):
         self.assertEqual(fits(counting_it), rows)
 
 
+class EditCompactHeight(unittest.TestCase):
+    """A one-row box is a slot, not an editor -- reported live: "it shows only
+    2 lines and when I click enter I see empty, then I go up or down"."""
+
+    def height(self, text_rows, chrome=1):
+        from homerow import edit
+        return edit.compact_height(text_rows, chrome)
+
+    def test_a_one_line_field_still_opens_as_an_editor(self):
+        self.assertEqual(self.height(1), config.EDIT_COMPACT_MIN_ROWS)
+
+    def test_the_floor_leaves_more_than_one_row_to_type_on(self):
+        """Whatever the floor is set to, what is left after the editor's own
+        rows has to be somewhere to write rather than a single line."""
+        for chrome in (0, 1, 2):
+            with self.subTest(chrome=chrome):
+                self.assertGreaterEqual(self.height(1, chrome) - chrome, 2)
+
+    def test_it_follows_the_text_once_that_is_taller_than_the_floor(self):
+        self.assertEqual(self.height(6), 7)
+
+    def test_it_stops_at_the_cap_rather_than_covering_the_page(self):
+        self.assertEqual(self.height(400), config.EDIT_COMPACT_MAX_ROWS)
+
+    def test_the_cap_is_never_undercut_by_the_floor(self):
+        self.assertLessEqual(config.EDIT_COMPACT_MIN_ROWS,
+                             config.EDIT_COMPACT_MAX_ROWS)
+
+
+class EditBoxGrows(unittest.TestCase):
+    """Growing is what makes it behave like the field it stands in for."""
+
+    def session(self, rows, chrome=1):
+        from homerow import edit
+        instance = object.__new__(edit.EditSession)
+        instance.closed = False
+        instance.field = Fake(x=10, y=10, w=400, h=30)
+        instance._rows, instance._cell_h = rows, 23
+        instance._chrome_px, instance._chrome_rows = 6, chrome
+        instance._log = lambda _m: None
+        instance.terminal = types.SimpleNamespace(
+            get_column_count=lambda: 50, set_size=lambda *_a: None)
+        instance.resized = []
+        instance.window = types.SimpleNamespace(
+            move=lambda *_a: None,
+            resize=lambda w, h: instance.resized.append((w, h)))
+        return instance
+
+    def test_pressing_enter_past_the_last_row_makes_room(self):
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=5)
+            instance._grow(6)
+        self.assertEqual(instance._rows, 7)
+        self.assertEqual(len(instance.resized), 1)
+
+    def test_deleting_a_line_does_not_take_the_box_back(self):
+        """The resize with nothing to offer: it moves the text under the
+        cursor to reclaim space nobody asked for."""
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=9)
+            instance._grow(1)
+        self.assertEqual(instance._rows, 9)
+        self.assertEqual(instance.resized, [])
+
+    def test_it_stops_growing_at_the_cap(self):
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=5)
+            instance._grow(500)
+        self.assertEqual(instance._rows, config.EDIT_COMPACT_MAX_ROWS)
+
+    def test_a_closed_session_does_not_resize_a_destroyed_window(self):
+        instance = self.session(rows=5)
+        instance.closed = True
+        instance._grow(20)
+        self.assertEqual(instance.resized, [])
+
+
+class EditEditorSetup(unittest.TestCase):
+    """The warm and cold paths have to be told the same things. A mapping
+    that only works on one of them is worse than one that works on neither,
+    because it is the path nobody takes."""
+
+    def test_both_paths_ask_the_editor_to_report_its_height(self):
+        from homerow import edit
+        warm = edit.setup_commands("/tmp/f.md", compact=True)
+        cold = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        watch = edit.rows_watch("/tmp/f.md")
+        self.assertIn(watch, warm)
+        self.assertIn(watch, cold)
+
+    def test_both_paths_get_every_keymap(self):
+        from homerow import edit
+        warm = edit.setup_commands("/tmp/f.md", compact=True)
+        cold = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn(mapping, warm)
+            self.assertIn(mapping, cold)
+
+    def test_the_report_goes_beside_the_buffer_not_over_it(self):
+        from homerow import edit
+        self.assertNotEqual(edit.rows_path("/tmp/f.md"), "/tmp/f.md")
+        self.assertTrue(edit.rows_path("/tmp/f.md").startswith("/tmp/f.md"))
+
+    def test_it_is_buffer_local_so_it_cannot_touch_another_buffer(self):
+        from homerow import edit
+        self.assertIn("<buffer>", edit.rows_watch("/tmp/f.md"))
+
+    def test_growing_off_means_nothing_is_asked_of_the_editor(self):
+        from homerow import edit
+        with unittest.mock.patch.object(config, "EDIT_GROW", False):
+            self.assertIsNone(edit.rows_watch("/tmp/f.md"))
+            self.assertNotIn(
+                "TextChanged",
+                " ".join(edit.editor_argv("/tmp/f.md", editor="nvim")))
+
+
 class EditCompactMode(unittest.TestCase):
     def test_a_single_line_field_is_compact(self):
         from homerow import edit

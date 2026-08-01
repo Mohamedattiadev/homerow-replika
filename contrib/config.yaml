@@ -109,7 +109,16 @@ edit:
   # A field shorter than this many rows is edited in "compact" nvim: no
   # statusline, no line numbers, no sign column.
   # compact_rows: 3
+
+  # How tall a compact box gets. It opens at the floor, grows as you type,
+  # and stops at the cap -- past which the editor scrolls. The floor earns
+  # its keep: three rows is a statusline, a command line and one row to type
+  # on, which reads as a slot rather than as an editor.
+  # compact_min_rows: 5
   # compact_max_rows: 12
+
+  # Grow the box as the buffer grows. It never shrinks -- see config.py.
+  # grow: true
 
   # Rows the editor keeps for itself, assumed rather than asked. Homerow
   # measures what its own editor actually kept and sizes the *next* field for

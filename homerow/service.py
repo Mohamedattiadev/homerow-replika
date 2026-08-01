@@ -116,6 +116,16 @@ class Daemon:
         # starting an editor from cold.
         if edit.start_warm(log=self._log):
             self._log("warming an editor for edit mode")
+        # And the widget it will be shown in: the first terminal in a process
+        # costs ~345ms that every one after it does not, and paying it here
+        # is paying it where nobody is waiting.
+        if edit.available() and edit.warm_widget(log=self._log):
+            self._log("warming the terminal widget")
+        # The server's *first* edit is the expensive one, so it is made to
+        # happen here rather than on the first field. Deferred to the main
+        # loop so it does not hold up binding the socket -- somebody may be
+        # pressing a key already.
+        GLib.idle_add(self._prime_editor)
 
         # Let a running mode reach the other modes' hotkeys itself; it holds
         # the keyboard, so the window manager cannot forward them here.
@@ -773,6 +783,11 @@ class Daemon:
         self.overlay = None
         self._unwatch_workspace()
         self._clear_mode()
+
+    def _prime_editor(self):
+        if edit.prime_warm(log=self._log):
+            self._log("the warm editor has opened its first buffer")
+        return False
 
     def _log(self, message):
         now = time.time()
