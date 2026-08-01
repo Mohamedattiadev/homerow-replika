@@ -1048,6 +1048,12 @@ class CaretSearchPrompt:
         if mode_switch(event):
             return True
         if key == Gdk.KEY_Escape:
+            # Same as search mode and hint mode: what you typed goes first,
+            # the mode goes second.
+            if self.query:
+                self.query = ""
+                self._refresh()
+                return True
             self._close()
             return True
         if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):

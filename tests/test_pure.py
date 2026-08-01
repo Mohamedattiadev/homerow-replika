@@ -546,6 +546,25 @@ class ChipSitsOnItsElement(unittest.TestCase):
         spot = self.place(element, placed=[(400, 300, 20, 14)])
         self.assertNotEqual(spot, (400, 300))
 
+    def test_but_it_moves_around_its_element_before_moving_off_it(self):
+        # Where the displaced chip goes matters as much as that it moves: the
+        # gap beside two controls close enough to collide is exactly where a
+        # chip reads as belonging to the wrong one. Measured over a real
+        # page, two chips in sixty-nine left their own element; both had room
+        # to stay on it.
+        element = Fake(x=400, y=300, w=200, h=40)
+        x, y = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertTrue(400 <= x <= 400 + 200 - 20, f"chip at x={x}")
+        self.assertTrue(300 <= y <= 300 + 40 - 14, f"chip at y={y}")
+
+    def test_an_element_too_small_to_hold_the_chip_still_gives_way(self):
+        # Sliding to the "far corner" of something narrower than the chip
+        # puts it straight back over the neighbour this is avoiding, so a
+        # small element is allowed to send its chip beside it.
+        element = Fake(x=400, y=300, w=12, h=10)
+        x, y = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertNotEqual((x, y), (400, 300))
+
     def test_it_stays_on_screen(self):
         element = Fake(x=-30, y=-20, w=100, h=40)
         x, y = self.place(element)
@@ -766,6 +785,57 @@ class LegendLayout(unittest.TestCase):
         overlay.draw_legend(cr, "pick a field", 1366, 768, theme.palette())
 
 
+class EscapeUndoesTypingBeforeItLeaves(unittest.TestCase):
+    """Escape backs out of the wrong turn, not out of the mode.
+
+    Reported: with hints up you press `h`, meaning to pick `kj`. Escape used
+    to close the whole overlay, so correcting one keystroke meant hinting
+    every target again. Caret mode already worked this way -- Escape drops
+    the selection anchor before it closes -- and now they all do.
+    """
+
+    def hint_session(self, typed="", filter_text=""):
+        from homerow import overlay
+        instance = object.__new__(overlay.Overlay)
+        instance.typed = typed
+        instance.filter = filter_text
+        instance.closed = []
+        instance._close = lambda: instance.closed.append(True)
+        instance._touch = lambda: None
+        instance.window = unittest.mock.Mock()
+        instance.all_elements = []
+        instance.elements = []
+        instance.labels = []
+        instance._apply_filter = lambda: None
+        return instance
+
+    def escape(self, instance):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        event = unittest.mock.Mock()
+        event.keyval = Gdk.KEY_Escape
+        event.state = 0
+        return overlay.Overlay._on_key(instance, None, event)
+
+    def test_a_half_typed_label_is_cleared_and_the_overlay_stays(self):
+        instance = self.hint_session(typed="h")
+        self.escape(instance)
+        self.assertEqual(instance.typed, "")
+        self.assertEqual(instance.closed, [])
+
+    def test_a_filter_is_cleared_next(self):
+        instance = self.hint_session(filter_text="save")
+        self.escape(instance)
+        self.assertEqual(instance.filter, "")
+        self.assertEqual(instance.closed, [])
+
+    def test_escape_on_a_clean_slate_still_closes(self):
+        instance = self.hint_session()
+        self.escape(instance)
+        self.assertEqual(instance.closed, [True])
+
+
 class ScrollDeferredRescue(unittest.TestCase):
     """Candidates that can only be proved by scrolling them wait for Tab.
 
@@ -776,13 +846,64 @@ class ScrollDeferredRescue(unittest.TestCase):
     that to ~0.5s, and the rest happens on the keystroke that asks for it.
     """
 
-    def session(self, region, regions, deferred):
+    def session(self, region, regions, deferred, verified=True):
         from homerow import scroll
         instance = object.__new__(scroll.ScrollSession)
         instance.region = region
         instance.regions = list(regions)
         instance.deferred = list(deferred)
+        # The scroll-and-watch pass is Tab's business now too; these tests are
+        # about the rescue half, so it starts already done.
+        instance._verified = verified
+        instance.index = 0
         return instance
+
+    def test_entry_does_not_scroll_anything_to_check_it(self):
+        from homerow import config, scroll
+        # The pass that scrolls each candidate and watches what moves warps
+        # the pointer onto every one of them in turn. Doing it before the
+        # outline was drawn is what the cursor flying about on entry was --
+        # 316ms median and up to 2318ms over 151 real sessions.
+        self.assertFalse(config.SCROLL_VERIFY_ON_ENTRY)
+        del scroll
+
+    def test_tab_runs_the_check_that_entry_skipped(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        ghost = Fake(x=0, y=0, w=340, h=768)      # cannot actually scroll
+        instance = self.session(content, [content, ghost], [], verified=False)
+        with unittest.mock.patch.object(
+                scroll, "verify", return_value=[content]) as checked, \
+             unittest.mock.patch.object(scroll, "_scrolls",
+                                        return_value=False):
+            instance._rescue_deferred()
+        checked.assert_called_once()
+        self.assertEqual(instance.regions, [content])
+
+    def test_the_check_runs_once_however_often_tab_is_pressed(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        instance = self.session(content, [content], [], verified=False)
+        with unittest.mock.patch.object(
+                scroll, "verify", return_value=[content]) as checked:
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+        self.assertEqual(checked.call_count, 1)
+
+    def test_the_region_in_use_survives_a_check_that_rejects_it(self):
+        from homerow import scroll
+        # The user can see it and may already have scrolled it. Dropping the
+        # thing under their eyes to satisfy a probe is worse than an extra
+        # Tab stop.
+        content = Fake(x=340, y=0, w=1000, h=768)
+        other = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content, other], [], verified=False)
+        with unittest.mock.patch.object(scroll, "verify",
+                                        return_value=[other]):
+            instance._rescue_deferred()
+        self.assertIn(content, instance.regions)
+        self.assertIs(instance.region, content)
 
     def test_tab_rescues_what_entry_left_alone(self):
         from homerow import scroll

@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from homerow import __version__, service, userconfig  # noqa: E402
+from homerow import __version__, config, service, userconfig  # noqa: E402
 
 MODES = {
     "hint": "label everything clickable, and every other window",
@@ -79,6 +79,9 @@ def build_parser():
     settings.add_argument("--write-config", action="store_true",
                           help="write the documented example config to the "
                                "default path, if nothing is there yet")
+    settings.add_argument("--list-themes", action="store_true",
+                          help="print the built-in colour presets, for "
+                               "`theme: preset:` in the config file")
 
     other = parser.add_argument_group("other")
     other.add_argument("--doctor", action="store_true",
@@ -188,6 +191,46 @@ def do_show_config(config_path):
           "nothing.")
     print(userconfig.dump(userconfig.effective(), changed=result.applied),
           end="")
+    return 0
+
+
+def do_list_themes():
+    """The built-in palettes, and how to ask for one.
+
+    Colours normally come from the desktop -- theme-apply or pywal -- and a
+    machine with either wants nothing to do with this. It is for the one
+    without: before, such a desktop had a single hardcoded palette and no way
+    to choose another.
+    """
+    from homerow import themes
+    print("# Built-in colour presets. Use one with:")
+    print("#")
+    print("#     theme:")
+    print("#       preset: nord")
+    print("#")
+    print("# Leave it unset to follow the desktop theme (theme-apply or "
+          "pywal),")
+    print("# which is the default and re-read on every press.")
+    print("#")
+    print("# Individual colours can be overridden on top of any of these:")
+    print("#")
+    print('#     theme:')
+    print('#       colors: {purple: "#ff8800"}')
+    print()
+    active = themes.get(config.THEME_PRESET)
+    for name in themes.names():
+        palette = themes.PRESETS[name]
+        mark = "  <- in use" if active is not None and \
+            palette == active else ""
+        swatch = " ".join(palette[slot] for slot in
+                          ("bg", "fg", "red", "green", "yellow", "blue",
+                           "purple", "cyan"))
+        print(f"{name:<20} {swatch}{mark}")
+    if active is None:
+        print()
+        following = ("the desktop theme" if config.FOLLOW_THEME
+                     else "the built-in fallback")
+        print(f"# in use: {following}")
     return 0
 
 
@@ -477,6 +520,8 @@ def main(argv=None):
         return do_check_config(args.config)
     if args.write_config:
         return do_write_config()
+    if args.list_themes:
+        return do_list_themes()
     if args.doctor:
         return do_doctor()
     if args.status:

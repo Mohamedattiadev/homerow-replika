@@ -65,9 +65,34 @@ scroll:
   # service is slow rather than hung.
   # collect_budget_ms: 2500
 
-  # Regions that measure as scrollable are proven by scrolling them. Turning
-  # this off is faster and offers regions that may not move.
+  # Which key does what while scroll mode is open. Key names are what `xev`
+  # prints -- single letters are themselves, the rest are names like Down,
+  # Page_Up, Home, End. Actions are: down, up, left, right, page down,
+  # page up, top, bottom.
+  #
+  # Writing this replaces the whole map, so copy the defaults and change the
+  # lines you want. `gg`, counts (3j), Tab and Esc are grammar rather than
+  # bindings and are not listed here.
+  # keys:
+  #   j: down
+  #   k: up
+  #   h: left
+  #   l: right
+  #   d: page down
+  #   u: page up
+  #   G: bottom
+  #   Home: top
+  #   End: bottom
+  #   Down: down
+  #   Up: up
+  #   Page_Down: page down
+  #   Page_Up: page up
+
+  # Regions that measure as scrollable are proven by scrolling them, which
+  # means scrolling each candidate and putting it back -- so it happens the
+  # first time Tab asks for another region, not when the mode opens.
   # verify: true
+  # verify_on_entry: false
 
   # Outline drawn around the region being scrolled.
   # border: 2
@@ -144,12 +169,40 @@ edit:
 
 
 # --- colours ---------------------------------------------------------------
-# Colours come from the desktop theme, re-read on every press. These name
-# which slot of the palette each thing takes, not the colour itself.
-# follow_theme: true
-# chip_slot: green
-# chip_slot_matched: cyan
-# chip_slot_window: purple
+# By default colours come from your desktop theme (theme-apply, else pywal),
+# re-read on every press, so switching theme changes the hints without
+# restarting anything. Two ways to have it otherwise, and they stack -- a
+# named preset first, then individual colours over the top of it.
+
+theme:
+  # A built-in palette by name. `homerow --list-themes` prints them all with
+  # their colours: doom-one, gruvbox-dark, gruvbox-light, nord, dracula,
+  # catppuccin-mocha, catppuccin-latte, tokyo-night, solarized-dark,
+  # solarized-light, everforest-dark, rose-pine.
+  #
+  # Naming one stops the desktop theme being followed -- asking for nord and
+  # getting your wallpaper's colours is not what anyone means by it. Empty
+  # means "follow the desktop", which is what you want if you run theme-apply
+  # or pywal. Write e.g. `preset: nord` to pin one.
+  # preset: ""
+
+  # Individual colours, laid over whatever the above resolved to. Any of the
+  # eight slots -- bg, fg, red, green, yellow, blue, purple, cyan -- as hex.
+  # Use it to keep your theme and change one thing; writing
+  # `colors: {purple: "#ff8800"}` makes only the window chips orange.
+  # colors: {}
+
+  # Follow the desktop theme at all. Off with no preset named means the
+  # built-in fallback palette.
+  # follow_theme: true
+
+  # Which slot each kind of chip takes its colour from -- the name of a slot,
+  # not a colour. "green" is the dominant accent rather than literally green:
+  # it is wal's color10, the wallpaper's most-used hue, which is what the
+  # qtile bar highlights with, so hints match the rest of the desktop.
+  # chip_slot: green
+  # chip_slot_matched: cyan
+  # chip_slot_window: purple
 
 # Text on a chip is chosen by measuring contrast against it, so light themes
 # stay readable. This is the floor it has to clear.

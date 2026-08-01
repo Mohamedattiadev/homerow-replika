@@ -161,7 +161,9 @@ class Daemon:
         return 0
 
     def _cleanup(self):
-        edit.stop_warm()
+        # final=True: a replacement server may be halfway through being built
+        # on a thread, and it must not outlive the daemon that asked for it.
+        edit.stop_warm(final=True)
         try:
             self.server.close()
         except OSError:
@@ -619,7 +621,21 @@ class Daemon:
         self._log(f"editing {len(original)} chars; write-back via {how}")
 
         def on_write(edited):
-            used = edit.write(field, edited, window_id, log=self._log)
+            # Then check it actually landed. The paste path cannot fail
+            # loudly: it borrows the clipboard, focuses the window and presses
+            # ctrl+a ctrl+v, and an application that was busy swallows any of
+            # that while the mode reports success. Reading the field back
+            # needs no focus and no keystroke, so the answer is cheap enough
+            # to ask for repeatedly until it is true -- see _await_landing.
+            def landed(ok):
+                if ok is True:
+                    self._log("write-back confirmed in the field")
+                elif ok is False:
+                    _notify("The edit may not have landed — the field does "
+                            "not hold what was written.")
+
+            used = edit.write(field, edited, window_id, log=self._log,
+                              on_landed=landed)
             self._log(f"wrote {len(edited)} chars back via {used}")
 
             # An edit that empties a field which had something in it is the
@@ -632,21 +648,6 @@ class Daemon:
                 keep = edit.keep_buffer(original, log=self._log)
                 _notify(f"That emptied the field. The text it had is at {keep}"
                         if keep else "That emptied the field.")
-
-            # Then check it actually landed. The paste path cannot fail
-            # loudly: it borrows the clipboard, focuses the window and presses
-            # ctrl+a ctrl+v, and an application that was busy swallows any of
-            # that while the mode reports success. Reading the field back
-            # needs no focus and no keystroke, so the answer is cheap.
-            def confirm():
-                landed = edit.verify(field, edited, log=self._log)
-                if landed is True:
-                    self._log("write-back confirmed in the field")
-                elif landed is False:
-                    _notify("The edit may not have landed — the field does "
-                            "not hold what was written.")
-                return False
-            GLib.timeout_add(config.EDIT_VERIFY_DELAY_MS, confirm)
 
         cursor = (edit.cursor_at(original, offset) if offset is not None
                   else None)

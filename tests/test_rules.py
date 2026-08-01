@@ -722,6 +722,386 @@ class TheWriteIsChecked(unittest.TestCase):
             self.assertIs(edit.verify(target, "hello\n"), True)
 
 
+class TheAnswerArrivesWhenItIsTrue(unittest.TestCase):
+    """Confirming a write asks until it lands, instead of waiting out a delay.
+
+    The old shape read the field once, 700ms after the write, because that
+    had to be long enough for the slowest application. Measured, a paste
+    lands 12-55ms after the keystroke -- so every write paid the worst case,
+    and a write that never landed was reported no sooner either.
+    """
+
+    def landing(self, reads):
+        """Drive _await_landing over a field that answers `reads` in turn."""
+        import time
+
+        from gi.repository import GLib
+
+        from homerow import edit
+        answers = list(reads)
+        result = {}
+        loop = GLib.MainLoop()
+
+        def done(landed):
+            result["landed"] = landed
+            result["took_ms"] = (time.monotonic() - started) * 1000
+            loop.quit()
+
+        def read(_accessible):
+            answer = answers.pop(0) if len(answers) > 1 else answers[0]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        target = unittest.mock.Mock()
+        started = time.monotonic()
+        with unittest.mock.patch.object(edit, "read", read):
+            edit._await_landing(target, "after", lambda _m: None, done)
+            GLib.timeout_add(4000, lambda: (loop.quit(), False)[1])
+            loop.run()
+        return result
+
+    def test_it_reports_as_soon_as_the_text_is_there(self):
+        # Three reads' worth of an application still catching up, and then the
+        # text -- answered in a fraction of the old fixed delay.
+        result = self.landing(["before", "before", "before", "after"])
+        self.assertIs(result["landed"], True)
+        self.assertLess(result["took_ms"], config.EDIT_LANDED_TIMEOUT_MS / 2)
+
+    def test_a_write_that_never_lands_is_reported_too(self):
+        result = self.landing(["before"])
+        self.assertIs(result["landed"], False)
+        self.assertGreaterEqual(result["took_ms"],
+                                config.EDIT_LANDED_TIMEOUT_MS)
+
+    def test_a_field_that_will_not_answer_stops_immediately(self):
+        # None is "unknown", and re-reading an unreadable field until the
+        # timeout only delays saying so.
+        result = self.landing([RuntimeError("no")])
+        self.assertIsNone(result["landed"])
+        self.assertLess(result["took_ms"], config.EDIT_LANDED_TIMEOUT_MS / 2)
+
+
+class ColoursCanBeAskedForByName(unittest.TestCase):
+    """A desktop with no theme-apply and no pywal can still pick a palette.
+
+    Before, such a desktop got one hardcoded fallback and no way to choose
+    another: "make the hints match my terminal" meant editing Python. A
+    machine that *does* follow a theme must be unaffected, which is why the
+    default is empty and the desktop still wins.
+    """
+
+    def setUp(self):
+        from homerow import config
+        self.addCleanup(setattr, config, "THEME_PRESET", config.THEME_PRESET)
+        self.addCleanup(setattr, config, "THEME_COLORS",
+                        dict(config.THEME_COLORS))
+        self.addCleanup(setattr, config, "FOLLOW_THEME", config.FOLLOW_THEME)
+
+    def test_following_the_desktop_is_still_the_default(self):
+        from homerow import config
+        self.assertEqual(config.THEME_PRESET, "")
+        self.assertEqual(config.THEME_COLORS, {})
+        self.assertTrue(config.FOLLOW_THEME)
+
+    def test_a_named_preset_is_used_instead_of_the_desktop(self):
+        from homerow import config, theme, themes
+        config.THEME_PRESET = "nord"
+        self.assertEqual(theme._named()["bg"], themes.PRESETS["nord"]["bg"])
+
+    def test_names_are_forgiving_about_case_and_separators(self):
+        from homerow import themes
+        for spelling in ("tokyo-night", "Tokyo Night", "TOKYO_NIGHT"):
+            self.assertEqual(themes.get(spelling), themes.PRESETS["tokyo-night"])
+
+    def test_an_unknown_name_falls_back_rather_than_failing(self):
+        from homerow import config, theme
+        config.THEME_PRESET = "no-such-theme"
+        self.assertIn("bg", theme._named())
+
+    def test_one_colour_can_be_overridden_without_naming_the_rest(self):
+        from homerow import config, theme
+        config.THEME_PRESET = "nord"
+        config.THEME_COLORS = {"purple": "#ff8800"}
+        named = theme._named()
+        self.assertEqual(named["purple"], "#ff8800")
+        self.assertEqual(named["green"], "#a3be8c")   # nord's, untouched
+
+    def test_a_bad_colour_costs_only_that_colour(self):
+        from homerow import config, theme
+        # A typo in one hex value should not take every hint on screen with it.
+        config.THEME_PRESET = "nord"
+        config.THEME_COLORS = {"purple": "not a colour", "green": "#00ff00"}
+        named = theme._named()
+        self.assertEqual(named["purple"], "#b48ead")  # nord's kept
+        self.assertEqual(named["green"], "#00ff00")
+
+    def test_every_preset_builds_a_usable_palette(self):
+        from homerow import config, theme, themes
+        # A preset that cannot be turned into a palette is worse than one that
+        # is not offered, and light themes are the ones that break ink choice.
+        for name in themes.names():
+            config.THEME_PRESET = name
+            palette = theme.palette()
+            for slot in ("chip", "ink", "ink_window", "dim"):
+                self.assertIn(slot, palette, f"{name} has no {slot}")
+            self.assertGreaterEqual(
+                theme._contrast(palette["ink"][:3], palette["chip"][:3]),
+                config.INK_MIN_CONTRAST * 0.9, f"{name} is unreadable")
+
+
+class ScrollKeysCanBeRebound(unittest.TestCase):
+    """The keys scroll mode answers to come from the config file.
+
+    They are vim's because that is what this is modelled on, but somebody who
+    reaches for the arrow keys alone should not have to edit Python.
+    """
+
+    def setUp(self):
+        from homerow import config
+        self.addCleanup(setattr, config, "SCROLL_KEYS",
+                        dict(config.SCROLL_KEYS))
+
+    def test_the_shipped_defaults_all_resolve(self):
+        from homerow import scroll
+        # Every default has to name a real key and a real action, or the mode
+        # ships with a binding that silently does nothing.
+        problems = []
+        resolved = scroll.keymap(problems.append)
+        self.assertEqual(problems, [])
+        self.assertEqual(len(resolved), len(scroll.config.SCROLL_KEYS))
+
+    def test_a_rebind_takes_effect(self):
+        from gi.repository import Gdk
+
+        from homerow import config, scroll
+        config.SCROLL_KEYS = {"e": "down", "y": "up"}
+        resolved = scroll.keymap()
+        self.assertEqual(resolved[Gdk.KEY_e], (scroll.WHEEL_DOWN, "line"))
+        self.assertEqual(resolved[Gdk.KEY_y], (scroll.WHEEL_UP, "line"))
+        self.assertNotIn(Gdk.KEY_j, resolved)
+
+    def test_a_bad_line_costs_only_that_line(self):
+        from gi.repository import Gdk
+
+        from homerow import config, scroll
+        config.SCROLL_KEYS = {"j": "down", "k": "sideways-ish",
+                              "NoSuchKey": "up"}
+        problems = []
+        resolved = scroll.keymap(problems.append)
+        self.assertEqual(resolved, {Gdk.KEY_j: (scroll.WHEEL_DOWN, "line")})
+        self.assertEqual(len(problems), 2)
+
+    def test_the_amounts_are_read_when_the_key_is_pressed(self):
+        from homerow import config, scroll
+        # They used to be captured in the class body, which runs at import --
+        # before the config file is read -- so scroll.line_clicks was accepted,
+        # reported as applied, and then ignored for the life of the daemon.
+        self.addCleanup(setattr, config, "SCROLL_LINE_CLICKS",
+                        config.SCROLL_LINE_CLICKS)
+        config.SCROLL_LINE_CLICKS = 99
+        self.assertEqual(scroll.ScrollSession.amount_clicks("line"), 99)
+
+
+class EmptyingAFieldIsAKeystrokeNotAPaste(unittest.TestCase):
+    """Deleting everything and saving must actually empty the field.
+
+    Reported live, with a screenshot of an empty buffer: the field kept every
+    character it had. Emptying went through the same path as any other write
+    -- put the new text on the clipboard, select all, paste -- and the new
+    text was nothing, so the paste was a no-op and the select-all just sat
+    there. It is the one write that has to be a keystroke.
+    """
+
+    def write(self, text):
+        from gi.repository import GLib
+
+        from homerow import edit
+        combos = []
+        clipboard = unittest.mock.Mock()
+        clipboard.wait_for_text.return_value = "the user's own clipboard"
+        field = unittest.mock.Mock()
+        field.center = (10, 10)
+        loop = GLib.MainLoop()
+
+        with unittest.mock.patch.object(edit.Gtk.Clipboard, "get",
+                                        return_value=clipboard), \
+             unittest.mock.patch.object(edit.x11, "send_combo",
+                                        side_effect=combos.append), \
+             unittest.mock.patch.object(edit.x11, "sync"), \
+             unittest.mock.patch.object(edit.x11, "release_modifiers"), \
+             unittest.mock.patch.object(edit.x11, "activate_window"), \
+             unittest.mock.patch.object(edit, "_grab_focus",
+                                        return_value=True), \
+             unittest.mock.patch.object(edit, "_await_landing"):
+            edit._write_paste(field, text, None, lambda _m: None)
+            GLib.timeout_add(300, lambda: (loop.quit(), False)[1])
+            loop.run()
+        return combos, clipboard
+
+    def test_emptying_presses_the_key_that_empties(self):
+        from homerow import config
+        combos, _clipboard = self.write("")
+        self.assertEqual(combos, [config.EDIT_SELECT_ALL, config.EDIT_CLEAR])
+
+    def test_emptying_does_not_touch_the_clipboard(self):
+        # There is nothing to put on it, and borrowing somebody's clipboard
+        # to hand it straight back unchanged is a side effect with no purpose.
+        _combos, clipboard = self.write("")
+        clipboard.set_text.assert_not_called()
+        clipboard.request_text.assert_not_called()
+
+    def test_an_ordinary_write_still_pastes(self):
+        from homerow import config
+        combos, clipboard = self.write("something to say")
+        self.assertEqual(combos, [config.EDIT_SELECT_ALL, config.EDIT_PASTE])
+        clipboard.set_text.assert_any_call("something to say", -1)
+
+
+class TheClipboardIsNotWaitedOn(unittest.TestCase):
+    """Borrowing the clipboard must not block the daemon's one main loop.
+
+    wait_for_text() runs a nested main loop until the owning application
+    answers. Measured against an unresponsive owner on a test server: 31
+    seconds, with every mode, the overlay and the workspace watch frozen
+    behind it -- and 64ms worst case even here with a well-behaved one.
+    """
+
+    def borrow(self, request, ours="the field's new contents"):
+        from homerow import edit
+        clipboard = unittest.mock.Mock()
+        clipboard.request_text = request
+        return edit._borrow_clipboard(clipboard, ours=ours,
+                                      log=lambda _m: None)
+
+    def test_an_owner_that_answers_hands_its_text_over(self):
+        previous = self.borrow(
+            lambda callback, data: callback(None, "what the user copied",
+                                            data))
+        self.assertTrue(previous["known"])
+        self.assertEqual(previous["text"], "what the user copied")
+
+    def test_nothing_waits_for_an_owner_that_never_answers(self):
+        import time
+
+        # The write-back goes ahead; what it cannot do is hand back something
+        # it was never told. This is the case that used to freeze the daemon.
+        began = time.monotonic()
+        previous = self.borrow(lambda _callback, _data: None)
+        self.assertLess((time.monotonic() - began) * 1000, 50)
+        self.assertFalse(previous["known"])
+
+    def test_our_own_text_coming_back_is_not_treated_as_the_users(self):
+        # It means the read overtook the change of ownership. Handing that
+        # "back" would leave the field's contents on the clipboard, which is
+        # the one thing the borrow-and-restore dance exists to prevent.
+        previous = self.borrow(
+            lambda callback, data: callback(None, "the field's new contents",
+                                            data))
+        self.assertFalse(previous["known"])
+
+    def test_a_clipboard_that_raises_does_not_take_the_write_with_it(self):
+        def broken(_callback, _data):
+            raise RuntimeError("no clipboard here")
+
+        previous = self.borrow(broken)
+        self.assertFalse(previous["known"])
+
+
+class TheReplacementServerIsBuiltInTheBackground(unittest.TestCase):
+    """Rebuilding the warm editor must not stand between Esc and the field.
+
+    Reaping the old server, waiting for the new one to answer and priming it
+    took 738-973ms measured, and all of it used to run inline in _close()
+    before a single character of the write-back had been sent. None of it is
+    work the session being closed needs.
+    """
+
+    def test_replacing_returns_before_the_work_is_done(self):
+        import threading
+        import time
+
+        from homerow import edit
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_wait(*_args, **_kwargs):
+            started.set()
+            release.wait(5)
+            return True
+
+        with unittest.mock.patch.object(edit, "stop_warm"), \
+             unittest.mock.patch.object(edit, "start_warm"), \
+             unittest.mock.patch.object(edit, "wait_warm", slow_wait), \
+             unittest.mock.patch.object(edit, "prime_warm"):
+            begun = time.monotonic()
+            edit.replace_warm()
+            elapsed = (time.monotonic() - begun) * 1000
+            self.assertTrue(started.wait(5))
+            self.assertTrue(edit.replacement_pending())
+            release.set()
+            edit.await_replacement()
+        self.assertLess(elapsed, 100)
+        self.assertFalse(edit.replacement_pending())
+
+    def test_the_next_open_waits_for_it(self):
+        import threading
+
+        from homerow import edit
+        # The wait did not disappear, it moved to the only thing that needs
+        # the answer -- and attaching an editor to a half-built server is
+        # worse than waiting for a finished one.
+        release = threading.Event()
+        with unittest.mock.patch.object(edit, "stop_warm"), \
+             unittest.mock.patch.object(edit, "start_warm"), \
+             unittest.mock.patch.object(
+                 edit, "wait_warm", lambda *a, **k: release.wait(5)), \
+             unittest.mock.patch.object(edit, "prime_warm"):
+            edit.replace_warm()
+            self.assertFalse(edit.await_replacement(timeout_ms=50))
+            release.set()
+            edit.await_replacement()
+        self.assertFalse(edit.replacement_pending())
+
+    def test_a_second_replacement_does_not_start_a_second_server(self):
+        import threading
+
+        from homerow import edit
+        release = threading.Event()
+        with unittest.mock.patch.object(edit, "stop_warm"), \
+             unittest.mock.patch.object(edit, "start_warm") as started, \
+             unittest.mock.patch.object(
+                 edit, "wait_warm", lambda *a, **k: release.wait(5)), \
+             unittest.mock.patch.object(edit, "prime_warm"):
+            self.assertTrue(edit.replace_warm())
+            self.assertFalse(edit.replace_warm())
+            release.set()
+            edit.await_replacement()
+        self.assertEqual(started.call_count, 1)
+
+    def test_the_daemon_leaving_stops_one_being_built(self):
+        import threading
+
+        from homerow import edit
+        # Otherwise the last close of the session leaves a headless nvim
+        # behind, owned by a daemon that is gone.
+        release = threading.Event()
+        with unittest.mock.patch.object(edit, "start_warm") as started, \
+             unittest.mock.patch.object(edit, "stop_warm") as stopped, \
+             unittest.mock.patch.object(
+                 edit, "wait_warm", lambda *a, **k: release.wait(5)), \
+             unittest.mock.patch.object(edit, "prime_warm"):
+            edit.replace_warm()
+            edit._restart["stopping"] = True      # the daemon's _cleanup
+            release.set()
+            edit.await_replacement()
+        # It got as far as starting one, so it must also take it down: once
+        # to reap the outgoing server, once for the one it just built.
+        self.assertEqual(started.call_count, 1)
+        self.assertEqual(stopped.call_count, 2)
+        edit._restart["stopping"] = False
+
+
 class LeavingTheChordIsGuarded(unittest.TestCase):
     """Only leave a qtile chord when there is one to leave.
 
@@ -975,8 +1355,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         from homerow import edit
         with unittest.mock.patch.object(
                 edit, "strategy", return_value=self._strategy), \
-             unittest.mock.patch.object(edit, "stop_warm"), \
-             unittest.mock.patch.object(edit, "start_warm"), \
+             unittest.mock.patch.object(edit, "replace_warm"), \
              unittest.mock.patch.object(edit, "warm_save") as saved:
             kept = instance.close_for_workspace()
         return kept, saved
@@ -1214,19 +1593,28 @@ def uncomment(text):
     uncomment it and load it, which is the only way a renamed setting or a
     default that has moved on shows up as a failure.
     """
-    lines, continuing = [], False
+    lines, continuing, in_block = [], False, False
     for line in text.splitlines():
         match = re.match(r"^(\s*)# ?(.*)$", line)
         if match is None:
             lines.append(line)
-            continuing = False
+            continuing = in_block = False
             continue
         indent, body = match.groups()
+        # A setting whose value is a block of its own -- `keys:` with the
+        # bindings under it. Its children are indented, so they do not look
+        # like settings themselves and were being dropped, which turned the
+        # example's keymap into an empty one and made this file impossible to
+        # keep honest about it.
+        if in_block and body.startswith(" ") and body.strip():
+            lines.append(indent + body)
+            continue
         if continuing or re.match(r"^[a-z_0-9]+:", body):
             lines.append(indent + body)
             continuing = body.count("[") > body.count("]")
+            in_block = body.endswith(":")
         else:
-            continuing = False
+            continuing = in_block = False
     return "\n".join(lines)
 
 

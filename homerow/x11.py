@@ -502,6 +502,21 @@ def release_modifiers(force=True):
     _x11.XFlush(_display)
 
 
+def sync():
+    """Wait until the server has processed everything sent so far.
+
+    The alternative is a fixed delay, which is a guess about how far behind
+    the server is: too short and the next thing races what has not happened
+    yet, too long and it is dead time on a path somebody is watching. XSync
+    asks instead of guessing -- measured at 0.32ms after a key combo, against
+    the 50ms the paste path used to sleep between select-all and paste.
+    """
+    if not _load():
+        return False
+    _x11.XSync(_display, False)
+    return True
+
+
 def send_combo(combo):
     """Send something like 'shift+ctrl+Right' via XTest."""
     if not _load() or _xtst is None:

@@ -23,6 +23,7 @@ gets.
 import os
 import subprocess
 import tempfile
+import threading
 import time
 
 import gi
@@ -431,8 +432,88 @@ def prime_warm(log=None):
     return True
 
 
-def stop_warm():
-    """Kill the warm server, if any. Its buffer state is not reusable."""
+# The replacement server, being built on a thread. `stopping` is the daemon
+# going away: a restart that is halfway through must not leave a headless nvim
+# behind it.
+_restart = {"thread": None, "stopping": False}
+
+
+def replace_warm(log=None):
+    """Swap the warm server for a fresh one, without blocking the main loop.
+
+    Every step of this -- reaping the old server, waiting for the new one to
+    answer, making it open a buffer -- is a subprocess and a sleep, and all of
+    it used to run inline while the user's edit was still on its way into
+    their field. Measured on this desktop it cost 738-973ms per session, which
+    is most of the time between pressing `Esc` and seeing the text land.
+
+    None of it is work the *current* session needs; it is all for the next
+    one. So it goes on a thread and the write-back carries on. The one caller
+    that genuinely needs the answer -- the next field being opened -- waits
+    for it in await_replacement(), which is the only place that cost belongs.
+    """
+    log = log or (lambda _m: None)
+    if not config.EDIT_WARM_SERVER:
+        return False
+    if replacement_pending():
+        return False
+
+    def run():
+        stop_warm()
+        if _restart["stopping"]:
+            return
+        start_warm(log=log)
+        wait_warm(log=log)
+        prime_warm(log=log)
+        if _restart["stopping"]:
+            # The daemon left while this was being built. Take it with us.
+            stop_warm()
+
+    _restart["stopping"] = False
+    thread = threading.Thread(target=run, name="homerow-warm", daemon=True)
+    _restart["thread"] = thread
+    thread.start()
+    return True
+
+
+def replacement_pending():
+    thread = _restart["thread"]
+    return thread is not None and thread.is_alive()
+
+
+def await_replacement(timeout_ms=None, log=None):
+    """Block until the replacement server is ready, if one is being built.
+
+    The wait that replace_warm() moved off the write-back has to happen
+    somewhere, and this is the honest place for it: the next open is the only
+    thing that actually needs a warm server, and it is the only thing that
+    pays. In practice it pays nothing -- the replacement is built in under a
+    second and the next field is opened long after that -- but opening one
+    straight away has to find a finished server rather than one mid-build,
+    which would attach the user's editor to a session still being primed.
+    """
+    if not replacement_pending():
+        return True
+    log = log or (lambda _m: None)
+    timeout_ms = timeout_ms or config.EDIT_WARM_READY_MS
+    started = time.monotonic()
+    _restart["thread"].join(timeout_ms / 1000)
+    waited = (time.monotonic() - started) * 1000
+    ready = not replacement_pending()
+    log(f"waited {waited:.0f}ms for the replacement editor"
+        + ("" if ready else "; it is still not up, opening cold"))
+    return ready
+
+
+def stop_warm(final=False):
+    """Kill the warm server, if any. Its buffer state is not reusable.
+
+    `final` is the daemon shutting down: it also tells a replacement being
+    built on a thread not to bother, and to clean up after itself if it is
+    already too far in to stop.
+    """
+    if final:
+        _restart["stopping"] = True
     proc = _warm["proc"]
     _warm["proc"] = None
     if proc is None:
@@ -562,14 +643,19 @@ def sweep_temp_files():
     """
     import glob
     removed = 0
-    pattern = os.path.join(tempfile.gettempdir(),
-                           f"homerow-*{config.EDIT_SUFFIX}")
-    for path in glob.glob(pattern):
-        try:
-            os.unlink(path)
-            removed += 1
-        except OSError:
-            pass
+    # The buffer itself, and the row-count file a session writes beside it.
+    # That one ends in its own suffix rather than EDIT_SUFFIX, so the single
+    # pattern never found it and it was left behind -- harmless in content,
+    # but litter that accumulates once per killed daemon.
+    patterns = [f"homerow-*{config.EDIT_SUFFIX}",
+                f"homerow-*{config.EDIT_SUFFIX}{config.EDIT_ROWS_SUFFIX}"]
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(tempfile.gettempdir(), pattern)):
+            try:
+                os.unlink(path)
+                removed += 1
+            except OSError:
+                pass
     return removed
 
 
@@ -740,22 +826,27 @@ def editor_argv(path, editor=None, compact=False, cursor=None):
     return argv + [path]
 
 
-def write(field, text, window_id=None, log=None):
+def write(field, text, window_id=None, log=None, on_landed=None):
     """Put `text` into `field`, and say which way it went.
 
     The paste path is asynchronous -- it has to let the window manager focus
-    the window before typing at it -- so this reports the route taken, not
-    whether the characters arrived.
+    the window before typing at it -- so the return value is the route taken,
+    not whether the characters arrived. `on_landed` is how that second
+    question is answered: it is called with True, False or None (the field
+    could not be read) as soon as the answer is known, rather than after a
+    fixed wait long enough to cover the worst case.
     """
     log = log or (lambda _message: None)
     how = strategy(field.accessible)
     if how == EDITABLE_TEXT:
         if _write_editable_text(field.accessible, text):
+            if on_landed is not None:
+                _await_landing(field, text, log, on_landed)
             return EDITABLE_TEXT
         # Advertised and then refused. Falling back beats failing: the paste
         # path works on anything that supports ctrl+a and ctrl+v.
         log("EditableText refused the write; falling back to paste")
-    _write_paste(field, text, window_id, log)
+    _write_paste(field, text, window_id, log, on_landed)
     return PASTE
 
 
@@ -851,6 +942,45 @@ def verify(field, expected, log=None):
     return False
 
 
+def _await_landing(field, expected, log, done):
+    """Watch the field until it holds `expected`, then say so.
+
+    The same read verify() does, asked repeatedly instead of once after a
+    fixed delay. The fixed delay was 700ms and had to cover the slowest
+    application in the worst case, so every write paid the worst case: a paste
+    that landed 12-55ms after the keystroke was still reported three quarters
+    of a second later, and a write that never landed was announced no sooner.
+    Reading needs no focus and no keystroke, so asking often is cheap.
+    """
+    deadline = time.monotonic() + config.EDIT_LANDED_TIMEOUT_MS / 1000
+    reads = {"count": 0, "cost_ms": 0.0}
+
+    def look():
+        began = time.monotonic()
+        landed = verify(field, expected, log=lambda _m: None)
+        # Each of these is a D-Bus round trip on the main loop, and this polls
+        # -- so how much of the loop it is taking is worth knowing rather than
+        # assuming. Reported once, when the answer is in.
+        reads["count"] += 1
+        reads["cost_ms"] += (time.monotonic() - began) * 1000
+        if landed is not False or time.monotonic() >= deadline:
+            log(f"read the field back {reads['count']}x, "
+                f"{reads['cost_ms'] / reads['count']:.0f}ms each")
+        if landed is not False:
+            # True, or None for a field that cannot be read at all -- neither
+            # of which another read is going to change.
+            done(landed)
+            return False
+        if time.monotonic() >= deadline:
+            verify(field, expected, log=log)   # once, for the log
+            done(False)
+            return False
+        GLib.timeout_add(config.EDIT_LANDED_POLL_MS, look)
+        return False
+
+    GLib.timeout_add(config.EDIT_LANDED_POLL_MS, look)
+
+
 def _write_editable_text(accessible, text):
     try:
         iface = accessible.get_editable_text_iface()
@@ -861,7 +991,7 @@ def _write_editable_text(accessible, text):
         return False
 
 
-def _write_paste(field, text, window_id, log):
+def _write_paste(field, text, window_id, log, on_landed=None):
     """Select the field's contents and paste over them.
 
     The clipboard is the user's, so it is borrowed and handed back. The daemon
@@ -870,18 +1000,34 @@ def _write_paste(field, text, window_id, log):
     stay the owner, and that process outliving the paste is exactly how a
     clipboard manager ends up with the field's contents in its history.
     """
+    # Every stage below is timed into the log, permanently and not behind a
+    # debug flag. This path runs in somebody else's application, through their
+    # window manager, and the parts that turned out to be slow were never the
+    # parts that looked slow -- so "it still feels slow" has to be answerable
+    # from one real session's log rather than from a rig.
+    started = time.monotonic()
+    # Emptying is a different keystroke, not a paste of nothing -- see
+    # clear_field below.
+    emptying = not text
+
+    def since():
+        return (time.monotonic() - started) * 1000
+
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-    previous = clipboard.wait_for_text()
-    clipboard.set_text(text, -1)
 
     def focus():
         if window_id:
             x11.activate_window(window_id)
+        activated = since()
         # Focus the field itself without moving the pointer. Clicking it would
         # work and is the fallback, but a click lands wherever the field
         # happens to be *now*, and moving the user's pointer to write text is
         # a side effect nobody asked for.
-        if not _grab_focus(field.accessible):
+        grabbed = _grab_focus(field.accessible)
+        log(f"write-back: window activated at {activated:.0f}ms, "
+            f"field {'grabbed' if grabbed else 'refused the grab'} "
+            f"at {since():.0f}ms")
+        if not grabbed:
             log("could not focus the field over AT-SPI; clicking it")
             x11.click(1, *field.center)
 
@@ -891,26 +1037,68 @@ def _write_paste(field, text, window_id, log):
         # precaution every other synthetic key in this codebase takes.
         x11.release_modifiers()
         x11.send_combo(config.EDIT_SELECT_ALL)
+        # Then ask the server whether it has caught up, rather than sleeping
+        # 50ms on the assumption that it has. Measured at 0.32ms. The
+        # events reach the application in the order they were sent, so what
+        # this actually guarantees -- select-all is on its way before paste is
+        # sent -- is all the old delay was ever buying.
+        x11.sync()
 
     def paste():
-        held = clipboard.wait_for_text()
-        log(f"pasting: clipboard holds {0 if held is None else len(held)} "
-            f"chars, wanted {len(text)}")
+        log(f"write-back: pasting at {since():.0f}ms")
         x11.send_combo(config.EDIT_PASTE)
 
+    def clear_field():
+        # Emptying a field cannot be done by pasting: the clipboard would have
+        # to hold nothing, and pasting nothing is a no-op -- the select-all
+        # just sits there and the field keeps every character it had. Reported
+        # live: deleting the whole buffer and saving left the field untouched.
+        # A field with everything selected is emptied by the key that empties
+        # a selection, which is the same key the user would press themselves.
+        log(f"write-back: clearing the field at {since():.0f}ms")
+        x11.send_combo(config.EDIT_CLEAR)
+
     def restore():
-        if previous is None:
+        # `previous` is filled in by the asynchronous read below. Unknown is
+        # not the same as empty: an owner that never answered still lost the
+        # selection the moment this took it, so there is nothing to hand back
+        # -- but our text must not be what is left sitting there either.
+        if not previous["known"]:
+            log("the clipboard's owner never answered; clearing rather than "
+                "leaving the field's contents on the clipboard")
+            clipboard.clear()
+        elif previous["text"] is None:
             clipboard.clear()
         else:
-            clipboard.set_text(previous, -1)
+            clipboard.set_text(previous["text"], -1)
 
     def then_type():
-        _chain([
-            (0, select_all),
-            (config.EDIT_KEY_DELAY_MS, paste),
-            (config.EDIT_RESTORE_DELAY_MS, restore),
-        ])
+        log(f"write-back: window has focus at {since():.0f}ms")
+        steps = [(0, select_all)]
+        if emptying:
+            steps.append((0, clear_field))
+        else:
+            steps += [(0, paste), (config.EDIT_RESTORE_DELAY_MS, restore)]
+        _chain(steps)
 
+        def landed(ok):
+            log(f"write-back: {'landed' if ok else 'gave up'} "
+                f"at {since():.0f}ms")
+            if on_landed is not None:
+                on_landed(ok)
+
+        _await_landing(field, text, log, landed)
+
+    # An empty write never touches the clipboard: there is nothing to put on
+    # it, and borrowing somebody's clipboard to hand it straight back
+    # unchanged is a side effect with no purpose behind it.
+    previous = {"text": None, "known": False}
+    if not emptying:
+        # Ask what the clipboard holds, but do not wait for the answer: the
+        # paste does not need it, only the hand-back half a second later does.
+        previous = _borrow_clipboard(clipboard, ours=text, log=log)
+        clipboard.set_text(text, -1)
+        log(f"write-back: clipboard borrowed at {since():.0f}ms")
     focus()
     # Waiting a fixed interval for the window manager was both slower than it
     # needed to be and not long enough to be safe: the keystrokes go to
@@ -919,6 +1107,43 @@ def _write_paste(field, text, window_id, log):
     # fraction of the old delay in the normal case and is correct in the bad
     # one.
     _when_focused(window_id, then_type, log)
+
+
+def _borrow_clipboard(clipboard, ours, log):
+    """Start reading what the clipboard holds; return where the answer lands.
+
+    Reading it is what makes handing it back possible. The obvious call,
+    wait_for_text(), runs a nested main loop until the owning application
+    answers -- and the daemon has one main loop, which every mode, the
+    overlay and the workspace watch all run on. Measured against an
+    unresponsive owner: 31 *seconds* with everything frozen behind it.
+
+    Nothing waits for it here, not even asynchronously. The request goes to
+    the application that owns the selection *now*, before this takes it over
+    on the next line, and the reply is wanted by restore() half a second
+    later -- so making the paste wait for it, as an earlier version did, put
+    a quarter of a second of somebody else's latency in front of the user's
+    text for no benefit at all.
+
+    A reply that comes back as our own text is treated as no reply: it means
+    the request overtook the change of ownership, and "restoring" it would
+    leave the field's contents sitting on the clipboard, which is the one
+    thing this whole dance exists to avoid.
+    """
+    previous = {"text": None, "known": False}
+
+    def arrived(_clipboard, text, _data=None):
+        if text == ours:
+            log("the clipboard answered with what was just put on it; "
+                "treating it as unknown")
+            return
+        previous["text"], previous["known"] = text, True
+
+    try:
+        clipboard.request_text(arrived, None)
+    except Exception as error:
+        log(f"could not read the clipboard: {error!r}")
+    return previous
 
 
 def _when_focused(window_id, then, log):
@@ -1109,9 +1334,14 @@ class EditSession:
         chrome_h = 2 * config.EDIT_BORDER + pad_h
         min_w = config.EDIT_MIN_COLS * char_w + chrome_w
         rows = config.EDIT_MIN_ROWS
+        # How many rows the editor keeps for itself. Needed either way -- a
+        # full-size box records it too, for growing later -- and it used to be
+        # worked out inside the compact branch only, so opening a field tall
+        # enough not to be compact raised UnboundLocalError here and the
+        # session died before the editor started.
+        chrome = (_learned["chrome"] if _learned["chrome"] is not None
+                  else config.EDIT_CHROME_ROWS)
         if self.compact:
-            chrome = (_learned["chrome"] if _learned["chrome"] is not None
-                      else config.EDIT_CHROME_ROWS)
             # As tall as the text is, not as tall as the field is. Matching
             # the field exactly makes a one-line box for a one-line field,
             # which looks right and edits badly: a line that wraps, or a
@@ -1163,6 +1393,10 @@ class EditSession:
         it is worth losing the mode over.
         """
         editor = resolve_editor()
+        # A replacement server may still be being built by the session that
+        # just closed. Attaching to one mid-build would put the user's editor
+        # on a session still being primed, so this is where that wait lives.
+        await_replacement(log=self._log)
         if warm_alive() and is_vim_like(editor):
             if warm_open(self.path, self.compact, editor, self._log,
                          cursor=self.cursor):
@@ -1312,11 +1546,34 @@ class EditSession:
         self.on_write(edited)
 
     def _on_child_exited(self, _terminal, status):
-        """The editor exited; take whatever it left on disk."""
+        """The editor exited; take whatever it left on disk.
+
+        This waits for the editor's *process*, and an earlier version of this
+        branch did not: it had nvim announce `QuitPre` into a side file and
+        wrote the field back on that instead, on the theory that the buffer is
+        safe on disk well before the process is gone. Measured in the real
+        widget, the theory was wrong -- the child-exited signal arrived before
+        the announcement's inotify event every time, so the announcement bought
+        nothing and cost an autocmd, a file monitor and a side file. It is
+        gone. (The gap does exist for a client driven from a bare pty, which
+        is what made it look worth having; VTE does not report the exit that
+        way.)
+        """
         # Destroying the window kills the editor, so this also fires on the
         # way out of dismiss(). That is not the user saving anything.
         if self._dismissed:
             return
+        if status != 0:
+            # A crashed or killed editor has not agreed to anything; writing
+            # its buffer into the user's field would be putting words in
+            # their mouth.
+            self._log(f"editor exited {status}; not writing back")
+            self._close()
+            return
+        self._write_back_from_disk()
+
+    def _write_back_from_disk(self):
+        """Take what the editor left on disk and put it in the field."""
         edited = None
         try:
             with open(self.path, encoding="utf-8") as temp:
@@ -1324,15 +1581,12 @@ class EditSession:
         except OSError as error:
             self._log(f"could not read the edited file back: {error!r}")
 
+        # The window goes first either way: the editor is on its way out, and
+        # leaving its box on screen while the text is pasted underneath shows
+        # the user two states of the same field at once.
         self._close()
 
         if edited is None:
-            return
-        if status != 0:
-            # A crashed or killed editor has not agreed to anything; writing
-            # its buffer into the user's field would be putting words in
-            # their mouth.
-            self._log(f"editor exited {status}; not writing back")
             return
         edited = strip_added_newline(self.original, edited)
         if edited == self._sent:
@@ -1420,21 +1674,11 @@ class EditSession:
         if self.warm:
             # The server's buffer state is not reusable -- a dismissed editor
             # leaves it modified, and the next `:edit` into it fails -- so it
-            # is replaced rather than kept. The new one warms up in the
-            # background, off the path of anything the user is waiting for.
-            stop_warm()
-            start_warm(log=self._log)
-            # ...but "in the background" is not "instantly": measured, the
-            # replacement takes over a second to load the config and answer.
-            # Edit two fields in quick succession and the second one found no
-            # server and started an editor from cold -- the slow path, for no
-            # reason other than arriving too soon after the first. Waiting for
-            # the socket costs nothing here (this is the close, nobody is
-            # typing) and spares the next open.
-            wait_warm(log=self._log)
-            # And a server that answers is not a server that is ready -- see
-            # prime_warm. Also free here, for the same reason.
-            prime_warm(log=self._log)
+            # is replaced rather than kept. Genuinely in the background: this
+            # runs while the field is still being written, which is the whole
+            # difference between the write-back landing in 863ms and in 96ms.
+            # See replace_warm.
+            replace_warm(log=self._log)
         # The field's contents were on disk; they should not stay there --
         # unless this is the one case that deliberately left them, where the
         # file is the only copy of the edit (see close_for_workspace). The

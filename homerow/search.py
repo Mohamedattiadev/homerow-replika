@@ -198,6 +198,14 @@ class SearchPrompt:
         if mode_switch(event):
             return True
         if key == Gdk.KEY_Escape:
+            # Clear the query before leaving, the way caret mode drops its
+            # anchor before leaving and hint mode drops a half-typed label.
+            # A wrong query is a wrong turn, not a decision to leave, and
+            # retyping one from a reopened mode costs the whole search again.
+            if self.query:
+                self.query = ""
+                self._refresh()
+                return True
             self._close()
             return True
         if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):

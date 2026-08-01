@@ -16,7 +16,7 @@ follow, and the files are under 1KB.
 import json
 import os
 
-from . import config
+from . import config, themes
 
 FALLBACK = {
     "bg": "#1c1f24",
@@ -84,12 +84,47 @@ def _from_wal():
 
 
 def _named():
-    for source in (_from_preset, _from_wal):
-        try:
-            return source()
-        except Exception:
+    """The eight named colours, from the first source that has them.
+
+    Order: a preset asked for by name, then the desktop's own palette, then
+    pywal's, then the built-in fallback -- and whatever THEME_COLORS names is
+    laid over the top of the winner. That last part is what makes "I like my
+    theme but the window chips should be orange" a two-line config file
+    instead of a fork.
+    """
+    named = None
+    chosen = themes.get(config.THEME_PRESET)
+    if chosen is not None:
+        named = chosen
+    elif config.FOLLOW_THEME:
+        for source in (_from_preset, _from_wal):
+            try:
+                named = source()
+                break
+            except Exception:
+                continue
+    if named is None:
+        named = dict(FALLBACK)
+    return _overlaid(named)
+
+
+def _overlaid(named):
+    """Apply config.THEME_COLORS over `named`, ignoring anything unusable.
+
+    A colour that will not parse is dropped and the themed one kept, rather
+    than taken down the palette with it: a typo in one hex value should cost
+    that one colour, not every hint on the screen.
+    """
+    for slot, value in (config.THEME_COLORS or {}).items():
+        slot = str(slot).lower()
+        if slot not in themes.SLOTS:
             continue
-    return dict(FALLBACK)
+        try:
+            _hex_to_rgb(str(value))
+        except (ValueError, IndexError, AttributeError):
+            continue
+        named[slot] = str(value)
+    return named
 
 
 def palette():
@@ -99,7 +134,7 @@ def palette():
     missing theme file changes which hex values come in, never how they are
     turned into a palette.
     """
-    named = _named() if config.FOLLOW_THEME else dict(FALLBACK)
+    named = _named()
     try:
         return _build(named)
     except (KeyError, ValueError):

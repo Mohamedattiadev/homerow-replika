@@ -352,6 +352,21 @@ class Overlay:
         if mode_switch(event):
             return True
         if key in CANCEL_KEYS:
+            # Escape backs out of what you have typed before it backs out of
+            # the mode. Half a label is a wrong turn -- you meant `kj` and
+            # pressed `h` -- and closing the whole overlay to correct one
+            # keystroke means finding every target again. Escape on a clean
+            # slate still closes, so nothing is lost, and this is the same
+            # shape as leaving insert before leaving the editor in edit mode.
+            if self.typed:
+                self.typed = ""
+                self.window.queue_draw()
+                return True
+            if self.filter:
+                self.filter = ""
+                self._apply_filter()
+                self.window.queue_draw()
+                return True
             self._close()
             return True
         if key == Gdk.KEY_BackSpace:
@@ -700,6 +715,30 @@ def _rects_overlap(a, b):
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
 
 
+def _on_element_spots(element, w, h):
+    """Places a chip can sit and still be *on* the element it labels.
+
+    Its other three corners, then its middle. A chip anywhere in here cannot
+    be misread as belonging to a neighbour, which is the whole reason chips
+    sit on their target rather than beside it -- so a collision is worth
+    moving around the element for before it is worth moving off it.
+
+    Only spots the element is actually big enough to hold: sliding a chip to
+    the "far corner" of something narrower than the chip puts it right back
+    over the neighbour this is avoiding.
+    """
+    spots = []
+    if element.w >= w:
+        spots.append((element.x + element.w - w, element.y))
+    if element.h >= h:
+        spots.append((element.x, element.y + element.h - h))
+    if element.w >= w and element.h >= h:
+        spots.append((element.x + element.w - w, element.y + element.h - h))
+        spots.append((element.x + (element.w - w) // 2,
+                      element.y + (element.h - h) // 2))
+    return spots
+
+
 def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
     """First collision-free spot for a chip labelling `element`.
 
@@ -742,6 +781,17 @@ def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
     x, y = clamp(on_element)
     if not any(_rects_overlap((x, y, w, h), other) for other in placed):
         return x, y
+
+    # Still on the element, just not in its corner. Two controls close enough
+    # for their chips to collide are exactly where a chip pushed out into the
+    # gap becomes ambiguous, and that gap is what `beside` below is -- so
+    # every spot that keeps the chip on the thing it labels is tried first.
+    # Measured over a real page: two chips in sixty-nine ended up off their
+    # own element, both of them here.
+    for spot in _on_element_spots(element, w, h):
+        x, y = clamp(spot)
+        if not any(_rects_overlap((x, y, w, h), other) for other in placed):
+            return x, y
 
     for spot in beside:
         x, y = clamp(spot)

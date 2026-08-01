@@ -116,6 +116,22 @@ SCROLL_COLLECT_BUDGET_MS = 2500
 # default: a wrong or duplicate region is worse than that jitter.
 SCROLL_VERIFY = True
 
+# ...but not before the mode opens. The pass above warps the pointer onto
+# every candidate in turn, scrolls it and scrolls it back, and only puts the
+# cursor back where the user left it once the whole sweep is done -- so
+# entering scroll mode was a second of the cursor flying about and the page
+# jumping with nothing yet drawn. Measured over this desktop's log, 151 real
+# sessions: 316ms median, 726ms p90, 2318ms worst, all of it spent before
+# anything appeared.
+#
+# What it buys is a Tab that never lands on a region that cannot scroll, or
+# that scrolls the same thing as its neighbour -- which is worth nothing to
+# somebody scrolling the region they are already pointing at, and they were
+# paying for it every time. So it runs the first time Tab asks for another
+# region instead, beside the rescue pass that is deferred for the same
+# reason. Set this True to go back to paying on entry.
+SCROLL_VERIFY_ON_ENTRY = False
+
 # Probe rejected candidates only when this few regions were found, and only
 # this many of them. Virtualised lists render just their visible rows, so no
 # amount of measuring reveals that they scroll -- but probing every candidate
@@ -402,10 +418,17 @@ EDIT_ROWS_SUFFIX = ".rows"
 EDIT_ROWS_EXPR = ("exists('*nvim_win_text_height') ? "
                   "nvim_win_text_height(0, {}).all : line('$')")
 
-# How long after a write-back before the field is read again to check it
-# landed. The paste path is asynchronous -- it focuses the window and presses
-# keys at it -- so the characters have not arrived yet when write() returns.
-EDIT_VERIFY_DELAY_MS = 700
+# How the write-back is confirmed. The paste path is asynchronous -- it
+# focuses the window and presses keys at it -- so the characters have not
+# arrived when write() returns and the field has to be read again to know.
+#
+# This used to be one read after a fixed 700ms, which had to be long enough
+# for the slowest application and so charged every write the worst case.
+# Measured, a paste lands 12-55ms after the keystroke. So it is asked
+# repeatedly instead, and the answer arrives when it is true; the timeout is
+# only how long a write that never landed goes unreported.
+EDIT_LANDED_POLL_MS = 25
+EDIT_LANDED_TIMEOUT_MS = 1500
 
 # How long to wait, on the way out of a session, for the replacement warm
 # server to be ready. Measured: it takes over a second to load the config, and
@@ -462,13 +485,32 @@ EDIT_WM_ROLE = "homerow-edit"
 # guessed high and lost the edit into another window when it guessed low.
 EDIT_FOCUS_POLL_MS = 20
 EDIT_FOCUS_TRIES = 30          # ~600ms before giving up and trying anyway
-EDIT_KEY_DELAY_MS = 50
+# Nothing between select-all and paste: they are sent back to back and the
+# server is asked whether it has caught up (x11.sync()), which costs 0.32ms
+# against the 50ms this used to sleep for.
+#
 # How long the borrowed clipboard is held before the user's own contents go
-# back. Long enough that the application has read the paste it was sent.
+# back. Deliberately still a fixed wait: it is off the path the user is
+# watching -- the text has already landed -- and the thing it waits for, an
+# application getting round to reading the selection it was sent, is the one
+# thing here that cannot be observed from outside.
 EDIT_RESTORE_DELAY_MS = 500
+
+# Nothing waits on the clipboard's owner at all -- see edit._borrow_clipboard.
+# Reading it means asking another application and waiting for its answer, and
+# the blocking form of that call runs a nested main loop: measured at 31
+# seconds against an unresponsive owner, with the daemon's every other mode
+# frozen behind it. The reply is only wanted by the hand-back, which happens
+# EDIT_RESTORE_DELAY_MS later, so the write-back never waits for it.
 
 EDIT_SELECT_ALL = "ctrl+a"
 EDIT_PASTE = "ctrl+v"
+# What empties a field whose contents are selected. Emptying cannot go
+# through the clipboard -- pasting nothing is a no-op, and the field keeps
+# every character it had -- so this is the one write that is a keystroke
+# rather than a paste. Reported live: deleting the whole buffer and saving
+# left the field exactly as it was.
+EDIT_CLEAR = "Delete"
 
 # A container only counts as scrollable if its content actually overflows it.
 # Role alone is a bad signal -- a short list is still a LIST, and offering it
@@ -498,6 +540,33 @@ SCROLL_PAGE_CLICKS = 6
 # content rather than be a tuned guess. 50 looked fine on short pages and left
 # G stranded mid-document on long ones. Extra clicks past the end are free.
 SCROLL_EDGE_CLICKS = 400
+
+# Which key does what, while scroll mode is open. Key names are X keysym names
+# -- what `xev` prints, and what qtile binds with: single letters are
+# themselves, and the rest are names like Down, Page_Up, Home, End. Actions
+# are the eight below; anything else is reported and ignored.
+#
+# Rebinding is the point: these are vim's keys because that is what this is
+# modelled on, but somebody who reaches for `e`/`y` or for the arrow keys
+# alone should not have to edit Python to get them. Replacing the map replaces
+# it wholesale -- what you write is what the mode answers to -- so copy the
+# defaults and change the lines you care about.
+#
+# `gg`, counts (3j), Tab and Escape are not here. They are grammar rather than
+# bindings: a doubled key, a number prefix, "next region" and "leave" are the
+# same in every mode, and making them rebindable per mode would let them drift
+# apart from each other for no benefit.
+SCROLL_KEYS = {
+    "j": "down", "k": "up",
+    "Down": "down", "Up": "up",
+    "h": "left", "l": "right",
+    "d": "page down", "u": "page up",
+    "Page_Down": "page down", "Page_Up": "page up",
+    "G": "bottom",
+    # Home/End are not letters, so a stuck Caps Lock cannot touch them -- see
+    # the note on normalize_key. They reach the same edges `gg`/`G` do.
+    "Home": "top", "End": "bottom",
+}
 
 # Repeat delay in ms passed to xdotool for multi-click scrolls. Too low and
 # smooth-scrolling apps coalesce the events into one small jump.
@@ -590,6 +659,30 @@ RADIUS = 3
 # palette below instead.
 FOLLOW_THEME = True
 
+# A named palette from homerow/themes.py -- "nord", "gruvbox-dark",
+# "catppuccin-mocha", and so on; `homerow --list-themes` prints them all.
+# Empty means "follow the desktop", which is the default and what a machine
+# running theme-apply or pywal wants.
+#
+# This exists because a desktop with neither of those files had exactly one
+# palette and no way to pick another: "make the hints match my terminal" meant
+# editing Python. Naming a preset turns following the desktop off, since
+# asking for nord and getting the wallpaper's colours is not what anyone means
+# by it.
+THEME_PRESET = ""
+
+# Individual colours, laid over whatever the above resolved to. Any of the
+# eight slots -- bg, fg, red, green, yellow, blue, purple, cyan -- as hex:
+#
+#   theme:
+#     colors: {purple: "#ff8800"}
+#
+# So "I like my theme, but the window chips should be orange" is two lines
+# rather than a fork. A value that will not parse is dropped and the themed
+# one kept: a typo in one colour should cost that colour, not every hint on
+# the screen.
+THEME_COLORS = {}
+
 # Which theme slot each chip takes its color from. Valid names are the keys in
 # ~/.cache/qtile/current_palette.json: red, green, yellow, blue, purple, cyan.
 #
@@ -653,7 +746,20 @@ CLICK_METHOD = "action"
 # instead of followed.
 CLICK_HOLD_MS = 14
 CLICK_PREPRESS_MS = 30
-CLICK_SETTLE_MS = 120
+# The pointer is borrowed and put straight back, so this is how long the
+# cursor visibly sits somewhere the user did not put it. It was 120ms, which
+# with the press either side of it meant the cursor was away for 173ms --
+# long enough to see it happen on every hint click that cannot use the
+# element's own action (54% of them, counted over this desktop's log).
+#
+# Swept against a real button in a nested server, five clicks per value:
+# every one of 120/60/30/10/0ms landed exactly one click, and none of them
+# started a drag. 20ms keeps a margin for an application that debounces --
+# the drag this guards against is a real thing that happened to links, and a
+# GTK button is not a browser link -- while cutting the cursor's time away
+# from 173ms to about 65ms. Raise it again if a click ever picks something up
+# instead of following it.
+CLICK_SETTLE_MS = 20
 
 # Log every key the overlay receives. Useful when hints appear but typing them
 # does nothing, which usually means the keyboard grab is not exclusive.

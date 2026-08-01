@@ -121,6 +121,25 @@ def _inline_list(text):
     return [_scalar(part) for part in inner.split(",")]
 
 
+def _inline_map(text, line_number):
+    """`{}` and `{a: 1, b: 2}` on one line.
+
+    --show-config writes an empty mapping this way, so reading it back is not
+    optional: a file this project prints has to be a file it can load.
+    """
+    inner = text.strip()[1:-1].strip()
+    if not inner:
+        return {}
+    out = {}
+    for part in inner.split(","):
+        key, sep, value = part.partition(":")
+        if not sep:
+            raise ValueError(
+                f"line {line_number}: `{part.strip()}` is not `key: value`")
+        out[key.strip().strip("'\"")] = _scalar(value.strip())
+    return out
+
+
 def _parse_simple(text):
     """Nested maps, block and inline lists, scalars. Raises ValueError.
 
@@ -162,6 +181,8 @@ def _parse_simple(text):
             raise ValueError(f"line {number}: a key inside a list")
         if value.startswith("[") and value.endswith("]"):
             container[key] = _inline_list(value)
+        elif value.startswith("{") and value.endswith("}"):
+            container[key] = _inline_map(value, number)
         elif value == "":
             # A map or a list follows; which one the next line decides.
             child = {}
@@ -311,7 +332,16 @@ def apply(tree, module=config):
         name = resolve(path)
         if value == {} and not isinstance(value, (list, tuple, set)):
             # A section with every setting under it commented out, or a key
-            # with nothing after it. Neither asks for anything.
+            # with nothing after it. Neither asks for anything -- unless the
+            # setting it names genuinely takes a mapping, where an empty one
+            # is a real value meaning "override nothing" (theme.colors is
+            # written that way by --show-config, and has to read back).
+            if name is not None and isinstance(defaults().get(name), dict):
+                checked, problem = check(name, value)
+                if problem is None:
+                    setattr(module, name, checked)
+                    applied[name] = checked
+                    continue
             if name is not None:
                 problems.append(f"{name}: no value given")
             continue

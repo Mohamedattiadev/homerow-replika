@@ -207,7 +207,7 @@ def _collect(screen_w, screen_h, origin=None):
     ]
 
     distinct.sort(key=lambda e: e.w * e.h, reverse=True)
-    if config.SCROLL_VERIFY:
+    if config.SCROLL_VERIFY and config.SCROLL_VERIFY_ON_ENTRY:
         distinct = verify(distinct, deadline)
     return Regions(distinct, [region for region in deferred
                               if not any(_overlapping(region, kept)
@@ -681,37 +681,73 @@ def window_region():
     return region
 
 
+# What an action name in config.SCROLL_KEYS means, as (wheel button, amount).
+# Caps Lock (bound as the launch modifier -- see README) inverts case for every
+# letter, and there is no way to tell a genuine `G` from an accidentally
+# capitalised `g` at the X11 protocol level once it is on: both arrive as the
+# same keysym with the same modifier state. normalize_key resolves that in
+# favour of the far more common case (plain letters), which makes `G` alone
+# unreachable while Caps Lock is stuck on -- so Home/End are bound to the same
+# edges, being keys Caps Lock cannot touch.
+ACTIONS = {
+    "down": (WHEEL_DOWN, "line"),
+    "up": (WHEEL_UP, "line"),
+    "left": (WHEEL_LEFT, "line"),
+    "right": (WHEEL_RIGHT, "line"),
+    "page down": (WHEEL_DOWN, "page"),
+    "page up": (WHEEL_UP, "page"),
+    "top": (WHEEL_UP, "edge"),
+    "bottom": (WHEEL_DOWN, "edge"),
+}
+
+
+def keymap(log=None):
+    """config.SCROLL_KEYS resolved to keysyms, read when a session opens.
+
+    Not built at import: the user's config file is read after this module is
+    loaded, so anything frozen in a class body is frozen at the *default* --
+    which is exactly how `scroll: line_clicks:` came to be accepted, reported
+    as applied, and then ignored for the life of the daemon.
+
+    An unusable line is skipped and said so rather than taken as a reason to
+    leave the mode with no keys at all: a typo in one binding should cost that
+    binding.
+    """
+    log = log or (lambda _m: None)
+    resolved = {}
+    for name, action in (config.SCROLL_KEYS or {}).items():
+        wanted = ACTIONS.get(str(action).strip().lower())
+        if wanted is None:
+            log(f"scroll key {name!r}: no such action {action!r}; "
+                f"try one of {', '.join(sorted(ACTIONS))}")
+            continue
+        keyval = Gdk.keyval_from_name(str(name))
+        if not keyval or keyval == Gdk.KEY_VoidSymbol:
+            log(f"scroll key {name!r}: X knows no key by that name")
+            continue
+        resolved[keyval] = wanted
+    return resolved
+
+
 class ScrollSession:
     """Holds the keyboard and translates vim keys into wheel events."""
 
-    KEYS = {
-        Gdk.KEY_j: (WHEEL_DOWN, "line"),
-        Gdk.KEY_k: (WHEEL_UP, "line"),
-        Gdk.KEY_Down: (WHEEL_DOWN, "line"),
-        Gdk.KEY_Up: (WHEEL_UP, "line"),
-        Gdk.KEY_h: (WHEEL_LEFT, "line"),
-        Gdk.KEY_l: (WHEEL_RIGHT, "line"),
-        Gdk.KEY_d: (WHEEL_DOWN, "page"),
-        Gdk.KEY_u: (WHEEL_UP, "page"),
-        Gdk.KEY_Page_Down: (WHEEL_DOWN, "page"),
-        Gdk.KEY_Page_Up: (WHEEL_UP, "page"),
-        Gdk.KEY_G: (WHEEL_DOWN, "edge"),
-        # Caps Lock (bound as the launch modifier -- see README) inverts case
-        # for every letter, and there is no way to tell a genuine `G` from an
-        # accidentally-capitalised `g` at the X11 protocol level once it is
-        # on: both arrive as the same keysym with the same modifier state.
-        # normalize_key resolves that ambiguity in favour of the far more
-        # common case (plain letters), which makes `G` alone unreachable
-        # while Caps Lock is stuck on. Home/End are not letters, so Caps Lock
-        # cannot touch them -- they reach the same edges regardless.
-        Gdk.KEY_Home: (WHEEL_UP, "edge"),
-        Gdk.KEY_End: (WHEEL_DOWN, "edge"),
-    }
-    AMOUNTS = {
-        "line": config.SCROLL_LINE_CLICKS,
-        "page": config.SCROLL_PAGE_CLICKS,
-        "edge": config.SCROLL_EDGE_CLICKS,
-    }
+    @staticmethod
+    def amount_clicks(amount):
+        """Wheel clicks for a motion, read when the motion happens.
+
+        This used to be a class attribute built from `config` in the class
+        body -- which runs at *import*, before the user's config file has been
+        read, so `scroll: line_clicks:` in config.yaml was accepted, reported
+        as applied by --check-config, and then silently ignored for the life
+        of the daemon. Every other setting is read at the point of use; this
+        one was the exception, and being the exception is what made it wrong.
+        """
+        return {
+            "line": config.SCROLL_LINE_CLICKS,
+            "page": config.SCROLL_PAGE_CLICKS,
+            "edge": config.SCROLL_EDGE_CLICKS,
+        }[amount]
 
     def __init__(self, region, on_done=None, regions=None, deferred=None):
         self.region = region
@@ -722,6 +758,11 @@ class ScrollSession:
         # Candidates that could only be confirmed by scrolling them, which is
         # what Tab is for. See _rescue_deferred.
         self.deferred = list(deferred) if deferred else []
+        # Whether the scroll-and-watch pass has run. It no longer runs before
+        # the mode opens -- see _verify_regions.
+        self._verified = not config.SCROLL_VERIFY
+        # Read now, not at import: see keymap().
+        self.keys = keymap()
         try:
             self.index = self.regions.index(region)
         except ValueError:
@@ -865,7 +906,7 @@ class ScrollSession:
             return True
         self.pending_g = False
 
-        action = self.KEYS.get(key)
+        action = self.keys.get(key)
         if action is None:
             self.count = ""
             self.window.queue_draw()
@@ -888,7 +929,7 @@ class ScrollSession:
         x, y = self._wheel_target()
         # An edge jump is already "all the way", so a count would only make it
         # slower for no further movement.
-        clicks = self.AMOUNTS[amount]
+        clicks = self.amount_clicks(amount)
         if amount != "edge":
             clicks *= max(1, min(repeat, config.SCROLL_MAX_COUNT))
         # Until the aim is settled, read the watchers first so this scroll can
@@ -1035,6 +1076,7 @@ class ScrollSession:
         movement reads as the mode looking for somewhere to go rather than as
         the page glitching before it opens.
         """
+        self._verify_regions()
         pending, self.deferred = self.deferred, []
         for region in pending:
             if any(_overlapping(region, kept) for kept in self.regions):
@@ -1043,6 +1085,44 @@ class ScrollSession:
                 region.scroll_y = True
                 region.scroll_x = False
                 self.regions.append(region)
+
+    def _verify_regions(self):
+        """Scroll each region and keep the ones that really move -- on Tab.
+
+        This is the pass that used to run before the mode opened, and it is
+        what "entering scroll mode jitters the page for a second" was: it
+        warps the pointer onto every candidate in turn, scrolls it, scrolls it
+        back, and only puts the pointer where the user left it once the whole
+        sweep is done. Measured over this desktop's own log, 151 real scroll
+        sessions: 316ms median, 726ms at the 90th percentile, 2318ms at worst
+        -- all of it before a single thing was drawn.
+
+        What it buys is a Tab that never lands on a region that cannot scroll
+        or that scrolls the same thing as its neighbour. Nobody who scrolls
+        the region they are already pointing at needs that, and they were
+        paying for it on every single press. So it happens the first time Tab
+        asks for another region, next to the rescue pass, which is there for
+        the same reason.
+
+        The region already in use is kept whatever the probe says: the user
+        can see it, may already have scrolled it, and dropping the thing under
+        their eyes to satisfy a check is worse than an extra Tab stop.
+        """
+        if not config.SCROLL_VERIFY or self._verified:
+            return
+        self._verified = True
+        current = self.region
+        kept = verify(list(self.regions))
+        if current is not None and current not in kept:
+            kept.insert(0, current)
+        if not kept:
+            return
+        self.regions = kept
+        if current in kept:
+            self.index = kept.index(current)
+        else:
+            self.index = 0
+            self.region = kept[0]
 
     def _settle_aim(self):
         """Decide the aim for the current region as far as that is free.

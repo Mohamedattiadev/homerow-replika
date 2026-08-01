@@ -55,6 +55,27 @@ Labels every clickable element, and every other visible window.
 Windows are labelled in a second colour, so the same keypress that clicks a
 button can instead switch apps.
 
+**The cursor is borrowed for as little as possible.** A little over half of
+all clicks (counted over this desktop's log: 91 of 168) cannot use the
+element's own accessible action and have to go through the real pointer,
+which means the cursor visibly jumps to the target and back. It used to be
+away for **173ms** — long enough to watch happen — most of it a fixed 120ms
+wait after the button came up, there because a click followed immediately by
+pointer motion had been read as a drag and was picking links up instead of
+following them. Swept against a real button in a nested X server, five clicks
+each at 120/60/30/10/0ms: every single one landed exactly one click and none
+started a drag. It is now 20ms, which keeps a margin for an application that
+debounces and cuts the cursor's time away to about **65ms**.
+
+**`Esc` backs out of the wrong turn before it backs out of the mode.** Hints
+are up, you mean to press `kj`, and you press `h` — half a label, pointing
+nowhere you want. `Esc` used to close the whole overlay, so correcting one
+keystroke meant hinting every target on the screen again. Now the first `Esc`
+clears what you typed, the next one clears a name filter, and only then does
+it leave. Caret mode already worked this way — `Esc` drops the selection
+anchor before it closes — and search, caret search and hint mode now all
+match it. Nothing is lost: `Esc` on a clean slate still leaves immediately.
+
 Chips sit **on** the element they label, overlapping its top-left corner, and
 only move aside for another chip. Beside it was tried first for years, and it
 is what makes a label ambiguous: a chip in the gap between two controls
@@ -62,6 +83,14 @@ belongs to whichever one you assume, and on a toolbar or a row of links the
 assumption is wrong about half the time. A chip sitting on a thing cannot be
 misread, which is why Homerow and Vimium both put it there and accept covering
 a few pixels of the target.
+
+When two chips would land on each other, the displaced one moves **around its
+own element first** — the other three corners, then the middle — and only
+goes beside it if the element is too small to hold it anywhere. Two controls
+close enough for their chips to collide are exactly where a chip in the gap
+reads as belonging to the wrong one, so leaving the element is the last
+resort, not the first. Measured over a real page of 69 hints: two chips had
+left their element, and one of those had room to stay.
 
 ### Scroll
 
@@ -76,6 +105,25 @@ Enters immediately on the region under the pointer, else the largest. No picker.
 | `3j`, `5k` | count prefixes |
 | `Tab` | next region |
 | `Esc` | leave |
+
+**Entering moves nothing.** Working out which regions genuinely scroll means
+scrolling each candidate and watching what moves — warping the pointer onto
+every one in turn, scrolling it, scrolling it back, and only putting the
+cursor back where you left it once the whole sweep is done. That ran *before*
+anything was drawn, so entering scroll mode was a second of the cursor flying
+about and the page jumping under a screen with nothing on it yet. Measured
+over this desktop's log, 151 real sessions: **316ms median, 726ms at the 90th
+percentile, 2318ms at worst** — all of it before the outline appeared.
+
+What it buys is a `Tab` that never lands on a region that cannot scroll, or
+one that scrolls the same thing as its neighbour. That is worth nothing if you
+are scrolling the region you are already pointing at, which is the common
+case — and everyone was paying for it on every press. So it happens the first
+time `Tab` asks for another region, beside the rescue pass that was already
+deferred for exactly this reason, and entering costs only the AT-SPI reads.
+The region you are already using is kept even if the probe rejects it: you can
+see it, you may have scrolled it already, and dropping it to satisfy a check
+is worse than an extra `Tab` stop.
 
 ### Search
 
@@ -275,13 +323,87 @@ than slow, too — while both are alive, a command sent to "the socket" and a UI
 attached to it can reach different processes, and then the editor you are
 looking at is not the one holding your field.
 
+**Closing is warm too — the rebuild happens behind the write-back.** Opening
+was made fast first, and then pressing `Esc` still took the best part of a
+second to show anything. The reason was not the write: it was that closing a
+session replaces the warm nvim server, and that replacement — reaping the old
+one, waiting for the new one to answer, priming it — ran to completion
+*before* the first character was sent to the field. Measured on a nested X
+server, editor exit to text in the field, over two runs — the first with
+everything cold, the second back-to-back on a warmed machine:
+
+| | warm server replaced | text into the field | total |
+|---|---|---|---|
+| before (cold) | 738ms | 96ms | **863ms** |
+| after (cold) | 3ms | 46ms | **49ms** |
+| before (warm) | 402ms | 15ms | **418ms** |
+| after (warm) | 1ms | 33ms | **39ms** |
+
+None of that work is for the session being closed; it is all for the next
+one. So it runs on a thread and the write-back goes first. The wait did not
+vanish, it moved to the only thing that needs the answer: opening a field
+*within about a second* of closing one waits up to ~750ms for the replacement
+to finish, because attaching your editor to a server still being primed is
+worse than waiting for a finished one. Open one any later than that and it
+costs nothing — measured at 0ms after a one-second gap, and the field still
+opens warm in every case.
+
+The paste itself lost its fixed delay. Between `ctrl+a` and `ctrl+v` there was
+a 50ms sleep to let the X server catch up; asking the server whether it has
+caught up (`XSync`) costs 0.32ms and is the thing the sleep was guessing at —
+the events reach the application in the order they were sent anyway.
+
+**Nothing waits on your clipboard.** Borrowing it means asking whichever
+application owns the selection what it holds, and the blocking form of that
+call runs a nested main loop until that application answers. The daemon has
+one main loop — every mode, the overlay and the workspace watch all run on it
+— so a slow owner freezes all of it: measured at 31 *seconds* against an
+unresponsive one, and 64ms worst case even here with a well-behaved one. The
+answer is only wanted by the hand-back half a second later, so the request now
+goes out and the write-back carries straight on without it. If the answer
+never comes the clipboard is cleared rather than left holding your field's
+contents, and an answer that comes back as the text we just put there is
+treated as no answer at all — that means the read overtook the change of
+ownership, and "restoring" it would leave the field's text on your clipboard,
+which is the one thing this whole dance exists to prevent.
+
+**What did not work: having the editor announce its exit.** From a keystroke
+to nvim's process actually being gone is ~1.3s when you watch a `--remote-ui`
+client from a bare pty, and only ~260ms of that is writing the buffer — so a
+`QuitPre` autocmd was added to announce the quit into a side file, and the
+field was written from that instead of from the process exiting. It bought
+nothing: measured in the real widget, VTE's `child-exited` signal arrived
+*before* the announcement's file event every time, so the write-back was
+already underway. The autocmd, the file monitor and the side file are gone
+again. The pty gap was real and simply is not what this code path waits on.
+
 **The write-back is checked.** After the text goes back, the field is read
 again and compared. The paste path cannot fail loudly — it borrows the
 clipboard, focuses the window and presses `ctrl+a ctrl+v`, and an application
 that was busy swallows any of that while the mode reports success. Reading
-needs no focus and no keystroke, so confirming costs one round trip. And an
-edit that empties a field which had something in it keeps a copy of what was
-there and says where: it is the one write that editing again cannot undo.
+needs no focus and no keystroke, so confirming costs one round trip — cheap
+enough to ask repeatedly rather than once after a fixed wait. It used to be
+one read 700ms after the write, long enough to cover the slowest application,
+so every write paid the worst case: a paste that landed in 12–55ms was
+confirmed three quarters of a second later, and one that never landed was
+reported no sooner. Now the answer arrives when it becomes true, and the
+timeout is only how long a failed write can go unreported. The one delay left
+alone is the 500ms before your clipboard is handed back: it is behind the
+text, not in front of it, and an application getting round to reading the
+selection it was sent is the one thing here that cannot be observed from
+outside. And an edit that empties a field which had something in it keeps a
+copy of what was there and says where: it is the one write that editing again
+cannot undo.
+
+**Emptying a field is a keystroke, not a paste of nothing.** Reported live,
+with a screenshot of an empty editor: deleting the whole buffer and saving
+left the field holding every character it had. Emptying went down the same
+path as any other write — put the new text on the clipboard, select all,
+paste — and when the new text is nothing, the paste is a no-op and the
+select-all just sits there. So an empty write now presses the key that empties
+a selection instead, and never touches your clipboard at all: there is nothing
+to put on it, and borrowing it to hand it straight back unchanged is a side
+effect with no purpose. Measured against a real field: emptied in 20ms.
 
 With exactly one editable field on screen there is nothing to pick, so it
 opens straight away — and neither does a field you are already typing in. If
@@ -360,7 +482,7 @@ sudo pacman -S at-spi2-core python-gobject libx11 libxtst \
 | `at-spi2-core` | the accessibility tree — this is the whole premise |
 | `python-gobject`, `gtk3` | the overlay, and the AT-SPI bindings |
 | `libX11`, `libXtst` | window queries and synthetic clicks, through ctypes |
-| `xdotool` | pointer moves, wheel clicks, window activation |
+| `xdotool` | the fallback only — X11 is driven in-process through ctypes |
 | `xclip` | the clipboard, for yanking and for writing browser fields |
 | `openbsd-netcat` | the fast client — one line to a unix socket |
 | `vte3` | **edit mode only**, imported lazily |
@@ -455,9 +577,14 @@ hint:
   windows: false             # stop labelling other windows
 scroll:
   page_clicks: 10
+  keys:                      # rebind the mode's keys; see below
+    e: down
+    y: up
 edit:
   editor: "hx"
-chip_slot: blue              # which slot of the desktop theme a chip takes
+theme:
+  preset: nord               # a built-in palette, or leave it out to follow
+  colors: {purple: "#ff8800"}   #   your desktop theme
 idle_timeout_s: 20
 ```
 
@@ -477,6 +604,69 @@ keyboard control that ignores the line.
 PyYAML is used if you have it, and a small reader for the subset the config
 file needs stands in if you do not — so this adds no dependency. Both are
 tested against the same shipped example and required to agree.
+
+### Keys
+
+Scroll mode's keys are a map from key to action, so the vim bindings are a
+default rather than a decision baked into the source:
+
+```yaml
+scroll:
+  keys:
+    e: down
+    y: up
+    Down: down
+    Page_Up: page up
+```
+
+Key names are what `xev` prints and what your window manager binds with:
+single letters are themselves, everything else is a name like `Down`,
+`Page_Up`, `Home`, `End`. The actions are `down`, `up`, `left`, `right`,
+`page down`, `page up`, `top` and `bottom`. Writing the map replaces it
+wholesale — what you write is what the mode answers to — so copy the defaults
+from `homerow --show-config` and change the lines you care about. A line that
+names a key X does not know, or an action that does not exist, is reported and
+skipped: a typo costs that binding and nothing else.
+
+`gg`, counts like `3j`, `Tab` and `Esc` are deliberately not rebindable. They
+are grammar rather than bindings — a doubled key, a number prefix, "next
+region", "leave" — and they mean the same thing in every mode; letting them
+drift apart per mode would buy nothing. The hotkeys that *open* a mode are not
+here either: those live in your window manager, which is the only thing that
+can know what else is bound.
+
+### Colours
+
+Colours come from your desktop theme and are re-read on every press, so a
+`theme-apply` or `wal` run changes the hints without restarting anything. That
+is the default and it stays the default. If you have neither, there are
+presets:
+
+```sh
+homerow --list-themes       # every palette, with its colours
+```
+
+```yaml
+theme:
+  preset: nord              # doom-one, gruvbox-dark/light, nord, dracula,
+                            # catppuccin-mocha/latte, tokyo-night,
+                            # solarized-dark/light, everforest-dark, rose-pine
+  colors: {purple: "#ff8800"}   # laid over the top, so keep a theme and
+                                # change one thing
+```
+
+Naming a preset stops the desktop theme being followed — asking for nord and
+getting your wallpaper's colours is not what anyone means by it. Individual
+colours in `colors:` are applied over whatever won, so a preset is a starting
+point rather than a wall, and one that will not parse is dropped while the
+rest stand: a typo in one hex value should cost that colour, not every hint on
+the screen.
+
+The eight slots are `bg`, `fg`, `red`, `green`, `yellow`, `blue`, `purple` and
+`cyan`. `chip_slot` and friends name which of them each kind of chip uses, and
+the ink on a chip is still chosen by measuring contrast against it, so a light
+preset stays readable without any further configuration — every shipped preset
+is tested for exactly that.
 
 ## How it runs
 
@@ -527,9 +717,15 @@ modules in memory, so `homerow --restart` is what makes an edit under
 Colours come from the desktop theme, re-read on every press so a theme switch
 lands immediately:
 
-1. `~/.cache/qtile/current_palette.json` (written by `theme-apply`)
-2. `~/.cache/wal/colors.json`
-3. a built-in fallback
+1. `theme: preset:`, if you named one — a built-in palette, `--list-themes`
+2. `~/.cache/qtile/current_palette.json` (written by `theme-apply`)
+3. `~/.cache/wal/colors.json`
+4. a built-in fallback
+
+…and `theme: colors:` is laid over whichever of those answered, so one colour
+can be changed without giving up the rest. A machine running `theme-apply` or
+pywal needs none of this and is unaffected by it: with no preset named, the
+desktop still wins.
 
 | Role | Slot | Setting |
 |---|---|---|
@@ -546,7 +742,9 @@ actually being asked about, so it is the thing measured — the theme's own
 foreground or background wherever one of them clears
 `ink_min_contrast`, and plain black or white only when neither does. Nothing
 is hardcoded: even the fallback is hex names run through the same slot and
-contrast logic. `follow_theme: false` pins it.
+contrast logic. `follow_theme: false` pins it, and every shipped preset —
+including the light ones, which are what break ink choice — is tested to
+produce a readable palette.
 
 Everything tunable lives in `homerow/config.py` — named settings, no magic
 numbers left in the modules — and every one of them can be set from
