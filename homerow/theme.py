@@ -117,19 +117,79 @@ def _build(named):
     # theme's own extremes contrasts with the chip. This is what keeps light
     # themes readable instead of assuming a dark desktop.
     def text_on(chip_color):
-        mid = config.LUMINANCE_MIDPOINT
-        if _luminance(chip_color) > config.CHIP_LIGHT_ABOVE:
-            return background if _luminance(background) < mid else (0, 0, 0)
-        return foreground if _luminance(foreground) > mid else (1, 1, 1)
+        """The most readable ink for this chip, preferring the theme's own.
+
+        This used to compare luminances against a threshold, which is right
+        most of the time and quietly wrong when an accent lands near the
+        middle: measured on this desktop's own theme, the window chip's
+        purple was given an ink at 2.24:1, well below readable, and window
+        labels have been hard to read ever since. Contrast is the thing
+        actually being asked about, so it is now the thing measured. Black
+        and white stay the last resort rather than the first, so a theme's
+        own colours are used wherever they are good enough.
+        """
+        themed = max((foreground, background),
+                     key=lambda color: _contrast(color, chip_color))
+        if _contrast(themed, chip_color) >= config.INK_MIN_CONTRAST:
+            return themed
+        return max(((0, 0, 0), (1, 1, 1)),
+                   key=lambda color: _contrast(color, chip_color))
 
     ink = text_on(chip)
-    return {
+    palette = {
         "chip": chip + (config.CHIP_ALPHA,),
         "chip_matched": matched + (config.CHIP_ALPHA,),
         "chip_window": window + (config.CHIP_ALPHA,),
         "ink": ink + (1.0,),
         # Already-typed characters recede toward the chip they sit on.
-        "ink_typed": _mix(ink, chip, 0.55) + (1.0,),
+        "ink_typed": _mix(ink, chip, config.INK_TYPED_MIX) + (1.0,),
         "ink_window": text_on(window) + (1.0,),
+        "ink_matched": text_on(matched) + (1.0,),
         "dim": background + (config.DIM_ALPHA,),
     }
+    # A receded ink per chip, because a legend is drawn on whichever chip its
+    # mode uses and the text has to be readable on that one. Measured on this
+    # desktop's own theme, the legend's meanings were being drawn in an ink
+    # mixed toward the *default* chip whatever chip was actually behind them,
+    # at 2.5:1 against it -- which is the "some of the text is not visible"
+    # report, and no amount of picking a nicer grey would have fixed it.
+    for slot, base in (("", chip), ("_matched", matched), ("_window", window)):
+        palette[f"ink_dim{slot}"] = _recede(
+            palette[f"ink{slot}"][:3], base,
+            config.LEGEND_MEANING_MIX,
+            config.LEGEND_MEANING_MIN_CONTRAST) + (1.0,)
+    return palette
+
+
+def _recede(ink, chip, mix, floor):
+    """Fade `ink` toward `chip` as far as `mix`, but never past readable.
+
+    The point of the fade is hierarchy -- a key matters more than the word
+    explaining it -- and a fixed fraction delivers that on a chip whose
+    luminance is far from the ink's while destroying it on one that is not.
+    So the fraction is a ceiling rather than a promise: it backs off until the
+    contrast is at least `floor`, and a chip that cannot afford any fade
+    simply does not get one. Themes here come from the user's wallpaper, so
+    the awkward chip is not hypothetical.
+    """
+    while mix > 0:
+        faded = _mix(ink, chip, mix)
+        if _contrast(faded, chip) >= floor:
+            return faded
+        mix -= 0.02
+    return tuple(ink)
+
+
+def _contrast(a, b):
+    """WCAG contrast ratio between two rgb colours, 1.0 to 21.0."""
+    def channel(value):
+        return (value / 12.92 if value <= 0.03928
+                else ((value + 0.055) / 1.055) ** 2.4)
+
+    def relative(color):
+        r, g, b = (channel(v) for v in color[:3])
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    first, second = relative(a), relative(b)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)

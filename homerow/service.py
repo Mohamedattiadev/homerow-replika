@@ -189,22 +189,25 @@ class Daemon:
             self._desktop_watch = None
             return False
         now = x11.current_desktop()
-        # An edit session opts out. Everything else on screen describes a
-        # window that is no longer in front and is unrecoverable once it goes,
-        # but an editor holds unsaved work -- closing it because the user
-        # glanced at another workspace would throw away what they typed, and
-        # the write-back targets the original window by id anyway.
-        if not getattr(self.overlay, "follows_workspace", True):
-            return True
         if now is not None and now != self._desktop:
             self._log(f"workspace changed ({self._desktop} -> {now}); "
                       f"closing the open mode")
             self._desktop_watch = None
+            # An editor gets to leave on its own terms -- it holds text the
+            # user typed, and dismiss() is the close that deliberately throws
+            # that away. It still leaves: an editor left open over a field on
+            # a workspace nobody is looking at kept the bar saying "edit" and
+            # locked every other mode out behind it.
+            leave = getattr(self.overlay, "close_for_workspace", None)
             try:
-                self.overlay.dismiss()
+                kept = leave() if leave is not None else self.overlay.dismiss()
             except Exception:
                 self.overlay = None
                 self._clear_mode()
+                return False
+            if kept:
+                _notify(f"Workspace changed — the editor closed. That field "
+                        f"needs focus to write, so your text is at {kept}")
             return False
         return True
 

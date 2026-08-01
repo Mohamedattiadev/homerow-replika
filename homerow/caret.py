@@ -864,11 +864,17 @@ class CaretSession:
             mode = "VISUAL LINE" if self.linewise else "VISUAL"
         else:
             mode = "CARET"
-        pairs = [("h j k l", "move"), ("w b e", "word"), ("0 $", "line"),
-                 ("gg G", "doc"), ("v V", "select"), ("y", "yank"),
-                 ("x d", "cut"), ("p", "put"), ("/", "search")]
+        # Spelled without spaces inside a key: "hjkl" is how a vim user reads
+        # it anyway, and the row is a third narrower for it.
+        pairs = [("hjkl", "move"), ("wbe", "word"), ("0$", "line"),
+                 ("ggG", "doc")]
+        if self.anchor is None:
+            # Already selecting; the key that starts a selection is the one
+            # thing on this row that cannot do anything from here.
+            pairs.append(("vV", "select"))
+        pairs += [("y", "yank"), ("xd", "cut"), ("p", "put"), ("/", "find")]
         if len(self.blocks) > 1:
-            pairs.append(("1-9 tab", "block"))
+            pairs.append(("1-9", "block"))
         pairs.append(("esc", "leave"))
 
         legend = [badge(mode)]

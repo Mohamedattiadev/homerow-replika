@@ -169,15 +169,19 @@ Then, inside the editor:
 
 | Key | Action |
 |---|---|
-| `q` | write back and close |
+| `Esc` | write back and close |
+| `q` | the same |
 | `<Space>w` | the same |
 | `:wq` | the same thing, longhand |
 | `:q!` | close and leave the field alone |
 
-Both shortcuts are mapped `<buffer>`-locally, so `q` is still macro recording
-and `<Space>` is still your leader everywhere else in the same nvim. They
-write rather than discarding, because an edit thrown away silently is the
-worse mistake to make on a keystroke that short.
+`Esc` leaves, the way it leaves every other mode here — from insert that is
+two presses, one to leave insert and one to leave, which is the shape the
+rest of homerow already has. All three are mapped `<buffer>`-locally, so `q`
+is still macro recording, `<Space>` is still your leader, and `Esc` is still
+just `Esc` everywhere else in the same nvim. They write rather than
+discarding, because an edit thrown away silently is the worse mistake to make
+on a keystroke that short. `:q!` is still there for actually discarding.
 
 In a GTK or Qt field, `:w` pushes the text into the field without closing, so
 you can watch it land and keep editing. In a browser it does not: updating a
@@ -196,6 +200,17 @@ With exactly one editable field on screen there is nothing to pick, so it
 opens straight away. While an editor is open no other homerow mode will
 open — an overlay may be replaced freely, an editor holding unsaved text
 may not.
+
+**Switching workspace closes it too**, like every other mode, but never
+empty-handed. The buffer is saved first, so what leaves with the editor is
+what you typed rather than what you last wrote. A GTK or Qt field then takes
+the text immediately — that needs no focus, so it lands without dragging you
+back. A browser field cannot be written without focusing its window, which
+would haul you to the workspace you just left; that one keeps its buffer in
+`/tmp` and tells you where. It used to opt out of the workspace watch
+entirely, and the cost was worse than the problem: the editor stayed open
+over a field nobody was looking at, the bar kept saying `edit`, and every
+other mode refused to open behind it.
 
 vim-anywhere opens an *empty* buffer and leaves the pasting to you; this reads
 the field first, so it round-trips. What neither vim-anywhere nor GhostText nor
@@ -328,9 +343,16 @@ lands immediately:
 | typed prefix, scroll outline | cyan | `CHIP_SLOT_MATCHED` |
 | window chip | purple | `CHIP_SLOT_WINDOW` |
 
-Text colour is chosen by measuring the chip's luminance, so light themes stay
-readable. Nothing is hardcoded: even the fallback is hex names run through the
-same slot and contrast logic. `FOLLOW_THEME = False` pins it.
+Text colour is chosen by measuring its **contrast** against the chip, so light
+themes stay readable. It used to threshold the chip's luminance and trust the
+result, which is right most of the time and quietly wrong when an accent lands
+near the middle: measured here, the window chip's ink came out at 2.24:1 and a
+legend's meanings at 2.49:1, both well under readable. Contrast is the thing
+actually being asked about, so it is the thing measured — the theme's own
+foreground or background wherever one of them clears
+`INK_MIN_CONTRAST`, and plain black or white only when neither does. Nothing
+is hardcoded: even the fallback is hex names run through the same slot and
+contrast logic. `FOLLOW_THEME = False` pins it.
 
 Everything tunable lives in `homerow/config.py` — named settings, no magic
 numbers left in the modules.
@@ -412,15 +434,17 @@ looking permanently unscrollable.
 **A legend is scanned, not read.** Every mode keeps a pill at the bottom of
 the screen saying what its keys do, and each built its own by joining strings:
 the mode name, whatever was live in it, and forty characters of static help,
-all in one weight and one colour. Caret mode's reached 150 characters and most
-of a screen wide, and the part that changed while you worked — a part-typed
-`d`, which block the caret was in — was the part you were least likely to
-notice, because it looked exactly like the help text it was wedged between.
-It is now composed from parts rather than concatenated: the mode and its live
-state are inverted badges, each key is inked and its meaning recedes, and the
-gap between a key and its own meaning is smaller than the gap to the next
-pair, so the grouping is carried by spacing instead of punctuation. Past a
-screen's width the pairs drop from the end, but never the last one — every
+all in one weight and one colour. Caret mode's reached 150 characters and
+1070px, most of a screen wide, and the part that changed while you worked — a
+part-typed `d`, which block the caret was in — was the part you were least
+likely to notice, because it looked exactly like the help text it was wedged
+between. It is now composed from parts rather than concatenated: the mode and
+its live state are inverted badges, each key is inked and its meaning recedes,
+and the gap between a key and its own meaning is smaller than the gap to the
+next pair, so the grouping is carried by spacing instead of punctuation. Keys
+are spelled without spaces inside them — `hjkl`, not `h j k l`, which is how a
+vim user reads it anyway and a third narrower. The same row is now 770px. Past
+a screen's width the pairs drop from the end, but never the last one — every
 mode's list ends in `esc`, and a legend that has dropped the way out is worse
 than one that is slightly too wide.
 

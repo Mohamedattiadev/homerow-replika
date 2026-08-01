@@ -1200,9 +1200,9 @@ class ScrollSession:
                  region.h - config.SCROLL_BORDER, config.SCROLL_RADIUS)
         cr.stroke()
 
-        pairs = [("j k", "line"), ("d u", "page"), ("gg G", "ends")]
+        pairs = [("jk", "line"), ("du", "page"), ("ggG", "ends")]
         if self._sideways():
-            pairs.append(("h l", "sideways"))
+            pairs.append(("hl", "side"))
         pairs.append(("3j", "count"))
         if len(self.regions) > 1:
             pairs.append(("tab", "region"))

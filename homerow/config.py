@@ -360,6 +360,13 @@ EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}
 EDIT_KEYMAPS = [
     "nnoremap <buffer> q :wq<CR>",
     "nnoremap <buffer> <Space>w :wq<CR>",
+    # Esc leaves, the way it leaves every other mode here. In normal mode it
+    # otherwise does nothing, and pressing it twice from insert -- once to
+    # leave insert, once to leave -- is the shape the rest of homerow already
+    # has. It writes rather than discards, like q: this is a one-key exit and
+    # a silently thrown-away edit is the worse mistake to make on one of
+    # those. :q! is still there for actually discarding.
+    "nnoremap <buffer> <Esc> :wq<CR>",
 ]
 
 EDIT_BORDER = 2
@@ -427,11 +434,11 @@ LEGEND_MARGIN = 40
 # followed by key/meaning pairs, so the gaps carry the grouping: a key sits
 # tight against its own meaning and further from the next pair, which is what
 # lets the row be scanned rather than read.
-LEGEND_PAD = 10            # pill edge to content
-LEGEND_KEY_GAP = 5         # a key to its own meaning
-LEGEND_PAIR_GAP = 15       # one pair to the next
-LEGEND_SEGMENT_GAP = 10    # badge to badge, or badges to the keys
-LEGEND_BADGE_PAD = 7       # inside an inverted badge
+LEGEND_PAD = 8             # pill edge to content
+LEGEND_KEY_GAP = 4         # a key to its own meaning
+LEGEND_PAIR_GAP = 12       # one pair to the next
+LEGEND_SEGMENT_GAP = 8     # badge to badge, or badges to the keys
+LEGEND_BADGE_PAD = 6       # inside an inverted badge
 LEGEND_BADGE_INSET = 5     # badge inset from the pill's top and bottom
 # Keep the row off the screen edges; past this, pairs are dropped from the
 # end rather than letting it run off.
@@ -517,11 +524,22 @@ CHIP_SLOT_WINDOW = "purple"
 
 # A chip brighter than this gets dark text; the midpoint decides whether the
 # theme's own background or foreground is the readable choice against it.
-CHIP_LIGHT_ABOVE = 0.45
-LUMINANCE_MIDPOINT = 0.5
+# Ink is picked by measuring contrast against the chip, not by thresholding
+# its luminance (see theme.text_on). Below this ratio the theme's own fg/bg
+# is abandoned for plain black or white. 4.5 is WCAG AA for body text.
+INK_MIN_CONTRAST = 4.5
 
 DIM_ALPHA = 0.18
 CHIP_ALPHA = 0.96
+
+# How far text recedes toward the chip behind it. 0 is the full ink colour,
+# 1 is invisible.
+INK_TYPED_MIX = 0.55       # a hint label's already-typed prefix
+LEGEND_MEANING_MIX = 0.28  # what a key means, beside the key
+# ...but never so far that it stops being readable. The fade above is a
+# ceiling; theme._recede backs off until the meaning clears this contrast
+# ratio against the chip behind it. 4.5 is WCAG AA for body text.
+LEGEND_MEANING_MIN_CONTRAST = 4.5
 
 # There is deliberately no palette of literal colors here. Every color the
 # overlay draws is derived from the active theme by homerow/theme.py, including

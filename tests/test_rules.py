@@ -382,7 +382,7 @@ class WorkspaceWatch(unittest.TestCase):
     overlay keeps the keyboard grabbed over whatever is in front now.
     """
 
-    def daemon(self, desktop):
+    def daemon(self, desktop, overlay=None):
         import unittest.mock
 
         from homerow import service
@@ -391,7 +391,11 @@ class WorkspaceWatch(unittest.TestCase):
         instance._desktop = desktop
         instance._desktop_watch = None
         instance.log = None
-        instance.overlay = unittest.mock.Mock()
+        # spec, so an overlay that has no close_for_workspace really has none:
+        # a bare Mock invents every attribute asked of it, which would make
+        # every session look like an editor here.
+        instance.overlay = (overlay if overlay is not None
+                            else unittest.mock.Mock(spec=["dismiss"]))
         return instance
 
     def test_a_changed_workspace_dismisses_the_overlay(self):
@@ -437,6 +441,193 @@ class WorkspaceWatch(unittest.TestCase):
                                         return_value=None):
             self.assertTrue(instance._check_workspace())
         instance.overlay.dismiss.assert_not_called()
+
+
+class InkIsReadable(unittest.TestCase):
+    """Every ink has to be readable on the chip it is actually drawn on.
+
+    Measured on this desktop's own theme: the window chip's ink was at
+    2.24:1 and a legend's meanings at 2.49:1, both well under readable, which
+    is the "some of the text is not visible" report. Both came from picking
+    colours by thresholding luminance and then trusting the result -- so
+    contrast, the thing actually being asked about, is now the thing measured.
+    """
+
+    PAIRS = [("chip", "ink", "ink_dim"),
+             ("chip_matched", "ink_matched", "ink_dim_matched"),
+             ("chip_window", "ink_window", "ink_dim_window")]
+
+    def palettes(self):
+        from homerow import theme
+        # The live theme and the built-in fallback: the fallback is what a
+        # desktop with no theme file gets, and it goes through the same path.
+        return [("live", theme.palette()),
+                ("fallback", theme._build(dict(theme.FALLBACK)))]
+
+    def test_every_ink_clears_the_readable_floor_on_its_own_chip(self):
+        from homerow import config, theme
+        for name, palette in self.palettes():
+            for chip, ink, dim in self.PAIRS:
+                for key in (ink, dim):
+                    with self.subTest(palette=name, text=key, chip=chip):
+                        self.assertGreaterEqual(
+                            theme._contrast(palette[key], palette[chip]),
+                            config.INK_MIN_CONTRAST)
+
+    def test_a_meaning_recedes_from_its_key_where_it_can_afford_to(self):
+        from homerow import theme
+        # The whole point of the fade is hierarchy. A floor that swallowed it
+        # everywhere would be a legend with no hierarchy left.
+        for name, palette in self.palettes():
+            for chip, ink, dim in self.PAIRS:
+                with self.subTest(palette=name, chip=chip):
+                    self.assertLessEqual(
+                        theme._contrast(palette[dim], palette[chip]),
+                        theme._contrast(palette[ink], palette[chip]))
+
+    def test_receding_backs_off_until_the_floor_is_met(self):
+        from homerow import theme
+        # A fade of 0.9 would be nearly invisible; it has to come back up.
+        ink, chip = (0.0, 0.0, 0.0), (0.9, 0.9, 0.9)
+        faded = theme._recede(ink, chip, 0.9, 4.5)
+        self.assertGreaterEqual(theme._contrast(faded, chip), 4.5)
+        self.assertNotEqual(faded, ink)      # it did still recede
+
+    def test_a_chip_that_cannot_afford_any_fade_gets_none(self):
+        from homerow import theme
+        # Black on mid-grey is 4.41:1 -- under the floor before any fade at
+        # all. There is nothing better available, so the answer is the ink
+        # itself rather than something worse in pursuit of a number that
+        # cannot be reached.
+        ink, chip = (0.0, 0.0, 0.0), (0.45, 0.45, 0.45)
+        self.assertEqual(theme._recede(ink, chip, 0.9, 4.5), ink)
+
+    def test_the_themes_own_colours_are_preferred_over_black_and_white(self):
+        from homerow import theme
+        # Black and white are the last resort. A theme whose foreground reads
+        # perfectly well on a chip should get its foreground.
+        palette = theme._build(dict(theme.FALLBACK, fg="#f0f0f0", bg="#101010"))
+        self.assertNotIn(palette["ink"][:3], ((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+
+
+class EditorLeavesOnWorkspaceChange(unittest.TestCase):
+    """An editor closes with the rest, but is never closed empty-handed.
+
+    It used to opt out of the workspace watch entirely, because it holds text
+    the user typed and dismiss() is the close that throws that away. The cost
+    was worse than the problem: the editor stayed open over a field on a
+    workspace nobody was looking at, the bar kept saying "edit", and every
+    other mode refused to open behind it.
+    """
+
+    def session(self, strategy, on_disk, sent="before", warm=False):
+        import tempfile
+        import unittest.mock
+
+        from homerow import edit
+        instance = object.__new__(edit.EditSession)
+        instance.field = unittest.mock.Mock()
+        instance.original = "before"
+        instance._sent = sent
+        instance._log = lambda _message: None
+        instance.closed = False
+        instance._dismissed = False
+        instance.warm = warm
+        instance._monitor = None
+        instance.window = unittest.mock.Mock()
+        instance.on_done = lambda: None
+        instance.written = []
+        instance.on_write = instance.written.append
+        handle, instance.path = tempfile.mkstemp(prefix="homerow-test-")
+        with os.fdopen(handle, "w", encoding="utf-8") as temp:
+            temp.write(on_disk)
+        self.addCleanup(lambda: os.path.exists(instance.path)
+                        and os.unlink(instance.path))
+        self._strategy = strategy
+        return instance
+
+    def leave(self, instance):
+        import unittest.mock
+
+        from homerow import edit
+        with unittest.mock.patch.object(
+                edit, "strategy", return_value=self._strategy), \
+             unittest.mock.patch.object(edit, "stop_warm"), \
+             unittest.mock.patch.object(edit, "start_warm"), \
+             unittest.mock.patch.object(edit, "warm_save") as saved:
+            kept = instance.close_for_workspace()
+        return kept, saved
+
+    def test_a_quiet_field_is_written_before_closing(self):
+        from homerow import edit
+        # AT-SPI can write this one directly, which needs no focus -- so the
+        # text lands without dragging the user back to the workspace they
+        # just left.
+        instance = self.session(edit.EDITABLE_TEXT, "after")
+        kept, _ = self.leave(instance)
+        self.assertIsNone(kept)
+        self.assertEqual(instance.written, ["after"])
+        self.assertTrue(instance.closed)
+        self.assertFalse(os.path.exists(instance.path))
+
+    def test_a_field_needing_focus_keeps_the_text_on_disk(self):
+        from homerow import edit
+        # Writing this one means focusing its window and typing at it, which
+        # would haul the user back. The buffer stays, and the daemon says so.
+        instance = self.session(edit.PASTE, "after")
+        kept, _ = self.leave(instance)
+        self.assertEqual(kept, instance.path)
+        self.assertEqual(instance.written, [])
+        self.assertTrue(os.path.exists(instance.path))
+        with open(instance.path, encoding="utf-8") as temp:
+            self.assertEqual(temp.read(), "after")
+
+    def test_an_unchanged_buffer_writes_nothing_and_keeps_nothing(self):
+        from homerow import edit
+        instance = self.session(edit.PASTE, "before")
+        kept, _ = self.leave(instance)
+        self.assertIsNone(kept)
+        self.assertEqual(instance.written, [])
+        self.assertFalse(os.path.exists(instance.path))
+
+    def test_the_warm_server_is_asked_to_save_first(self):
+        from homerow import edit
+        # The file on disk is only as new as the last :w. Closing on a
+        # workspace change must not take a stale copy and call it their work.
+        instance = self.session(edit.EDITABLE_TEXT, "after", warm=True)
+        _, saved = self.leave(instance)
+        saved.assert_called_once()
+
+    def test_the_editors_own_exit_cannot_write_again(self):
+        from homerow import edit
+        # Closing kills the editor, so child-exited fires on the way out.
+        # That is not the user saving, and it must not write a second time.
+        instance = self.session(edit.EDITABLE_TEXT, "after")
+        self.leave(instance)
+        self.assertTrue(instance._dismissed)
+
+    def test_the_daemon_reports_a_kept_buffer(self):
+        import unittest.mock
+
+        from homerow import service, x11
+        overlay = unittest.mock.Mock(spec=["close_for_workspace"])
+        overlay.close_for_workspace.return_value = "/tmp/homerow-x.txt"
+        instance = WorkspaceWatch.daemon(self, 2, overlay)
+        with unittest.mock.patch.object(x11, "current_desktop",
+                                        return_value=5), \
+             unittest.mock.patch.object(service, "_notify") as told:
+            instance._check_workspace()
+        overlay.close_for_workspace.assert_called_once()
+        self.assertIn("/tmp/homerow-x.txt", told.call_args.args[0])
+
+    def test_escape_is_bound_to_write_and_close(self):
+        from homerow import config
+        # A one-key exit that discards is the worse mistake to make, so Esc
+        # writes -- the same argument q is bound on.
+        escapes = [m for m in config.EDIT_KEYMAPS if "<Esc>" in m]
+        self.assertEqual(len(escapes), 1)
+        self.assertIn(":wq", escapes[0])
+        self.assertIn("<buffer>", escapes[0])
 
 
 class ModeSwitching(unittest.TestCase):

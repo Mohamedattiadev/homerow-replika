@@ -507,6 +507,14 @@ class Overlay:
 
 # The three kinds of thing a legend row is made of. A mode composes a list of
 # them; draw_legend lays them out and nothing else has to know the geometry.
+# Which ink goes with which chip. A mode draws its legend on its own chip, and
+# the text has to contrast with that one rather than with the default.
+_INK_FOR = {
+    "chip": ("ink", "ink_dim"),
+    "chip_matched": ("ink_matched", "ink_dim_matched"),
+    "chip_window": ("ink_window", "ink_dim_window"),
+}
+
 BADGE = "badge"    # inverted sub-pill: the mode, and whatever is live in it
 TEXT = "text"      # free text, e.g. a query being typed
 KEYS = "keys"      # (key, meaning) pairs -- key in ink, meaning dimmed
@@ -620,6 +628,14 @@ def draw_legend(cr, parts, width, height, colors, chip="chip"):
     _rounded_rect(cr, x, y, w, height_of_pill, config.RADIUS)
     cr.fill()
 
+    # The ink that belongs to *this* chip. A legend on the cyan or the purple
+    # chip was being drawn in the ink computed for the default one, which is
+    # how its meanings ended up at 2.5:1 against the chip actually behind
+    # them.
+    ink = colors.get(_INK_FOR.get(chip, ("ink",))[0], colors["ink"])
+    ink_dim = colors.get(_INK_FOR.get(chip, (None, "ink_dim"))[1],
+                         colors["ink_dim"])
+
     baseline = y + height_of_pill - pad - 2
     for kind, value, offset, span in placements:
         left = x + pad + offset
@@ -627,7 +643,7 @@ def draw_legend(cr, parts, width, height, colors, chip="chip"):
             # Inverted: the chip's own colour on a block of ink. The mode and
             # its live state are the only things here that change, so they are
             # the only things that invert.
-            cr.set_source_rgba(*colors["ink"])
+            cr.set_source_rgba(*ink)
             _rounded_rect(cr, left, y + config.LEGEND_BADGE_INSET, span,
                           height_of_pill - config.LEGEND_BADGE_INSET * 2,
                           config.RADIUS)
@@ -638,13 +654,13 @@ def draw_legend(cr, parts, width, height, colors, chip="chip"):
             cr.show_text(value)
             continue
         if kind == "meaning":
-            cr.set_source_rgba(*colors["ink_typed"])
+            cr.set_source_rgba(*ink_dim)
             _face(cr)
         else:
             # A key and a query being typed are both things the user is
             # producing, so they carry the same weight; the meanings behind
             # them are reference material and recede.
-            cr.set_source_rgba(*colors["ink"])
+            cr.set_source_rgba(*ink)
             _face(cr, True)
         cr.move_to(left, baseline)
         cr.show_text(value)

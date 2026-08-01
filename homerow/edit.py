@@ -275,6 +275,30 @@ def warm_open(path, compact, editor=None, log=None):
     return True
 
 
+def warm_save(editor=None, log=None):
+    """Ask the warm server to write its buffer now.
+
+    The file on disk is only as new as the last `:w`, so anything that has to
+    read the buffer without the editor exiting first -- closing because the
+    workspace changed, say -- would otherwise take a stale copy and call it
+    the user's work. Only possible on the warm path: a cold editor is a
+    process with no socket to ask.
+    """
+    log = log or (lambda _m: None)
+    editor = resolve_editor(editor)
+    import subprocess
+    try:
+        result = subprocess.run(
+            editor.split() + ["--server", warm_socket_path(),
+                              "--remote-expr", 'execute("silent! write")'],
+            capture_output=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"warm editor would not save: {error!r}")
+        return False
+    return result.returncode == 0
+
+
 def sweep_temp_files():
     """Delete edit buffers left behind by a daemon that died mid-edit.
 
@@ -542,11 +566,9 @@ class EditSession:
     does not have to know which kind of thing is open.
     """
 
-    # Unlike every other mode, this one survives a workspace change: it holds
-    # work the user has not saved yet. See Daemon._check_workspace.
-    follows_workspace = False
-    # And for the same reason no other mode may replace it while it is open.
-    # See Daemon._on_connection.
+    # No other mode may replace this one while it is open: it holds work the
+    # user has not saved yet. See Daemon.dispatch. A workspace change does
+    # close it, but through close_for_workspace() rather than dismiss().
     holds_unsaved_work = True
 
     def __init__(self, field, original, on_done=None, on_write=None,
@@ -803,7 +825,52 @@ class EditSession:
         self._dismissed = True
         self._close()
 
-    def _close(self):
+    def close_for_workspace(self):
+        """Leave because the workspace changed; the path text was kept at, or None.
+
+        Every other mode simply closes when the workspace changes: what it
+        knows describes a window that is not in front any more. This one used
+        to opt out, because it holds text the user has typed and closing it
+        the way the others close would throw that away. The cost of opting
+        out was worse than the problem: the editor stayed open over a field
+        on a workspace nobody was looking at, the bar kept saying "edit", and
+        every other mode refused to open because an editor was still up.
+
+        So it closes too, but never empty-handed. On the warm path the server
+        is asked to write first, so what leaves with it is what was typed and
+        not just what was last saved. A field AT-SPI can write directly then
+        takes the text right now -- that needs no focus, so it lands without
+        dragging anybody back. A field that needs the clipboard cannot be
+        written without focusing its window, which would haul the user to the
+        workspace they just left; that one keeps its buffer on disk and says
+        where, which costs the convenience and loses nothing.
+        """
+        # Whatever happens below, the editor's own exit must not write again.
+        self._dismissed = True
+        if self.warm:
+            warm_save(log=self._log)
+        edited = None
+        try:
+            with open(self.path, encoding="utf-8") as temp:
+                edited = strip_added_newline(self.original, temp.read())
+        except OSError as error:
+            self._log(f"could not read the edited file back: {error!r}")
+
+        if edited is None or edited == self._sent:
+            self._log("workspace changed; nothing further to write back")
+            self._close()
+            return None
+        if strategy(self.field.accessible) == EDITABLE_TEXT:
+            self._log("workspace changed; writing back before closing")
+            self._sent = edited
+            self.on_write(edited)
+            self._close()
+            return None
+        self._log(f"workspace changed; keeping the buffer at {self.path}")
+        self._close(keep_file=True)
+        return self.path
+
+    def _close(self, keep_file=False):
         if self.closed:
             return
         self.closed = True
@@ -824,9 +891,13 @@ class EditSession:
             # background, off the path of anything the user is waiting for.
             stop_warm()
             start_warm(log=self._log)
-        # The field's contents were on disk; they should not stay there.
-        try:
-            os.unlink(self.path)
-        except OSError:
-            pass
+        # The field's contents were on disk; they should not stay there --
+        # unless this is the one case that deliberately left them, where the
+        # file is the only copy of the edit (see close_for_workspace). The
+        # next daemon start sweeps it.
+        if not keep_file:
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
         self.on_done()
