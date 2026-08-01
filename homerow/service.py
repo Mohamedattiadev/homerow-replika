@@ -108,6 +108,12 @@ class Daemon:
         # starting an editor from cold.
         if edit.start_warm(log=self._log):
             self._log("warming an editor for edit mode")
+            # And find out how many rows that editor keeps for itself, while
+            # nobody is waiting. It can only be measured with a UI attached,
+            # so doing it here is the difference between the first field of
+            # the session being sized right and being sized right one resize
+            # later. Deferred so it does not sit in front of the socket.
+            GLib.timeout_add(config.EDIT_PROBE_DELAY_MS, self._measure_editor)
 
         # Let a running mode reach the other modes' hotkeys itself; it holds
         # the keyboard, so the window manager cannot forward them here.
@@ -141,6 +147,10 @@ class Daemon:
         finally:
             self._cleanup()
         return 0
+
+    def _measure_editor(self):
+        edit.probe_chrome(log=self._log)      # logs what it finds
+        return False
 
     def _cleanup(self):
         edit.stop_warm()

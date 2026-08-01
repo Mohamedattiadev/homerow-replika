@@ -182,9 +182,15 @@ return {
 ```
 
 `g:started_by_homerow` is set before your config runs, on both the warm server
-and a cold start. Nothing breaks without it — the box is just taller. The
-count is checked once more after the editor attaches, because the warm server
-is headless and a statusline plugin may only appear once a UI does.
+and a cold start. Nothing breaks without it — the box is just taller.
+
+The count can only be taken with a UI attached: probed directly, lualine sets
+`laststatus` back to 3 the moment one is, whatever it was told before, and the
+warm server is headless. So the daemon attaches a throwaway UI over a bare pty
+at warm-up and asks then — a few hundred milliseconds where nobody is waiting,
+rather than a box that is a row out until the first field corrects it. On this
+desktop, with the statusline standing down, a one-line field gets a 46px box
+holding one row of your text, which is the field.
 
 | Key | Action |
 |---|---|

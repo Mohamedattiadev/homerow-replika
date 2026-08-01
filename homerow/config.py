@@ -321,7 +321,7 @@ EDIT_COMPACT_ROWS = 3
 # buffer. It reads exactly like the editor having frozen.
 EDIT_COMPACT_SET = (
     "set laststatus=0 cmdheight=0 nomore shortmess+=aoOtTIcF "
-    "nonumber norelativenumber signcolumn=no nocursorline"
+    "nonumber norelativenumber signcolumn=no nocursorline nospell"
 )
 # Cold start has to defer these past the user's config; a warm server has
 # already passed VimEnter and applies EDIT_COMPACT_SET directly.
@@ -375,11 +375,18 @@ EDIT_ANNOUNCE = ["--cmd", "let g:started_by_homerow = 1"]
 EDIT_CHROME_ROWS_ASSUMED = 2
 # Rows of actual text a compact editor should be able to show. The box is
 # this plus whatever chrome the editor turns out to cost.
-EDIT_COMPACT_TEXT_ROWS = 3
+EDIT_COMPACT_TEXT_ROWS = 1
 # How long after the editor attaches before its chrome is measured again. The
 # warm server is headless and a statusline plugin may only appear once a UI
 # does, so the first answer sizes the window and this one corrects it.
 EDIT_REFIT_DELAY_MS = 350
+# How long a throwaway UI is left attached while measuring the editor's chrome
+# at warm-up (see edit.probe_chrome). Probed directly: lualine has re-asserted
+# laststatus within 300ms of a UI attaching and does not change after.
+EDIT_PROBE_ATTACH_MS = 400
+# How long after the warm server starts before it is probed; it has to
+# finish loading the user's config first.
+EDIT_PROBE_DELAY_MS = 1500
 # Editors the compact settings above are valid for; anything else is launched
 # untouched rather than handed flags it will not understand.
 EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}
