@@ -375,7 +375,13 @@ EDIT_ANNOUNCE = ["--cmd", "let g:started_by_homerow = 1"]
 EDIT_CHROME_ROWS_ASSUMED = 2
 # Rows of actual text a compact editor should be able to show. The box is
 # this plus whatever chrome the editor turns out to cost.
-EDIT_COMPACT_TEXT_ROWS = 1
+# Rows of text a compact editor shows at minimum, whatever the field's own
+# height is. One matched a one-line field exactly and edited badly: a line
+# that wraps, or a field holding a paragraph, left you typing through a slot
+# with no sight of the line above or below. Three is a line and its
+# neighbours. The box grows past this when the text needs it, up to the cap.
+EDIT_COMPACT_TEXT_ROWS = 3
+EDIT_COMPACT_MAX_ROWS = 12
 # How long after the editor attaches before its chrome is measured again. The
 # warm server is headless and a statusline plugin may only appear once a UI
 # does, so the first answer sizes the window and this one corrects it.

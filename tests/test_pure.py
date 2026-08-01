@@ -508,6 +508,46 @@ class ScrollAimCheck(unittest.TestCase):
         self.assertEqual(len(sent), 1)
 
 
+class EditorHeight(unittest.TestCase):
+    """The editor is as tall as the text, not as tall as the field.
+
+    Matching the field exactly gave a one-line box for a one-line field. It
+    looked right and edited badly: a line that wraps, or a field holding a
+    paragraph, left you typing through a slot with no sight of the lines
+    above or below. The window floats over the page, so it may be taller than
+    the thing it sits on -- it just should not be taller than it needs to be.
+    """
+
+    def rows(self, text, cols=76):
+        from homerow import edit
+        return edit.wrapped_rows(text, cols)
+
+    def test_an_empty_field_still_has_a_line_to_type_on(self):
+        self.assertEqual(self.rows(""), 1)
+
+    def test_a_short_line_is_one_row(self):
+        self.assertEqual(self.rows("Eadasda"), 1)
+
+    def test_a_line_that_wraps_counts_every_row_it_wraps_to(self):
+        self.assertEqual(self.rows("x" * 76), 1)
+        self.assertEqual(self.rows("x" * 77), 2)
+        self.assertEqual(self.rows("x" * 152), 2)
+        self.assertEqual(self.rows("x" * 153), 3)
+
+    def test_newlines_count_as_rows(self):
+        self.assertEqual(self.rows("a\nb\nc"), 3)
+
+    def test_a_blank_line_is_still_a_row(self):
+        self.assertEqual(self.rows("a\n\nb"), 3)
+
+    def test_wrapping_and_newlines_together(self):
+        self.assertEqual(self.rows("x" * 100 + "\nshort"), 3)
+
+    def test_a_nonsense_width_does_not_divide_by_zero(self):
+        # char_width can come back 0 from a terminal that is not realized yet.
+        self.assertEqual(self.rows("anything", cols=0), 1)
+
+
 class CaretToEditorPosition(unittest.TestCase):
     """edit.cursor_at turns a caret offset into the (line, column) vim wants.
 

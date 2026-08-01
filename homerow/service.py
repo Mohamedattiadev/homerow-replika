@@ -728,8 +728,18 @@ class Daemon:
             self._log(f"clicked a {role}; leaving the chord so typing works")
         try:
             import subprocess
+            # Guarded, and it has to be. qtile's ungrab_chord() calls
+            # ungrab_keys() *first* and only then checks whether a chord was
+            # actually active -- when none was, it logs a debug line and
+            # returns without re-grabbing anything, leaving the desktop with
+            # no keybindings at all until the config is reloaded. Reported
+            # live: hint mode launched from the direct alt+space binding (not
+            # a chord), one click on a text field, and every qtile shortcut on
+            # the machine was dead. The guard runs inside qtile, so there is
+            # no window between asking and acting.
             subprocess.run(
-                ["qtile", "cmd-obj", "-o", "root", "-f", "ungrab_chord"],
+                ["qtile", "cmd-obj", "-o", "root", "-f", "eval", "-a",
+                 "self.ungrab_chord() if self.chord_stack else None"],
                 timeout=2, check=False, capture_output=True,
             )
         except (OSError, subprocess.SubprocessError):

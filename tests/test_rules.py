@@ -526,6 +526,47 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
                 self.assertNotIn("DWELL_TIMEOUT_S", source)
 
 
+class LeavingTheChordIsGuarded(unittest.TestCase):
+    """Only leave a qtile chord when there is one to leave.
+
+    qtile's ungrab_chord() calls ungrab_keys() first and only then checks
+    whether a chord was active; when none was, it returns without re-grabbing
+    anything, so the desktop is left with no keybindings at all until the
+    config is reloaded. Reported live: hint mode launched from the direct
+    alt+space binding -- not a chord -- one click on a text field, and every
+    qtile shortcut on the machine was dead.
+    """
+
+    def run_click(self, role):
+        import unittest.mock
+
+        from homerow import service
+        instance = object.__new__(service.Daemon)
+        instance.debug = False
+        instance.log = None
+        element = unittest.mock.Mock()
+        element.kind = "element"
+        element.role = role
+        with unittest.mock.patch("subprocess.run") as ran:
+            instance._release_chord_if_done(element)
+        return ran
+
+    def test_the_ungrab_is_conditional_on_a_chord_being_active(self):
+        from homerow import config
+        role = next(iter(config.TEXT_ENTRY_ROLES))
+        ran = self.run_click(role)
+        ran.assert_called_once()
+        argv = ran.call_args.args[0]
+        # Never the bare command: that is the one that strands the desktop.
+        self.assertNotIn("ungrab_chord", argv)
+        self.assertIn("eval", argv)
+        self.assertTrue(any("chord_stack" in str(part) for part in argv))
+
+    def test_clicking_something_that_is_not_a_text_field_touches_nothing(self):
+        ran = self.run_click("push button")
+        ran.assert_not_called()
+
+
 class EditModeAsksLess(unittest.TestCase):
     """A field you are already typing in does not need to be picked.
 

@@ -184,6 +184,14 @@ return {
 `g:started_by_homerow` is set before your config runs, on both the warm server
 and a cold start. Nothing breaks without it — the box is just taller.
 
+The box is as tall as the *text*, not as tall as the field — a minimum of
+three rows, growing with the content. Matching the field exactly gave a
+one-line box for a one-line field, which looks right and edits badly: a line
+that wraps, or a field holding a paragraph, leaves you typing through a slot
+with no sight of the lines above or below. The window floats over the page
+anyway, so it may be taller than the thing it sits on; it just should not be
+taller than it needs to be.
+
 The count can only be taken with a UI attached: probed directly, lualine sets
 `laststatus` back to 3 the moment one is, whatever it was told before, and the
 warm server is headless. So the daemon attaches a throwaway UI over a bare pty
@@ -446,6 +454,18 @@ maps, `draw` fires, and nothing appears. `TOPLEVEL` with the DOCK hint works,
 plus an explicit `raise_()` — and picom needs the window excluded from its
 animations, or hints slide in from the top instead of appearing on their
 targets.
+
+**A cleanup call that fails open can strand the whole desktop.** Clicking a
+text field makes homerow leave the qtile chord, so `h`/`s`/`f` go back to
+being letters. qtile's `ungrab_chord()` calls `ungrab_keys()` *first* and only
+then checks whether a chord was actually active — when none was, it logs a
+debug line and returns without re-grabbing anything. Launch hint mode from the
+direct `alt+space` binding (not a chord), click one text field, and every
+keybinding on the machine is dead until the config is reloaded. The fix is to
+ask and act in the same breath, inside qtile: `self.ungrab_chord() if
+self.chord_stack else None`. Worth stating generally — a "tidy up after
+yourself" call that is a no-op in the normal case is exactly the one nobody
+tests against the case where there was nothing to tidy.
 
 **Grab the keyboard exclusively, and never indefinitely.** `owner_events=False`
 or keystrokes leak to the app underneath. And every mode closes itself after a

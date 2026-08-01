@@ -544,6 +544,19 @@ def frame_rect(field, screen_w, screen_h, min_w, min_h):
     return x, y, w, h
 
 
+def wrapped_rows(text, cols):
+    """Rows this text needs at `cols` columns, counting wrapping.
+
+    An empty field is one row, not none: there is still a line to type on.
+    """
+    if cols < 1:
+        return 1
+    total = 0
+    for line in (text or "").split("\n"):
+        total += max(1, -(-len(line) // cols))     # ceil
+    return max(1, total)
+
+
 def compact_rows(field_h, char_h, threshold):
     """True if this field is too short to spend rows on editor chrome."""
     if char_h <= 0:
@@ -839,16 +852,25 @@ class EditSession:
         # (see config.EDIT_ANNOUNCE) leaves only the command line, or nothing
         # at all with cmdheight=0 -- and then a one-line field really can get
         # a one-line editor instead of a box that is mostly not your text.
+        border = 2 * config.EDIT_BORDER
+        min_w = config.EDIT_MIN_COLS * char_w + border
         rows = config.EDIT_MIN_ROWS
         if self.compact:
             chrome = (_warm["chrome"] if _warm["chrome"] is not None
                       else config.EDIT_CHROME_ROWS_ASSUMED)
-            rows = max(1 + chrome,
-                       min(config.EDIT_COMPACT_MIN_ROWS,
-                           config.EDIT_COMPACT_TEXT_ROWS + chrome))
-            self._log(f"editor chrome costs {chrome} row(s); using {rows}")
-        border = 2 * config.EDIT_BORDER
-        min_w = config.EDIT_MIN_COLS * char_w + border
+            # As tall as the text is, not as tall as the field is. Matching
+            # the field exactly makes a one-line box for a one-line field,
+            # which looks right and edits badly: a line that wraps, or a
+            # field holding a paragraph, leaves you typing through a slot
+            # with no sight of the lines above or below. The window floats
+            # over the page anyway, so it can be taller than the thing it
+            # sits on -- it just should not be taller than it needs to be.
+            cols = max(1, (self.field.w - border) // char_w)
+            rows = min(config.EDIT_COMPACT_MAX_ROWS,
+                       max(config.EDIT_COMPACT_TEXT_ROWS,
+                           wrapped_rows(self.original, cols))) + chrome
+            self._log(f"{wrapped_rows(self.original, cols)} row(s) of text, "
+                      f"{chrome} of chrome; using {rows}")
         min_h = rows * char_h + border
 
         screen_w, screen_h = screen_size()
