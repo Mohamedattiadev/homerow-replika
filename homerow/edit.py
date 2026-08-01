@@ -561,6 +561,33 @@ def wrapped_rows(text, cols):
     return max(1, total)
 
 
+def cell_padding(terminal):
+    """Pixels the terminal keeps around its grid: (horizontal, vertical).
+
+    A Vte.Terminal fits `(allocation - padding) // cell` characters, not
+    `allocation // cell` -- it carries a CSS padding of its own, 1px per edge
+    with the theme here. Sizing a window at `rows * char_height` therefore
+    buys one row fewer than was asked for, every time, and in a compact box
+    the row lost is the only one the text was going to be on: with a global
+    statusline the single surviving row *is* the statusline, which is exactly
+    what "the box shows a statusline and none of my text" looks like.
+
+    Measured off the widget rather than assumed, because it is a theme's to
+    set. Returns (0, 0) if the style context cannot be read, which is the old
+    behaviour and no worse than it was.
+    """
+    try:
+        style = terminal.get_style_context()
+        state = style.get_state()
+        pad = style.get_padding(state)
+        border = style.get_border(state)
+    except Exception:
+        return 0, 0
+    horizontal = pad.left + pad.right + border.left + border.right
+    vertical = pad.top + pad.bottom + border.top + border.bottom
+    return horizontal, vertical
+
+
 def compact_rows(field_h, char_h, threshold):
     """True if this field is too short to spend rows on editor chrome."""
     if char_h <= 0:
@@ -946,8 +973,13 @@ class EditSession:
         # assumed rather than asked. Asking meant announcing homerow to the
         # user's editor config and asking them to change it, which is the
         # opposite of what this is for -- see config.EDIT_CHROME_ROWS.
-        border = 2 * config.EDIT_BORDER
-        min_w = config.EDIT_MIN_COLS * char_w + border
+        # What the window spends on everything that is not grid: our own
+        # frame, and the terminal's own padding (see cell_padding -- getting
+        # this wrong costs a whole row, not a few pixels).
+        pad_w, pad_h = cell_padding(self.terminal)
+        chrome_w = 2 * config.EDIT_BORDER + pad_w
+        chrome_h = 2 * config.EDIT_BORDER + pad_h
+        min_w = config.EDIT_MIN_COLS * char_w + chrome_w
         rows = config.EDIT_MIN_ROWS
         if self.compact:
             chrome = (_learned["chrome"] if _learned["chrome"] is not None
@@ -959,13 +991,13 @@ class EditSession:
             # with no sight of the lines above or below. The window floats
             # over the page anyway, so it can be taller than the thing it
             # sits on -- it just should not be taller than it needs to be.
-            cols = max(1, (self.field.w - border) // char_w)
+            cols = max(1, (self.field.w - chrome_w) // char_w)
             rows = min(config.EDIT_COMPACT_MAX_ROWS,
                        max(config.EDIT_COMPACT_TEXT_ROWS,
                            wrapped_rows(self.original, cols))) + chrome
             self._log(f"{wrapped_rows(self.original, cols)} row(s) of text "
                       f"+ {chrome} the editor keeps; using {rows}")
-        min_h = rows * char_h + border
+        min_h = rows * char_h + chrome_h
 
         screen_w, screen_h = screen_size()
         x, y, w, h = frame_rect(self.field, screen_w, screen_h, min_w, min_h)
@@ -976,15 +1008,15 @@ class EditSession:
         # two-row window -- which renders as a statusline where the text
         # should be and an empty row under it. set_size also resizes the pty,
         # so nvim redraws for the size it is actually being shown at.
-        cols = max(1, (w - border) // char_w)
-        grid_rows = max(1, (h - border) // char_h)
+        cols = max(1, (w - chrome_w) // char_w)
+        grid_rows = max(1, (h - chrome_h) // char_h)
         try:
             self.terminal.set_size(cols, grid_rows)
         except Exception:
             pass
         self._log(f"editor box {w}x{h} at {x},{y} "
                   f"({cols}x{grid_rows} cells of {char_w}x{char_h}, "
-                  f"compact={self.compact})")
+                  f"{chrome_w}x{chrome_h} of trim, compact={self.compact})")
 
         self.window.move(x, y)
         self.window.resize(w, h)

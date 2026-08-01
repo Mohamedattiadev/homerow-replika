@@ -11,6 +11,7 @@ Run with:  python3 -m unittest discover -s tests -v
 import contextlib
 import os
 import sys
+import types
 import unittest
 import unittest.mock
 
@@ -1329,6 +1330,78 @@ class EditWindowPlacement(unittest.TestCase):
         field = Fake(x=50, y=50, w=10, h=10)
         x, y, _, _ = edit.frame_rect(field, 400, 300, 720, 400)
         self.assertEqual((x, y), (0, 0))
+
+
+class EditTerminalTrim(unittest.TestCase):
+    """A Vte.Terminal keeps padding of its own around its grid.
+
+    Sizing a window at rows * char_height ignores it and buys one row fewer
+    than asked for -- and in a compact box that row is the only one the text
+    was going to be on, so what is left is a statusline and nothing else.
+    Measured live: a 2-row box came out a 1-row widget while nvim still had
+    &lines=2, which is the mismatch that made nvim scroll.
+    """
+
+    class FakeStyle:
+        def __init__(self, pad, border):
+            self._pad, self._border = pad, border
+
+        def get_state(self):
+            return 0
+
+        def get_padding(self, _state):
+            return self._pad
+
+        def get_border(self, _state):
+            return self._border
+
+    class Edges:
+        def __init__(self, top=0, bottom=0, left=0, right=0):
+            self.top, self.bottom = top, bottom
+            self.left, self.right = left, right
+
+    def terminal(self, pad, border=None):
+        style = self.FakeStyle(pad, border or self.Edges())
+        return types.SimpleNamespace(get_style_context=lambda: style)
+
+    def test_padding_on_every_edge_is_counted(self):
+        from homerow import edit
+        term = self.terminal(self.Edges(top=1, bottom=1, left=1, right=1))
+        self.assertEqual(edit.cell_padding(term), (2, 2))
+
+    def test_a_css_border_counts_too(self):
+        from homerow import edit
+        term = self.terminal(self.Edges(top=1, bottom=1, left=1, right=1),
+                             self.Edges(top=2, bottom=2, left=2, right=2))
+        self.assertEqual(edit.cell_padding(term), (6, 6))
+
+    def test_a_terminal_that_keeps_nothing_is_left_alone(self):
+        from homerow import edit
+        self.assertEqual(edit.cell_padding(self.terminal(self.Edges())), (0, 0))
+
+    def test_an_unreadable_style_costs_nothing(self):
+        from homerow import edit
+
+        def explode():
+            raise RuntimeError("no style context")
+
+        self.assertEqual(
+            edit.cell_padding(
+                types.SimpleNamespace(get_style_context=explode)), (0, 0))
+
+    def test_the_trim_is_what_buys_the_row_back(self):
+        """The arithmetic _fit does, with and without counting the trim."""
+        from homerow import edit
+        char_h, rows, frame = 23, 2, 2 * config.EDIT_BORDER
+        pad_h = edit.cell_padding(
+            self.terminal(self.Edges(top=1, bottom=1)))[1]
+
+        ignoring_it = rows * char_h + frame
+        counting_it = rows * char_h + frame + pad_h
+        fits = lambda height: (height - frame - pad_h) // char_h   # noqa: E731
+
+        self.assertEqual(fits(ignoring_it), rows - 1)   # the row that vanished
+        self.assertEqual(fits(counting_it), rows)
 
 
 class EditCompactMode(unittest.TestCase):
