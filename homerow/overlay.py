@@ -50,6 +50,56 @@ def normalize_key(key, state):
     return key
 
 
+# The mode hotkeys, minus the modifier, as the daemon names the commands.
+# Shift is part of the key here rather than a flag because alt+shift+c is a
+# different mode from alt+c, and nothing else in the table cares.
+MODE_KEYS = {
+    Gdk.KEY_space: "hint",
+    Gdk.KEY_j: "scroll",
+    Gdk.KEY_slash: "search",
+    Gdk.KEY_c: "caret",
+    Gdk.KEY_C: "caret_search",
+    Gdk.KEY_e: "edit",
+}
+
+# Set by the daemon to its own command dispatch; None when a session is
+# running outside one (the standalone CLI), where there is nothing to switch
+# to and the keys should fall through to the mode's own handling.
+_switch = None
+
+
+def set_mode_switcher(dispatch):
+    """Let sessions ask for another mode. `dispatch` takes a command name."""
+    global _switch
+    _switch = dispatch
+
+
+def mode_switch(event):
+    """Handle a mode hotkey pressed inside a running mode; True if it was one.
+
+    Every mode holds the keyboard exclusively -- it has to, or its letters
+    leak into the application underneath -- and that also takes the mode
+    hotkeys away from the window manager, which is what made switching
+    impossible: alt+j inside hint mode reached this overlay and was read as
+    the letter j, so the only way to scroll was Esc first, then the hotkey.
+    Escaping first is a keystroke spent saying "not this", which is exactly
+    what pressing another mode's key already says.
+
+    The modifier is required, so nothing here can shadow a mode's own plain
+    letters: j still scrolls, c is still a hint label, e is still a word
+    motion. Caps Lock is deliberately not treated as a modifier for this even
+    though it is bound as one (see normalize_key) -- a stuck Caps Lock would
+    otherwise turn every j into a mode switch.
+    """
+    if _switch is None or not event.state & Gdk.ModifierType.MOD1_MASK:
+        return False
+    command = MODE_KEYS.get(event.keyval)
+    if command is None:
+        return False
+    _switch(command)
+    return True
+
+
 def set_identity():
     """Give our windows a stable WM_CLASS of `homerow`.
 
@@ -272,6 +322,8 @@ class Overlay:
             x11.debug_log(f"[hint] key={char!r} typed={self.typed!r} "
                           f"pointer={x11.pointer_position()}")
 
+        if mode_switch(event):
+            return True
         if key in CANCEL_KEYS:
             self._close()
             return True

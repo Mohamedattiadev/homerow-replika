@@ -439,5 +439,154 @@ class WorkspaceWatch(unittest.TestCase):
         instance.overlay.dismiss.assert_not_called()
 
 
+class ModeSwitching(unittest.TestCase):
+    """One mode's hotkey, pressed inside another, switches.
+
+    A mode holds the keyboard exclusively -- it has to, or its letters leak
+    into the app underneath -- which also takes the other modes' hotkeys away
+    from the window manager. So they arrive at the running mode instead, and
+    it has to recognise them; otherwise alt+j in hint mode is just the letter
+    j and switching costs an Esc first.
+    """
+
+    class Event:
+        def __init__(self, keyval, state=0):
+            self.keyval, self.state = keyval, state
+
+    def alt(self, keyval, shift=False):
+        from gi.repository import Gdk
+        state = Gdk.ModifierType.MOD1_MASK
+        if shift:
+            state |= Gdk.ModifierType.SHIFT_MASK
+        return self.Event(keyval, state)
+
+    def switcher(self):
+        import unittest.mock
+
+        from homerow import overlay
+        seen = unittest.mock.Mock()
+        overlay.set_mode_switcher(seen)
+        self.addCleanup(overlay.set_mode_switcher, None)
+        return seen
+
+    def test_a_mode_hotkey_asks_for_that_mode(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        seen = self.switcher()
+        self.assertTrue(overlay.mode_switch(self.alt(Gdk.KEY_j)))
+        seen.assert_called_once_with("scroll")
+
+    def test_shift_picks_the_other_caret_mode(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        seen = self.switcher()
+        overlay.mode_switch(self.alt(Gdk.KEY_c))
+        overlay.mode_switch(self.alt(Gdk.KEY_C, shift=True))
+        self.assertEqual([call.args[0] for call in seen.call_args_list],
+                         ["caret", "caret_search"])
+
+    def test_a_plain_letter_is_left_to_the_mode(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        seen = self.switcher()
+        # j scrolls, c is a hint label, e is a word motion. Requiring the
+        # modifier is what keeps all of that reachable.
+        for key in (Gdk.KEY_j, Gdk.KEY_c, Gdk.KEY_e, Gdk.KEY_space):
+            self.assertFalse(overlay.mode_switch(self.Event(key)))
+        seen.assert_not_called()
+
+    def test_caps_lock_does_not_switch_modes(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        # Caps Lock is bound as the launch modifier and is easy to leave on by
+        # accident (see normalize_key). Honouring it here would turn every j
+        # into a mode switch.
+        seen = self.switcher()
+        self.assertFalse(overlay.mode_switch(
+            self.Event(Gdk.KEY_j, Gdk.ModifierType.LOCK_MASK)))
+        seen.assert_not_called()
+
+    def test_an_unbound_key_with_the_modifier_is_not_a_switch(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        seen = self.switcher()
+        self.assertFalse(overlay.mode_switch(self.alt(Gdk.KEY_z)))
+        seen.assert_not_called()
+
+    def test_without_a_daemon_the_keys_fall_through(self):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        # The standalone CLI runs a mode with no daemon behind it, so there is
+        # nothing to switch to and the key belongs to the mode.
+        overlay.set_mode_switcher(None)
+        self.assertFalse(overlay.mode_switch(self.alt(Gdk.KEY_j)))
+
+    def test_every_switchable_mode_is_a_command_the_daemon_runs(self):
+        from homerow import overlay, service
+        # Structural: a typo in either table would be a hotkey that silently
+        # does nothing, which is indistinguishable from the mode ignoring it.
+        self.assertTrue(
+            set(overlay.MODE_KEYS.values()) <= service._MODE_COMMANDS,
+            set(overlay.MODE_KEYS.values()) - service._MODE_COMMANDS)
+
+    def test_every_mode_reads_the_switch_keys(self):
+        import inspect
+
+        from homerow import caret, overlay, scroll, search
+        # Any key handler that grabs the keyboard and does not check would be
+        # a mode you cannot switch out of.
+        handlers = [
+            overlay.Overlay._on_key, scroll.ScrollSession._on_key,
+            search.SearchPrompt._on_key, caret.CaretSession._on_key,
+            caret.CaretSearchPrompt._on_key,
+        ]
+        for handler in handlers:
+            with self.subTest(handler=handler.__qualname__):
+                self.assertIn("mode_switch", inspect.getsource(handler))
+
+    def test_the_switch_key_does_not_also_do_what_the_mode_does(self):
+        import unittest.mock
+
+        from gi.repository import Gdk
+
+        from homerow import scroll
+        # Driving the real handler, not just checking it mentions the switch:
+        # alt+j must ask for scroll mode and must not ALSO be read as scroll
+        # mode's own j, which would scroll the page on the way out.
+        seen = self.switcher()
+        session = object.__new__(scroll.ScrollSession)
+        session.region = None
+        session._idle = None
+        with unittest.mock.patch.object(scroll.config, "DEBUG_KEYS", False), \
+             unittest.mock.patch.object(scroll.ScrollSession, "_touch"), \
+             unittest.mock.patch.object(scroll.ScrollSession, "_apply") as apply:
+            handled = session._on_key(None, self.alt(Gdk.KEY_j))
+        self.assertTrue(handled)
+        seen.assert_called_once_with("scroll")
+        apply.assert_not_called()
+
+    def test_an_open_editor_still_refuses_to_be_replaced(self):
+        import unittest.mock
+
+        from homerow import service
+        # The one exception, and it has to survive this route too: an overlay
+        # holds nothing and may be replaced freely, an editor holds text that
+        # has not been written back.
+        instance = object.__new__(service.Daemon)
+        instance.debug = False
+        instance.log = None
+        instance.overlay = unittest.mock.Mock(holds_unsaved_work=True)
+        with unittest.mock.patch.object(service.GLib, "idle_add") as idle, \
+             unittest.mock.patch.object(service, "_notify"):
+            instance.dispatch("scroll")
+        idle.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

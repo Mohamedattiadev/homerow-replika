@@ -28,6 +28,15 @@ One key per mode, no chord in the way:
 `alt` rather than `shift`, because grabbing `shift+<key>` globally on X11 would
 swallow it everywhere you type.
 
+**Any of these works from inside another mode.** `alt+j` while hints are up
+enters scroll mode directly; there is no Esc first. Each mode holds the
+keyboard exclusively — it has to, or its letters leak into the app underneath
+— so the window manager never sees these keys while a mode is open and the
+mode reads them itself. The modifier is what keeps them apart from a mode's
+own plain letters: `j` still scrolls, `c` is still a hint label. The one
+refusal is an open editor, which holds text you have typed and not written
+back (see Edit below).
+
 ### Hint
 
 Labels every clickable element, and every other visible window.
@@ -399,6 +408,19 @@ raise the budget, and keep testing after the first success instead of
 stopping there — a page can have more than one virtualised pane (a sidebar
 *and* its content), and stopping early rescues one and leaves the other
 looking permanently unscrollable.
+
+**Don't spend the user's page to answer a question they haven't asked.**
+Proving a region scrolls means scrolling it and putting it back, and that is
+not a measurement — it is the page visibly jumping, while they wait. Entering
+scroll mode did it twice over: once to pick which of three points to aim the
+wheel at, once to rescue virtualised panes. Measured on a Wikipedia article in
+Chromium, ~1250ms of visible motion before a key could be pressed, and the aim
+probe's usual verdict was the default it started with. Both are now paid
+lazily and by whoever benefits: the aim is settled by watching the user's own
+first `j` land, which costs nothing when it was right, and the rescue happens
+on `Tab`, the key that asks for another region. What still runs on entry is
+the one probe that decides which region the session opens on. ~510ms, and the
+half that remains is load-bearing.
 
 **A wall-clock deadline for the whole pass, not just each call.**
 `Atspi.set_timeout()` bounds one D-Bus call; `scroll.collect()` makes many of

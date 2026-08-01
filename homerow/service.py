@@ -19,7 +19,8 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
 from . import (  # noqa: E402
-    caret, click, config, edit, elements, hints, scroll, search, windows, x11,
+    caret, click, config, edit, elements, hints, overlay as overlay_module,
+    scroll, search, windows, x11,
 )
 from .overlay import Overlay, screen_size  # noqa: E402
 
@@ -107,6 +108,10 @@ class Daemon:
         # starting an editor from cold.
         if edit.start_warm(log=self._log):
             self._log("warming an editor for edit mode")
+
+        # Let a running mode reach the other modes' hotkeys itself; it holds
+        # the keyboard, so the window manager cannot forward them here.
+        overlay_module.set_mode_switcher(self.dispatch)
 
         Atspi.init()
         # Without a cap, one hung app's accessibility service blocks every
@@ -230,6 +235,19 @@ class Daemon:
             except OSError:
                 pass
 
+        self.dispatch(command)
+        return True
+
+    def dispatch(self, command):
+        """Run a command, whether it arrived on the socket or from a mode.
+
+        A running mode holds the keyboard exclusively, so the window manager
+        never sees the other modes' hotkeys and cannot forward them here --
+        the sessions read them themselves and call this (see
+        overlay.mode_switch). Same entry point either way, so switching from
+        inside a mode cannot drift from pressing the key from the desktop,
+        and the editor rule below covers both.
+        """
         # Every mode below opens by replacing whatever is already open. That
         # is right for an overlay, which holds nothing, and wrong for an
         # editor, which holds text the user has typed and not saved. Pressing
@@ -240,7 +258,7 @@ class Daemon:
                 getattr(self.overlay, "holds_unsaved_work", False):
             self._log(f"editor open; ignoring {command}")
             _notify("An editor is open — :wq or :q! first.")
-            return True
+            return
 
         if command == "hint":
             GLib.idle_add(self._hint)
@@ -256,7 +274,6 @@ class Daemon:
             GLib.idle_add(self._edit)
         elif command == "quit":
             GLib.idle_add(Gtk.main_quit)
-        return True
 
     def _hint(self):
         if self.overlay is not None:

@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import draw_legend, normalize_key, screen_size, set_identity  # noqa: E402
+from .overlay import draw_legend, mode_switch, normalize_key, screen_size, set_identity  # noqa: E402
 
 WHEEL_UP, WHEEL_DOWN = 4, 5
 WHEEL_LEFT, WHEEL_RIGHT = 6, 7
@@ -851,6 +851,8 @@ class ScrollSession:
                 f"{self.region.w},{self.region.h}) "
                 f"pointer={x11.pointer_position()}")
 
+        if mode_switch(event):
+            return True
         if key in (Gdk.KEY_Escape, Gdk.KEY_q):
             self._close()
             return True

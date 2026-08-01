@@ -27,7 +27,8 @@ from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
 from .overlay import (  # noqa: E402
-    draw_legend, normalize_key, place_chip, screen_size, set_identity,
+    draw_legend, mode_switch, normalize_key, place_chip, screen_size,
+    set_identity,
 )
 
 WORD = Atspi.TextGranularity.WORD
@@ -435,6 +436,8 @@ class CaretSession:
             x11.debug_log(f"[caret] key={Gdk.keyval_name(key)!r} "
                           f"offset={self.offset} anchor={self.anchor}")
 
+        if mode_switch(event):
+            return True
         if key == Gdk.KEY_Escape:
             if self.anchor is not None:
                 self.anchor = None
@@ -996,6 +999,8 @@ class CaretSearchPrompt:
         if config.DEBUG_KEYS:
             x11.debug_log(f"[caret-search] key={Gdk.keyval_name(key)!r} "
                           f"query={self.query!r} hits={len(self.hits)}")
+        if mode_switch(event):
+            return True
         if key == Gdk.KEY_Escape:
             self._close()
             return True

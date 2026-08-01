@@ -19,7 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, theme, x11  # noqa: E402
-from .overlay import draw_legend, place_chip, screen_size, set_identity  # noqa: E402
+from .overlay import draw_legend, mode_switch, place_chip, screen_size, set_identity  # noqa: E402
 
 
 def _score(haystack, terms):
@@ -192,6 +192,8 @@ class SearchPrompt:
         if config.DEBUG_KEYS:
             x11.debug_log(f"[search] key={Gdk.keyval_name(key)!r} "
                           f"query={self.query!r} hits={len(self.hits)}")
+        if mode_switch(event):
+            return True
         if key == Gdk.KEY_Escape:
             self._close()
             return True
