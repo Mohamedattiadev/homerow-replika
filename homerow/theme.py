@@ -141,8 +141,11 @@ def _build(named):
         "chip_matched": matched + (config.CHIP_ALPHA,),
         "chip_window": window + (config.CHIP_ALPHA,),
         "ink": ink + (1.0,),
-        # Already-typed characters recede toward the chip they sit on.
-        "ink_typed": _mix(ink, chip, config.INK_TYPED_MIX) + (1.0,),
+        # Already-typed characters recede toward the chip they sit on -- as
+        # far as they can while staying visible. At a flat mix this measured
+        # 2.49:1 against the chip, which is not "receded", it is "gone".
+        "ink_typed": _recede(ink, chip, config.INK_TYPED_MIX,
+                             config.INK_TYPED_MIN_CONTRAST) + (1.0,),
         "ink_window": text_on(window) + (1.0,),
         "ink_matched": text_on(matched) + (1.0,),
         "dim": background + (config.DIM_ALPHA,),

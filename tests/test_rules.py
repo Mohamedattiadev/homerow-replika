@@ -443,6 +443,89 @@ class WorkspaceWatch(unittest.TestCase):
         instance.overlay.dismiss.assert_not_called()
 
 
+class CaretMinimumIsAPreference(unittest.TestCase):
+    """A short field beats no caret at all.
+
+    The 12-character minimum keeps the caret out of labels and chrome when
+    there is prose to prefer. When there is not, refusing everything made the
+    daemon say "this app publishes no text" -- blaming the application for a
+    threshold of ours, on exactly the one-line inputs where a cursor is most
+    obviously wanted.
+    """
+
+    def test_the_floor_is_lower_than_the_preference(self):
+        from homerow import config
+        self.assertLess(config.CARET_MIN_CHARS_FLOOR, config.CARET_MIN_CHARS)
+        self.assertGreaterEqual(config.CARET_MIN_CHARS_FLOOR, 1)
+
+    def test_a_short_field_is_offered_when_nothing_longer_exists(self):
+        import unittest.mock
+
+        from homerow import caret, config
+        # _shape is what applies the length rule; the retry has to reach it
+        # with the floor rather than the preference.
+        seen = []
+
+        class Field:
+            w = h = 10
+
+        def shape(matches, wx, wy, left, top, right, bottom, min_chars, req):
+            seen.append(min_chars)
+            return [Field()] if min_chars <= 1 else []
+
+        app = unittest.mock.Mock()
+        app.get_collection_iface.return_value.get_matches.return_value = []
+        with unittest.mock.patch.object(caret, "_shape", shape), \
+             unittest.mock.patch.object(caret.elements, "active_window",
+                                        return_value=(1, 0, 0, 800, 600)), \
+             unittest.mock.patch.object(caret.elements, "_app_for_pid",
+                                        return_value=app), \
+             unittest.mock.patch.object(caret.elements, "_extents",
+                                        return_value=[]), \
+             unittest.mock.patch.object(caret.elements, "active_frame",
+                                        return_value=None), \
+             unittest.mock.patch.object(caret.elements, "active_document",
+                                        return_value=None):
+            found = caret.collect(800, 600)
+        self.assertEqual(len(found), 1)
+        # Tried the preference first, and only then the floor.
+        self.assertEqual(seen, [config.CARET_MIN_CHARS,
+                                config.CARET_MIN_CHARS_FLOOR])
+
+
+class ModesYouReadInStayOpenLonger(unittest.TestCase):
+    """Caret and scroll are used while reading; hint and search are typed through.
+
+    A 12-second leash is free on a mode you are through in two seconds, and is
+    a mode that closes under you mid-paragraph on one you are not.
+    """
+
+    def test_the_dwell_timeout_is_the_longer_one(self):
+        from homerow import config
+        self.assertGreater(config.DWELL_TIMEOUT_S, config.IDLE_TIMEOUT_S)
+
+    def test_the_modes_you_read_in_use_it(self):
+        import inspect
+
+        from homerow import caret, scroll
+        for cls in (scroll.ScrollSession, caret.CaretSession):
+            with self.subTest(mode=cls.__name__):
+                source = inspect.getsource(cls)
+                self.assertIn("DWELL_TIMEOUT_S", source)
+                self.assertNotIn("IDLE_TIMEOUT_S", source)
+
+    def test_the_modes_you_type_through_do_not(self):
+        import inspect
+
+        from homerow import caret, overlay, search
+        for cls in (overlay.Overlay, search.SearchPrompt,
+                    caret.CaretSearchPrompt):
+            with self.subTest(mode=cls.__name__):
+                source = inspect.getsource(cls)
+                self.assertIn("IDLE_TIMEOUT_S", source)
+                self.assertNotIn("DWELL_TIMEOUT_S", source)
+
+
 class InkIsReadable(unittest.TestCase):
     """Every ink has to be readable on the chip it is actually drawn on.
 

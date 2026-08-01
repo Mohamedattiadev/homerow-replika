@@ -818,7 +818,7 @@ class ScrollSession:
         # -- including the ones that would close it. A session left open by
         # accident is indistinguishable from the keyboard having broken.
         self._idle = GLib.timeout_add_seconds(
-            config.IDLE_TIMEOUT_S, self._on_idle)
+            config.DWELL_TIMEOUT_S, self._on_idle)
 
     # -- input ----------------------------------------------------------
 
@@ -1125,7 +1125,7 @@ class ScrollSession:
         if getattr(self, "_idle", None) is not None:
             GLib.source_remove(self._idle)
         self._idle = GLib.timeout_add_seconds(
-            config.IDLE_TIMEOUT_S, self._on_idle)
+            config.DWELL_TIMEOUT_S, self._on_idle)
 
     def _on_visibility(self, _widget, event):
         """Re-raise when something covers us.

@@ -206,6 +206,19 @@ def collect(screen_w, screen_h, min_chars=None, require_text=True):
         found = _shape(query(config.CARET_ROLES_FALLBACK), win_x, win_y,
                        left, top, right, bottom, min_chars, require_text)
 
+    # Still nothing, and the length rule is the only thing that could have
+    # rejected anything: try again without it. The minimum exists to keep the
+    # caret out of labels and chrome when there is prose to prefer, and that
+    # is a preference, not a requirement -- with nothing longer on screen, a
+    # short field is what the user meant. It used to come back empty and the
+    # daemon said "this app publishes no text", which blamed the application
+    # for a threshold of ours, on exactly the fields (a search box, a one-line
+    # input) where the caret is most obviously wanted.
+    if not found and require_text and min_chars > config.CARET_MIN_CHARS_FLOOR:
+        found = _shape(list(matches) + list(query(config.CARET_ROLES_FALLBACK)),
+                       win_x, win_y, left, top, right, bottom,
+                       config.CARET_MIN_CHARS_FLOOR, require_text)
+
     found.sort(key=lambda e: e.w * e.h, reverse=True)
     return found
 
@@ -325,7 +338,7 @@ class CaretSession:
         # -- including the ones that would close it. A session left open by
         # accident is indistinguishable from the keyboard having broken.
         self._idle = GLib.timeout_add_seconds(
-            config.IDLE_TIMEOUT_S, self._on_idle)
+            config.DWELL_TIMEOUT_S, self._on_idle)
 
     def _on_idle(self):
         """Close after a spell with no keys: a stuck grab locks the desktop."""
@@ -338,7 +351,7 @@ class CaretSession:
         if getattr(self, "_idle", None) is not None:
             GLib.source_remove(self._idle)
         self._idle = GLib.timeout_add_seconds(
-            config.IDLE_TIMEOUT_S, self._on_idle)
+            config.DWELL_TIMEOUT_S, self._on_idle)
 
     def _on_visibility(self, _widget, event):
         if event.state != Gdk.VisibilityState.UNOBSCURED:

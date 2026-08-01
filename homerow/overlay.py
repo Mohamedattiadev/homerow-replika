@@ -129,6 +129,31 @@ def screen_size():
     return right, bottom
 
 
+def focused_monitor(width, height):
+    """(x, y, w, h) of the monitor the pointer is on; the whole screen if unsure.
+
+    screen_size() spans every monitor, which is right for an overlay window --
+    it has to cover all of them -- and wrong for anything centred, because the
+    middle of a two-monitor span is the seam between them. The legend would
+    have been drawn straddling the gap, half on each screen. Latent on a
+    single-head desktop, which is why it went unnoticed.
+    """
+    whole = (0, 0, width, height)
+    try:
+        display = Gdk.Display.get_default()
+        pointer = display.get_default_seat().get_pointer()
+        _, x, y = pointer.get_position()[:3]
+        monitor = display.get_monitor_at_point(x, y)
+        if monitor is None:
+            return whole
+        area = monitor.get_geometry()
+        if area.width <= 0 or area.height <= 0:
+            return whole
+        return area.x, area.y, area.width, area.height
+    except Exception:
+        return whole
+
+
 class Overlay:
     """Shows labelled hints and resolves one keystroke sequence to a choice.
 
@@ -618,12 +643,15 @@ def draw_legend(cr, parts, width, height, colors, chip="chip"):
         parts = [text_part(parts)]
     pad = config.LEGEND_PAD
     height_of_pill = config.FONT_SIZE + pad * 2
-    parts = _fit(cr, parts, width - config.LEGEND_SCREEN_MARGIN - pad * 2)
+    # Centred on the monitor in use, not on the span of all of them: the
+    # middle of a two-monitor desktop is the seam between the screens.
+    area_x, area_y, area_w, area_h = focused_monitor(width, height)
+    parts = _fit(cr, parts, area_w - config.LEGEND_SCREEN_MARGIN - pad * 2)
     row, placements = _lay_out(cr, parts)
 
     w = row + pad * 2
-    x = max((width - w) // 2, 0)
-    y = max(height - height_of_pill - config.LEGEND_MARGIN, 0)
+    x = max(area_x + (area_w - w) // 2, 0)
+    y = max(area_y + area_h - height_of_pill - config.LEGEND_MARGIN, 0)
     cr.set_source_rgba(*colors[chip])
     _rounded_rect(cr, x, y, w, height_of_pill, config.RADIUS)
     cr.fill()

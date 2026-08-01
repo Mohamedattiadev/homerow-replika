@@ -208,6 +208,12 @@ SEARCH_MAX_OUTLINES = 12
 CARET_LABELS = "123456789"
 
 CARET_MIN_CHARS = 12
+# ...but a preference, not a requirement. When nothing on screen clears the
+# minimum, caret.collect drops to this instead of coming back empty: with no
+# prose to prefer, a short field is what was meant, and refusing it made the
+# daemon blame the app ("publishes no text") for a threshold of ours -- on
+# exactly the one-line inputs where a cursor is most obviously wanted.
+CARET_MIN_CHARS_FLOOR = 1
 # Roles that carry text. The Text interface is not a role and cannot be
 # queried for directly, so these nominate candidates and the character count
 # decides -- walking the tree for it instead cost ~2.5s.
@@ -540,6 +546,12 @@ LEGEND_MEANING_MIX = 0.28  # what a key means, beside the key
 # ceiling; theme._recede backs off until the meaning clears this contrast
 # ratio against the chip behind it. 4.5 is WCAG AA for body text.
 LEGEND_MEANING_MIN_CONTRAST = 4.5
+# The typed prefix gets a lower floor than that on purpose. You do not read it
+# -- you just typed it, and the whole point is that the letters still to press
+# stand out against it -- so it may recede further than something meant to be
+# read. 3.0 is WCAG AA for large text and UI components: still visible, still
+# clearly the receded half.
+INK_TYPED_MIN_CONTRAST = 3.0
 
 # There is deliberately no palette of literal colors here. Every color the
 # overlay draws is derived from the active theme by homerow/theme.py, including
@@ -575,6 +587,12 @@ CLICK_SETTLE_MS = 120
 # exclusive, so while it is open every other binding on the desktop is dead --
 # a session left open by accident looks exactly like the keyboard breaking.
 IDLE_TIMEOUT_S = 12
+# Longer for the modes you sit inside and read in. Hint and search are typed
+# through in a second or two, so a short leash there is free; caret and scroll
+# are used while actually reading the thing they are pointed at, and 12s of
+# that is a mode that closes under you mid-paragraph. Still bounded: the grab
+# is exclusive, so it can never be indefinite.
+DWELL_TIMEOUT_S = 45
 
 # How often, while a mode is open, to check whether the workspace changed under
 # it. A mode's whole picture of the screen belongs to the window that was in

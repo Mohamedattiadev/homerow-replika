@@ -508,6 +508,44 @@ class ScrollAimCheck(unittest.TestCase):
         self.assertEqual(len(sent), 1)
 
 
+class LegendOnOneMonitor(unittest.TestCase):
+    """The legend centres on the monitor in use, not on the span of all of them.
+
+    screen_size() spans every monitor, which is right for the overlay window
+    and wrong for anything centred: the middle of a two-monitor desktop is the
+    seam between the screens, so the pill would be drawn half on each.
+    """
+
+    def test_a_single_monitor_is_the_whole_screen(self):
+        from homerow import overlay
+        self.assertEqual(overlay.focused_monitor(1366, 768), (0, 0, 1366, 768))
+
+    def test_the_pill_lands_on_the_monitor_the_pointer_is_on(self):
+        import cairo
+
+        from homerow import overlay, theme
+        # Two 1366-wide screens side by side, pointer on the right-hand one.
+        right = (1366, 0, 1366, 768)
+        drawn = []
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8)
+        cr = cairo.Context(surface)
+        original = overlay._rounded_rect
+
+        def record(context, x, y, w, h, radius):
+            drawn.append((x, y, w, h))
+            return original(context, x, y, w, h, radius)
+
+        with unittest.mock.patch.object(
+                overlay, "focused_monitor", return_value=right), \
+             unittest.mock.patch.object(overlay, "_rounded_rect", record):
+            overlay.draw_legend(cr, [overlay.badge("SCROLL")], 2732, 768,
+                                theme.palette())
+        pill_x, _, pill_w, _ = drawn[0]
+        centre = pill_x + pill_w / 2
+        self.assertGreater(centre, 1366)      # not on the left screen
+        self.assertAlmostEqual(centre, 1366 + 683, delta=2)   # centred on the right
+
+
 class LegendLayout(unittest.TestCase):
     """The legend row is laid out from parts, and measured the way it draws.
 
