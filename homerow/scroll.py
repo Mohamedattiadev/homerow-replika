@@ -172,52 +172,17 @@ def _collect(screen_w, screen_h, origin=None):
             and not any(_overlapping(region, kept) for kept in regions)
         ]
         rejected.sort(key=lambda e: e.w * e.h, reverse=True)
-        # Keep every one that actually scrolls, not just the first. A page
-        # can have more than one virtualised pane -- devdocs.io's sidebar and
-        # its content pane both render only their visible rows -- and
-        # stopping at the first success would rescue the content pane and
-        # leave the sidebar looking unscrollable forever. Skip a candidate
-        # that overlaps one already rescued: the wrappers around a sidebar
-        # are larger than the sidebar itself, so ranking by area alone can
-        # still put a wrapper right after the real thing, and it would
-        # otherwise "rescue" the same scroller a second time.
-        shortlist = rejected[:config.SCROLL_RESCUE_MAX]
-        # Probing is the whole cost of entering scroll mode: each candidate is
-        # scrolled and scrolled back, which the user watches happen. Measured
-        # live on a Wikipedia article in Chromium, this pass alone was 666ms
-        # and six wheel events of the page jumping before the outline was even
-        # drawn -- and it rescued nothing, as it usually does not.
-        #
-        # It serves two ends, and only one of them is due now. Entering on the
-        # right region needs the candidate under the pointer tested, because
-        # best() is about to choose. Offering the others as Tab stops is not
-        # needed until Tab is pressed, so it is left to the session to finish
-        # (see ScrollSession._rescue_deferred). That keeps the devdocs.io case
-        # -- pointer resting on a virtualised sidebar nothing else can see --
-        # working at entry, while paying for the rest only when asked.
-        wanted = origin or _pointer_position()
-        # Only a candidate under the pointer can change best()'s answer, and
-        # only when nothing already found is under it -- if something is,
-        # best() has what it needs and no probe is owed at all. Of the
-        # candidates that do contain the pointer, probe the innermost: every
-        # wrapper around the real scroller contains the pointer just as truly,
-        # and spending the budget on wrappers is exactly how devdocs.io's
-        # content pane went undiscovered. One probe, or none. The rest are
-        # Tab's problem.
-        entry = []
-        if wanted and not any(_inside(kept, *wanted) for kept in regions):
-            entry = sorted((region for region in shortlist
-                            if _inside(region, *wanted)),
-                           key=lambda e: e.w * e.h)[:1]
-        rescued = []
-        for region in shortlist:
-            if region not in entry or time.monotonic() > deadline:
-                deferred.append(region)
-            elif _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
-                region.scroll_y = True
-                region.scroll_x = False
-                rescued.append(region)
-        regions.extend(rescued)
+        # Nothing is probed here any more. Probing means scrolling the page
+        # and scrolling it back, which the user watches happen -- measured on
+        # a Wikipedia article in Chromium, this pass was 666ms and six wheel
+        # events of the page jumping before the outline was even drawn, and it
+        # usually rescued nothing. The probe is still needed (a virtualised
+        # pane publishes no measurable overflow, so only scrolling it proves
+        # anything), but nothing about it needs to happen before the mode
+        # opens. The session runs it once the outline is up and can snap to a
+        # better region then, or on Tab, or never. See
+        # ScrollSession._promote_deferred.
+        deferred = rejected[:config.SCROLL_RESCUE_MAX]
 
     # Collapse regions that would scroll the same thing. A page's document and
     # its content pane usually differ only by a margin, and offering both means
@@ -763,6 +728,10 @@ class ScrollSession:
             self.index = 0
         self.pending_g = False
         self.count = ""
+        # Set by the first keystroke. The background probe stands down once
+        # this is true: the user's own scroll answers the same question, and
+        # two of us scrolling one page at once is worse than either.
+        self._acted = False
         self.origin = _pointer_position()
 
         set_identity()
@@ -813,6 +782,10 @@ class ScrollSession:
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
         GLib.idle_add(self._grab)
         GLib.idle_add(self._settle_aim)
+        # After the outline is on screen, not before: this one scrolls the
+        # page to find out what it is, and doing that while the screen still
+        # shows nothing is what made entering the mode feel broken.
+        GLib.timeout_add(config.SCROLL_PROMOTE_DELAY_MS, self._promote_deferred)
         # Never hold the keyboard indefinitely. The grab is exclusive, so
         # while a session is open every other binding on the desktop is dead
         # -- including the ones that would close it. A session left open by
@@ -846,6 +819,7 @@ class ScrollSession:
 
     def _on_key(self, _widget, event):
         self._touch()
+        self._acted = True
         key = normalize_key(event.keyval, event.state)
         if config.DEBUG_KEYS:
             x11.debug_log(
@@ -1003,6 +977,49 @@ class ScrollSession:
         if not any(_inside(other, x, y) for other in blockers):
             return x, y
         return _clear_point(region, blockers, (px, py))
+
+    def _promote_deferred(self):
+        """Once the outline is up, check whether the pointer is on something better.
+
+        collect() can only see a scroller that publishes measurable overflow.
+        A virtualised pane -- devdocs.io's sidebar, which renders just its
+        visible rows -- publishes none, so the only proof is to scroll it, and
+        that is the page visibly jumping. Doing it before the mode opened made
+        entering scroll mode cost a second of the page moving under a screen
+        with nothing on it yet.
+
+        So it happens here instead: the outline is already drawn, the keyboard
+        is already grabbed, and the mode is already usable. If the pointer
+        turns out to be resting on a pane nothing else could see, the outline
+        snaps to it. If the user has already pressed something, this is
+        abandoned -- their scroll is a better answer than our probe, and two
+        of us scrolling the same page at once is worse than either.
+        """
+        if self._acted or not self.deferred:
+            return False
+        pointer = _pointer_position()
+        if not pointer or any(_inside(region, *pointer)
+                              for region in self.regions):
+            return False                 # already on something that was found
+        # The innermost candidate under the pointer: every wrapper around the
+        # real scroller contains the pointer just as truly, and spending the
+        # probe on wrappers is how devdocs.io's content pane went undiscovered.
+        under = sorted((region for region in self.deferred
+                        if _inside(region, *pointer)),
+                       key=lambda e: e.w * e.h)
+        if not under:
+            return False
+        region = under[0]
+        self.deferred.remove(region)
+        if self._acted or not _scrolls(
+                region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
+            return False
+        region.scroll_y, region.scroll_x = True, False
+        self.regions.insert(0, region)
+        self.index = 0
+        self.region = region
+        self.window.queue_draw()
+        return False
 
     def _rescue_deferred(self):
         """Finish collect()'s rescue pass, the first time Tab asks for it.

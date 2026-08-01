@@ -457,9 +457,15 @@ Chromium, ~1250ms of visible motion before a key could be pressed, and the aim
 probe's usual verdict was the default it started with. Both are now paid
 lazily and by whoever benefits: the aim is settled by watching the user's own
 first `j` land, which costs nothing when it was right, and the rescue happens
-on `Tab`, the key that asks for another region. What still runs on entry is
-the one probe that decides which region the session opens on. ~510ms, and the
-half that remains is load-bearing.
+on `Tab`, the key that asks for another region. The one probe that genuinely
+had to happen — deciding which region the session opens on, when the pointer
+rests on a pane nothing else can see — still happens, but *after* the outline
+is drawn rather than before, so the mode is usable while it runs and the
+outline snaps over if it finds something. It stands down the moment a key is
+pressed: the user's own scroll answers the same question, and two things
+scrolling one page at once is worse than either. Measured over three runs on
+the same page and pointer position, counting frames that actually move:
+~1250ms of motion before a key could be pressed, and none now.
 
 **A wall-clock deadline for the whole pass, not just each call.**
 `Atspi.set_timeout()` bounds one D-Bus call; `scroll.collect()` makes many of

@@ -135,6 +135,11 @@ SCROLL_RESCUE_MAX = 5
 # unscrollable, so the same page offered different regions from one press to
 # the next.
 SCROLL_RESCUE_BOTH_WAYS = True
+# How long after the outline appears before the background rescue probe runs
+# (see ScrollSession._promote_deferred). Long enough that the window is drawn
+# and a user who knew what they wanted has already pressed j; short enough
+# that a snap to a better region still feels like part of opening.
+SCROLL_PROMOTE_DELAY_MS = 120
 # Smooth scrolling animates a wheel click over a couple of hundred
 # milliseconds, so a short settle samples mid-animation and sees nothing move.
 SCROLL_PROBE_SETTLE_MS = 90

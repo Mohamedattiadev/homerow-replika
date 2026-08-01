@@ -689,6 +689,85 @@ class ScrollDeferredRescue(unittest.TestCase):
         # Tab is pressed repeatedly to cycle; the probing is not.
         self.assertEqual(scrolls.call_count, 1)
 
+    def promoter(self, region, regions, deferred, pointer=(150, 400)):
+        from homerow import scroll
+        instance = self.session(region, regions, deferred)
+        instance.index = 0
+        instance._acted = False
+        instance.window = unittest.mock.Mock()
+        self._pointer = unittest.mock.patch.object(
+            scroll, "_pointer_position", return_value=pointer)
+        return instance
+
+    def test_the_outline_snaps_to_a_pane_only_scrolling_could_find(self):
+        from homerow import scroll
+        # The devdocs.io case: nothing published measurable overflow, so the
+        # session opened on the whole window while the pointer rested on a
+        # virtualised sidebar. The probe runs after the outline is up.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [window], [sidebar], pointer=(150, 400))
+        # The pointer is inside the window region too, but that one was never
+        # detected -- it is the fallback -- so being "on" it proves nothing.
+        instance.regions = []
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True):
+            instance._promote_deferred()
+        self.assertIs(instance.region, sidebar)
+        self.assertEqual(instance.index, 0)
+        self.assertIn(sidebar, instance.regions)
+
+    def test_a_user_who_already_pressed_something_wins(self):
+        from homerow import scroll
+        # Their scroll answers the same question, and two of us scrolling one
+        # page at once is worse than either.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [sidebar])
+        instance._acted = True
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        scrolls.assert_not_called()
+        self.assertIs(instance.region, window)
+
+    def test_nothing_is_probed_when_the_pointer_is_on_a_found_region(self):
+        from homerow import scroll
+        # Something detected is already under the cursor, so there is no
+        # question left to answer and no reason to scroll the page.
+        content = Fake(x=0, y=0, w=1000, h=768)
+        other = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(content, [content], [other])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        scrolls.assert_not_called()
+
+    def test_a_candidate_that_does_not_scroll_changes_nothing(self):
+        from homerow import scroll
+        window = Fake(x=0, y=0, w=1366, h=768)
+        banner = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [banner])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=False):
+            instance._promote_deferred()
+        self.assertIs(instance.region, window)
+        self.assertEqual(instance.regions, [])
+
+    def test_the_innermost_candidate_under_the_pointer_is_the_one_probed(self):
+        from homerow import scroll
+        # Every wrapper around the real scroller contains the pointer just as
+        # truly; spending the one probe on a wrapper is how devdocs.io's
+        # content pane went undiscovered.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        wrapper = Fake(x=0, y=0, w=800, h=768)
+        pane = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [wrapper, pane])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        self.assertIs(scrolls.call_args.args[0], pane)
+
     def test_a_candidate_already_covered_is_not_probed(self):
         from homerow import scroll
         # collect()'s own rescue found this one at entry, because the pointer

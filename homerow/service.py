@@ -597,8 +597,14 @@ class Daemon:
         if not regions and config.SCROLL_FALLBACK_TO_WINDOW:
             fallback = scroll.window_region()
             if fallback is not None:
+                # Carry the untested candidates in even here -- especially
+                # here. Nothing published measurable overflow, which is
+                # exactly the shape of a page whose only scroller is a
+                # virtualised pane, so this is the case most likely to have
+                # something worth promoting once the outline is up.
                 self._log("no region reported; scrolling the window itself")
-                self._enter_scroll(fallback)
+                self._enter_scroll(fallback,
+                                   deferred=getattr(regions, "deferred", []))
                 return False
 
         if not regions:
