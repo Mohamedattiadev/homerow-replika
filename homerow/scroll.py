@@ -19,7 +19,10 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
-from .overlay import draw_legend, mode_switch, normalize_key, screen_size, set_identity  # noqa: E402
+from .overlay import (  # noqa: E402
+    badge, draw_legend, keys, mode_switch, normalize_key, screen_size,
+    set_identity,
+)
 
 WHEEL_UP, WHEEL_DOWN = 4, 5
 WHEEL_LEFT, WHEEL_RIGHT = 6, 7
@@ -1197,15 +1200,26 @@ class ScrollSession:
                  region.h - config.SCROLL_BORDER, config.SCROLL_RADIUS)
         cr.stroke()
 
-        legend = "j/k line   d/u page   gg/G ends   "
+        pairs = [("j k", "line"), ("d u", "page"), ("gg G", "ends")]
         if self._sideways():
-            legend += "h/l sideways   "
-        legend += "3j counts   esc"
+            pairs.append(("h l", "sideways"))
+        pairs.append(("3j", "count"))
         if len(self.regions) > 1:
-            legend = (f"[{self.index + 1}/{len(self.regions)} tab]   "
-                      + legend)
+            pairs.append(("tab", "region"))
+        pairs.append(("esc", "leave"))
+
+        legend = [badge("SCROLL")]
+        # One badge for everything live, so the row keeps its shape whether or
+        # not a count is part-typed: a second badge appearing mid-keystroke
+        # would shift every key along under the eye that is reading them.
+        state = []
         if self.count:
-            legend = f"{self.count}…   " + legend
+            state.append(f"{self.count}…")
+        if len(self.regions) > 1:
+            state.append(f"{self.index + 1}/{len(self.regions)}")
+        if state:
+            legend.append(badge("  ".join(state)))
+        legend.append(keys(pairs))
 
         # Fixed to the bottom of the screen, like every other mode's legend.
         # Positioning it relative to the region meant it landed wherever the

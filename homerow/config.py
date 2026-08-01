@@ -423,6 +423,20 @@ SCROLL_MAX_COUNT = 50
 # Distance from the bottom of the screen to a mode's legend.
 LEGEND_MARGIN = 40
 
+# The legend row. It is drawn as badges (the mode, and whatever is live in it)
+# followed by key/meaning pairs, so the gaps carry the grouping: a key sits
+# tight against its own meaning and further from the next pair, which is what
+# lets the row be scanned rather than read.
+LEGEND_PAD = 10            # pill edge to content
+LEGEND_KEY_GAP = 5         # a key to its own meaning
+LEGEND_PAIR_GAP = 15       # one pair to the next
+LEGEND_SEGMENT_GAP = 10    # badge to badge, or badges to the keys
+LEGEND_BADGE_PAD = 7       # inside an inverted badge
+LEGEND_BADGE_INSET = 5     # badge inset from the pill's top and bottom
+# Keep the row off the screen edges; past this, pairs are dropped from the
+# end rather than letting it run off.
+LEGEND_SCREEN_MARGIN = 80
+
 SCROLL_BORDER = 2
 SCROLL_RADIUS = 6
 

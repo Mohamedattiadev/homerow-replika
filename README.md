@@ -409,6 +409,21 @@ stopping there — a page can have more than one virtualised pane (a sidebar
 *and* its content), and stopping early rescues one and leaves the other
 looking permanently unscrollable.
 
+**A legend is scanned, not read.** Every mode keeps a pill at the bottom of
+the screen saying what its keys do, and each built its own by joining strings:
+the mode name, whatever was live in it, and forty characters of static help,
+all in one weight and one colour. Caret mode's reached 150 characters and most
+of a screen wide, and the part that changed while you worked — a part-typed
+`d`, which block the caret was in — was the part you were least likely to
+notice, because it looked exactly like the help text it was wedged between.
+It is now composed from parts rather than concatenated: the mode and its live
+state are inverted badges, each key is inked and its meaning recedes, and the
+gap between a key and its own meaning is smaller than the gap to the next
+pair, so the grouping is carried by spacing instead of punctuation. Past a
+screen's width the pairs drop from the end, but never the last one — every
+mode's list ends in `esc`, and a legend that has dropped the way out is worse
+than one that is slightly too wide.
+
 **Don't spend the user's page to answer a question they haven't asked.**
 Proving a region scrolls means scrolling it and putting it back, and that is
 not a measurement — it is the page visibly jumping, while they wait. Entering

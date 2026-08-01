@@ -9,6 +9,7 @@ _NET_WM_STRUT, so no space is reserved for it either.
 
 import sys
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -28,8 +29,9 @@ BUTTON_PREFIXES = {",": 3, ".": 2}  # right, middle
 # screen the whole time; hint mode used to show nothing until you started
 # typing, which meant the one mode most likely to be used cold had no
 # on-screen reminder of shift/ctrl/,/. at all.
-HINT_LEGEND = ("label click · shift+ new tab · ctrl+ bg tab · "
-               ", right-click · . middle-click · type to filter · esc")
+HINT_KEYS = [("a-l", "click"), ("shift", "new tab"), ("ctrl", "bg tab"),
+             (",", "right"), (".", "middle"), ("type", "filter"),
+             ("esc", "leave")]
 
 
 def normalize_key(key, state):
@@ -451,17 +453,22 @@ class Overlay:
         if self.filter:
             self._draw_filter(cr)
         elif self.prompt:
-            draw_legend(cr, self.prompt, self.width, self.height, self.colors)
+            draw_legend(cr, [badge("PICK"), text_part(self.prompt)],
+                        self.width, self.height, self.colors)
         else:
-            draw_legend(cr, HINT_LEGEND, self.width, self.height, self.colors)
+            draw_legend(cr, [badge("HINT"), keys(HINT_KEYS)],
+                        self.width, self.height, self.colors)
         return True
 
     def _draw_filter(self, cr):
         """Show what is being filtered on, and how much survived."""
         count = len(self.elements)
-        text = (f"filter: {self.filter}_    {count} left"
-                if count else f"filter: {self.filter}_    no match")
-        draw_legend(cr, text, self.width, self.height, self.colors,
+        # The chip turns over to the window colour on no match, which is the
+        # loudest thing the palette has to say without inventing a red the
+        # theme never gave us.
+        draw_legend(cr, [badge("FILTER"), text_part(f"{self.filter}_"),
+                         badge(f"{count} left" if count else "no match")],
+                    self.width, self.height, self.colors,
                     chip="chip" if count else "chip_window")
 
     def _draw_hint(self, cr, element, label, index, element_rects, placed):
@@ -498,27 +505,149 @@ class Overlay:
             cx += cr.text_extents(char).x_advance
 
 
-def draw_legend(cr, text, width, height, colors, chip="chip"):
-    """Bottom-center pill of text: every mode's legend/prompt/status line.
+# The three kinds of thing a legend row is made of. A mode composes a list of
+# them; draw_legend lays them out and nothing else has to know the geometry.
+BADGE = "badge"    # inverted sub-pill: the mode, and whatever is live in it
+TEXT = "text"      # free text, e.g. a query being typed
+KEYS = "keys"      # (key, meaning) pairs -- key in ink, meaning dimmed
+
+
+def badge(text):
+    return (BADGE, text)
+
+
+def text_part(text):
+    return (TEXT, text)
+
+
+def keys(pairs):
+    return (KEYS, list(pairs))
+
+
+def _face(cr, bold=False):
+    cr.select_font_face(
+        config.FONT_FAMILY, cairo.FONT_SLANT_NORMAL,
+        cairo.FONT_WEIGHT_BOLD if bold else cairo.FONT_WEIGHT_NORMAL)
+    cr.set_font_size(config.FONT_SIZE)
+
+
+def _advance(cr, text, bold=False):
+    _face(cr, bold)
+    return cr.text_extents(text).x_advance
+
+
+def _lay_out(cr, parts):
+    """Place every piece of the row left to right; (total width, placements).
+
+    Measuring and drawing walk the same list in the same order, so the pill
+    cannot come out a different width from what is drawn into it -- which is
+    exactly the drift that made one shared pill worth having.
+    """
+    placements = []
+    x = 0
+    for index, (kind, value) in enumerate(parts):
+        if index:
+            x += config.LEGEND_SEGMENT_GAP
+        if kind == BADGE:
+            width = _advance(cr, value, True) + config.LEGEND_BADGE_PAD * 2
+            placements.append((BADGE, value, x, width))
+            x += width
+        elif kind == TEXT:
+            width = _advance(cr, value, True)
+            placements.append((TEXT, value, x, width))
+            x += width
+        else:
+            for pair_index, (key, meaning) in enumerate(value):
+                if pair_index:
+                    x += config.LEGEND_PAIR_GAP
+                width = _advance(cr, key, True)
+                placements.append(("key", key, x, width))
+                x += width + config.LEGEND_KEY_GAP
+                width = _advance(cr, meaning)
+                placements.append(("meaning", meaning, x, width))
+                x += width
+    return x, placements
+
+
+def _fit(cr, parts, budget):
+    """Drop key pairs from the end until the row fits `budget` pixels.
+
+    The last pair is always kept: it is `esc leave` in every mode, and a
+    legend that has dropped the way out is worse than one that is a little
+    too wide. Pairs go from the end because the lists are written in the
+    order they are worth learning -- motions before operators before the
+    escape hatch -- so what goes first is what was least likely to be read.
+    """
+    parts = [(kind, list(value) if kind == KEYS else value)
+             for kind, value in parts]
+    while _lay_out(cr, parts)[0] > budget:
+        longest = max(
+            (part for part in parts if part[0] == KEYS and len(part[1]) > 1),
+            key=lambda part: len(part[1]), default=None)
+        if longest is None:
+            break
+        del longest[1][-2]
+    return parts
+
+
+def draw_legend(cr, parts, width, height, colors, chip="chip"):
+    """Bottom-center pill: every mode's legend, prompt and status line.
 
     Scroll, search, caret and hint mode each used to draw this by hand, and
     had drifted -- scroll's pill was a few pixels shorter than the others'.
     One shape, drawn once, is what keeps that from happening again.
-    """
-    cr.select_font_face(config.FONT_FAMILY)
-    cr.set_font_size(config.FONT_SIZE)
-    ext = cr.text_extents(text)
-    pad = 8
-    w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
-    x = max((width - w) // 2, 0)
-    y = max(height - h - config.LEGEND_MARGIN, 0)
 
+    `parts` is a list built from badge()/text_part()/keys(). It used to be one
+    string, and every mode built its own by concatenation: the mode name, the
+    live state and forty characters of static help all ran together in one
+    weight and one colour, so the part that changed while you worked was the
+    part you were least likely to notice. Caret mode's reached 150 characters
+    and most of a screen wide. Now the mode and its live state are inverted
+    sub-pills, and each key is inked while its meaning recedes -- the row is
+    scanned by shape rather than read as a sentence.
+    """
+    if isinstance(parts, str):        # a bare prompt, with nothing to group
+        parts = [text_part(parts)]
+    pad = config.LEGEND_PAD
+    height_of_pill = config.FONT_SIZE + pad * 2
+    parts = _fit(cr, parts, width - config.LEGEND_SCREEN_MARGIN - pad * 2)
+    row, placements = _lay_out(cr, parts)
+
+    w = row + pad * 2
+    x = max((width - w) // 2, 0)
+    y = max(height - height_of_pill - config.LEGEND_MARGIN, 0)
     cr.set_source_rgba(*colors[chip])
-    _rounded_rect(cr, x, y, w, h, config.RADIUS)
+    _rounded_rect(cr, x, y, w, height_of_pill, config.RADIUS)
     cr.fill()
-    cr.set_source_rgba(*colors["ink"])
-    cr.move_to(x + pad, y + h - pad - 2)
-    cr.show_text(text)
+
+    baseline = y + height_of_pill - pad - 2
+    for kind, value, offset, span in placements:
+        left = x + pad + offset
+        if kind == BADGE:
+            # Inverted: the chip's own colour on a block of ink. The mode and
+            # its live state are the only things here that change, so they are
+            # the only things that invert.
+            cr.set_source_rgba(*colors["ink"])
+            _rounded_rect(cr, left, y + config.LEGEND_BADGE_INSET, span,
+                          height_of_pill - config.LEGEND_BADGE_INSET * 2,
+                          config.RADIUS)
+            cr.fill()
+            cr.set_source_rgba(*colors[chip][:3], 1.0)
+            _face(cr, True)
+            cr.move_to(left + config.LEGEND_BADGE_PAD, baseline)
+            cr.show_text(value)
+            continue
+        if kind == "meaning":
+            cr.set_source_rgba(*colors["ink_typed"])
+            _face(cr)
+        else:
+            # A key and a query being typed are both things the user is
+            # producing, so they carry the same weight; the meanings behind
+            # them are reference material and recede.
+            cr.set_source_rgba(*colors["ink"])
+            _face(cr, True)
+        cr.move_to(left, baseline)
+        cr.show_text(value)
 
 
 def _rects_overlap(a, b):

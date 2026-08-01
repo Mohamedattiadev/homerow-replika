@@ -27,8 +27,8 @@ from gi.repository import Atspi, Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, elements, theme, x11  # noqa: E402
 from .overlay import (  # noqa: E402
-    draw_legend, mode_switch, normalize_key, place_chip, screen_size,
-    set_identity,
+    badge, draw_legend, keys, mode_switch, normalize_key, place_chip,
+    screen_size, set_identity, text_part,
 )
 
 WORD = Atspi.TextGranularity.WORD
@@ -864,16 +864,27 @@ class CaretSession:
             mode = "VISUAL LINE" if self.linewise else "VISUAL"
         else:
             mode = "CARET"
-        legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
-                  f"gg/G doc   v/V select   y yank   x/d cut   p put   "
-                  f"/ search   esc")
-        if self.pending_y:
-            legend = "y…   " + legend
-        if self.pending_d:
-            legend = "d…   " + legend
+        pairs = [("h j k l", "move"), ("w b e", "word"), ("0 $", "line"),
+                 ("gg G", "doc"), ("v V", "select"), ("y", "yank"),
+                 ("x d", "cut"), ("p", "put"), ("/", "search")]
         if len(self.blocks) > 1:
-            legend = (f"[{self.index + 1}/{len(self.blocks)} "
-                      f"1-9 jump, tab next]   " + legend)
+            pairs.append(("1-9 tab", "block"))
+        pairs.append(("esc", "leave"))
+
+        legend = [badge(mode)]
+        # Everything live in one badge beside the mode: a part-typed operator
+        # and which block the caret is in are the two things that change while
+        # the mode runs, and they are what the eye should be drawn to.
+        state = []
+        if self.pending_d:
+            state.append("d…")
+        if self.pending_y:
+            state.append("y…")
+        if len(self.blocks) > 1:
+            state.append(f"{self.index + 1}/{len(self.blocks)}")
+        if state:
+            legend.append(badge("  ".join(state)))
+        legend.append(keys(pairs))
         draw_legend(cr, legend, self.width, self.height, self.colors)
         return True
 
@@ -1132,12 +1143,14 @@ class CaretSearchPrompt:
 
             self._draw_labels(cr)
 
-        label = f"caret search: {self.query}_"
         count = (f"{self.current + 1}/{len(self.hits)}" if self.hits
                  else f"{len(self.hits)} match"
                       + ("" if len(self.hits) == 1 else "es"))
-        text = f"{label}    {count}    1-9 pick · tab next · enter jump · esc"
-        draw_legend(cr, text, self.width, self.height, self.colors)
+        legend = [badge("CARET SEARCH"), text_part(f"{self.query}_"),
+                  badge(count),
+                  keys([("1-9", "pick"), ("tab", "next"), ("enter", "jump"),
+                        ("esc", "leave")])]
+        draw_legend(cr, legend, self.width, self.height, self.colors)
         return True
 
 

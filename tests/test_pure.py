@@ -508,6 +508,97 @@ class ScrollAimCheck(unittest.TestCase):
         self.assertEqual(len(sent), 1)
 
 
+class LegendLayout(unittest.TestCase):
+    """The legend row is laid out from parts, and measured the way it draws.
+
+    It used to be one concatenated string per mode -- mode name, live state
+    and forty characters of static help in one weight and one colour. Caret
+    mode's reached 150 characters and most of a screen wide, and the part that
+    changed while you worked was the part you were least likely to notice.
+    """
+
+    def context(self):
+        import cairo
+        return cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8))
+
+    def parts(self, pairs=6):
+        from homerow import overlay
+        return [overlay.badge("CARET"), overlay.badge("d…  2/7"),
+                overlay.keys([(f"k{i}", f"meaning{i}") for i in range(pairs)])]
+
+    def test_a_row_that_fits_is_left_alone(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        kept = overlay._fit(cr, parts, 10_000)
+        self.assertEqual(kept, parts)
+
+    def test_a_row_too_wide_loses_pairs(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        full = overlay._lay_out(cr, parts)[0]
+        kept = overlay._fit(cr, parts, full / 2)
+        self.assertLessEqual(overlay._lay_out(cr, kept)[0], full / 2)
+        self.assertLess(len(kept[-1][1]), len(parts[-1][1]))
+
+    def test_the_way_out_is_never_dropped(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        # esc is the last pair in every mode's list. A legend that has dropped
+        # the way out is worse than one that is a little too wide.
+        last = parts[-1][1][-1]
+        for budget in (400, 200, 80, 10):
+            with self.subTest(budget=budget):
+                kept = overlay._fit(cr, parts, budget)
+                self.assertEqual(kept[-1][1][-1], last)
+
+    def test_fitting_does_not_mutate_the_caller(self):
+        from homerow import overlay
+        # The modes rebuild their parts every draw, but a mode that hoisted
+        # the list to a constant would otherwise lose keys permanently the
+        # first time it was drawn on a narrow screen.
+        cr = self.context()
+        parts = self.parts()
+        overlay._fit(cr, parts, 50)
+        self.assertEqual(len(parts[-1][1]), 6)
+
+    def test_keys_are_placed_as_a_key_then_its_meaning(self):
+        from homerow import overlay
+        cr = self.context()
+        _, placed = overlay._lay_out(
+            cr, [overlay.badge("CARET"),
+                 overlay.keys([("y", "yank"), ("esc", "leave")])])
+        self.assertEqual([kind for kind, _, _, _ in placed],
+                         ["badge", "key", "meaning", "key", "meaning"])
+        # Left to right, in the order given, never overlapping.
+        offsets = [offset for _, _, offset, _ in placed]
+        self.assertEqual(offsets, sorted(offsets))
+        for (_, _, offset, span), (_, _, next_offset, _) in zip(placed,
+                                                                placed[1:]):
+            self.assertLessEqual(offset + span, next_offset)
+
+    def test_a_key_sits_closer_to_its_meaning_than_to_the_next_pair(self):
+        from homerow import overlay
+        # This is the whole grouping mechanism: the gaps say which meaning
+        # belongs to which key, so the row is scanned rather than read.
+        cr = self.context()
+        _, placed = overlay._lay_out(
+            cr, [overlay.keys([("y", "yank"), ("p", "put")])])
+        key, meaning, next_key = placed[0], placed[1], placed[2]
+        own = meaning[2] - (key[2] + key[3])
+        across = next_key[2] - (meaning[2] + meaning[3])
+        self.assertLess(own, across)
+
+    def test_a_bare_string_still_draws(self):
+        from homerow import overlay, theme
+        # Pickers pass a prompt with nothing to group. It has to keep working:
+        # this is the one caller that has no key/meaning structure at all.
+        cr = self.context()
+        overlay.draw_legend(cr, "pick a field", 1366, 768, theme.palette())
+
+
 class ScrollDeferredRescue(unittest.TestCase):
     """Candidates that can only be proved by scrolling them wait for Tab.
 
