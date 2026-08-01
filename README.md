@@ -125,6 +125,48 @@ The region you are already using is kept even if the probe rejects it: you can
 see it, you may have scrolled it already, and dropping it to satisfy a check
 is worse than an extra `Tab` stop.
 
+**What entry chooses on instead.** That sweep was doing a second job nobody
+had named: it ran *before* the region was picked, so anything that could not
+scroll was already gone by the time the choice was made. Without it, the old
+rule — the smallest region under the pointer — picks a box that clips its
+content over the pane that actually moves, because the clipped box is the
+smaller of the two and publishes exactly the same content-taller-than-its-box
+reading. Measured in Chromium on a page of four identical 330x700 boxes
+differing only in their overflow rule: all four measure as overflowing, and
+only the two that really scroll come back `FOCUSABLE`, because Chromium marks
+a container focusable when it is a scroll container the keyboard can drive.
+So evidence ranks the candidates and area is only the tie-break. On that page
+the old rule opened on the `overflow: hidden` box and `j` moved nothing; it
+now opens on the document, which scrolls.
+
+`FOCUSABLE` is a hint, not a verdict — a scroller full of links is not itself
+focusable — so where two detected regions both sit under the pointer, the one
+the mode opened on is scrolled once, after the outline is up, and the outline
+moves to the other only if that one is proved to move instead. Never on a
+probe that merely came back empty: a pane already at the end it was pushed
+towards reads identically, and dropping what you are looking at on that
+evidence is worse than leaving the guess alone. With one candidate under the
+pointer there is nothing a probe could change, so nothing is scrolled at all
+— which is every ordinary entry on a sidebar-beside-content layout, since the
+two do not overlap.
+
+**A content pane can be a `<main>`.** On `devdocs.io` the pane holding the
+docs is a landmark, a role scroll mode never asked for, and the only other
+candidate covering that half of the screen is the wrapper `div` around it —
+whose single child fits inside it exactly, so overflow measurement proved
+nothing. The pane was therefore never a candidate at all: detection found the
+sidebar and stopped, and entering with the pointer on the docs opened an
+outline around the whole window. Asking for the role too costs 3 extra matches
+out of 42 on that page and reports the pane as 1033x584 holding 55959px of
+content. Entering there now opens on the sidebar with the pointer on the
+sidebar and on the content pane with the pointer on the content pane —
+measured by scrolling each and diffing the screen: 9.2 grey levels of movement
+in the pane under the cursor, 0.0 in the other one. Entry costs 49–75ms
+median, 137ms at worst, and 0 of 137 pointer samples taken at 4ms during it
+were anywhere but where the cursor started. The same page with the sweep put
+back in front (`scroll: verify_on_entry: true`) costs 408–425ms and moves the
+pointer for 391 of 470 samples.
+
 ### Search
 
 Modelled on vim's `/`.
@@ -843,6 +885,18 @@ raise the budget, and keep testing after the first success instead of
 stopping there — a page can have more than one virtualised pane (a sidebar
 *and* its content), and stopping early rescues one and leaves the other
 looking permanently unscrollable.
+
+**A fallback that covers everything answers every question wrongly.** When
+nothing is detected, scroll mode opens on the whole window — and two later
+passes ask "is the pointer already on something we found?" and "does this
+candidate overlap something we found?" to decide whether to probe further.
+The window region was in that list, it contains the pointer wherever the
+pointer is, and it overlaps every candidate there is, so both passes always
+answered yes and neither ever ran. They were disabled precisely on the pages
+that have nothing else — which is the only reason they exist. A test even
+encoded the workaround, emptying the region list by hand to make the probe
+fire. The fallback is now excluded by the one thing that distinguishes it:
+it has no accessible behind it, because nothing reported it.
 
 **A legend is scanned, not read.** Every mode keeps a pill at the bottom of
 the screen saying what its keys do, and each built its own by joining strings:

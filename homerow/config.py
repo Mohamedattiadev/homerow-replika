@@ -89,6 +89,15 @@ SCROLL_ROLES_FALLBACK = [
     "INTERNAL_FRAME",
     "LAYERED_PANE",
     "SPLIT_PANE",
+    # A page whose content pane is a <main> reports it as LANDMARK, and
+    # nothing else on the page stands in for it: measured live on
+    # devdocs.io/less~4/ in Chromium, the only other candidate covering that
+    # half of the screen is the wrapper div around it, whose single child
+    # fits inside it exactly -- so overflow measurement proved nothing and
+    # the content pane was never a candidate at all. With this role asked
+    # for, the same page reports it as 1033x584 holding 55959px of content.
+    # It costs 3 extra matches out of 42 on that page.
+    "LANDMARK",
 ]
 
 # Only the largest candidates are overflow-tested; each test costs a handful of
@@ -131,6 +140,28 @@ SCROLL_VERIFY = True
 # region instead, beside the rescue pass that is deferred for the same
 # reason. Set this True to go back to paying on entry.
 SCROLL_VERIFY_ON_ENTRY = False
+
+# Check the region the session opened on -- just that one -- once the outline
+# is drawn. Entry chooses from evidence that cannot tell a scroller from a box
+# that clips content it cannot scroll: measured in Chromium, a div with
+# overflow:hidden publishes exactly the same content-taller-than-its-box
+# reading as the div beside it with overflow:auto, and being the smaller thing
+# under the pointer is what used to win. Scrolling it and watching is the only
+# proof, so it happens here, on one region rather than the whole shortlist,
+# after the mode is already usable, and it aims at the point the wheel would
+# use anyway -- which is the pointer's own position in the ordinary case, so
+# nothing on screen moves unless the guess was actually wrong. Set False to
+# take the guess as final.
+SCROLL_CONFIRM_ON_ENTRY = True
+
+# How long that check waits before believing nothing moved. Smooth scrolling
+# animates a wheel click over a couple of hundred milliseconds, so this is
+# really "how long until a negative answer is trustworthy" -- measured in
+# Chromium on devdocs.io, the 90ms the sweep probes use called a scrollable
+# pane unscrollable on 1 probe in 3, and 150ms was wrong none of 9 times. A
+# sweep over every candidate could not afford this; one probe deciding which
+# region the user is about to drive cannot afford to be wrong.
+SCROLL_CONFIRM_SETTLE_MS = 200
 
 # Probe rejected candidates only when this few regions were found, and only
 # this many of them. Virtualised lists render just their visible rows, so no

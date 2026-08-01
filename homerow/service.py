@@ -715,10 +715,14 @@ class Daemon:
         if chosen not in regions:
             regions = [chosen] + regions
         regions = scroll.with_window_fallback(regions)
+        # Which one it opened on, not just how many were found: "it scrolled
+        # the wrong thing" is unanswerable from a count, and the region that
+        # was chosen against the pointer's position is the whole question.
         self._log(f"{len(regions)} scrollable region(s) in "
                   f"{(time.perf_counter() - started) * 1000:.0f}ms"
                   f"{f', {len(deferred)} deferred' if deferred else ''}; "
-                  f"entering scroll mode")
+                  f"entering scroll mode on "
+                  f"({chosen.x},{chosen.y},{chosen.w},{chosen.h})")
         self._enter_scroll(chosen, regions, deferred)
         return False
 

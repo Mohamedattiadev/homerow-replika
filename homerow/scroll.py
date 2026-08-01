@@ -323,7 +323,7 @@ def _scrolls(region, both_ways=False):
     return _scrolls_at(region, *region.center, both_ways=both_ways)
 
 
-def _scrolls_at(region, x, y, both_ways=False):
+def _scrolls_at(region, x, y, both_ways=False, settle_ms=None):
     """As _scrolls(), but with the wheel aimed at an explicit point.
 
     A wheel event scrolls whatever sits under the pointer, which is not
@@ -331,18 +331,28 @@ def _scrolls_at(region, x, y, both_ways=False):
     and "does aiming *here* scroll this region?" are different questions, and
     ScrollSession needs the second one to find out whether the user's cursor
     happens to be resting on some other scroller.
+
+    `settle_ms` overrides how long to wait before believing nothing moved.
+    Smooth scrolling animates a wheel click, so the wait is really "how long
+    until a negative answer is trustworthy" -- measured in Chromium on
+    devdocs.io, the default 90ms gave a wrong "it does not scroll" on 1 probe
+    in 3, and 150ms none in 9. A sweep over every candidate cannot afford
+    that; a single probe whose answer decides which region the user drives
+    cannot afford to be wrong.
     """
     watchers = _probe_children(region)
     if not watchers:
         return False
+    settle = (settle_ms if settle_ms is not None
+              else config.SCROLL_PROBE_SETTLE_MS) / 1000
     passes = ((WHEEL_DOWN, WHEEL_UP), (WHEEL_UP, WHEEL_DOWN))
     for forward, back in (passes if both_ways else passes[:1]):
         before = [_position(w) for w in watchers]
         _wheel(x, y, forward, config.SCROLL_PROBE_CLICKS)
-        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        time.sleep(settle)
         shifted = _moved(watchers, before)
         _wheel(x, y, back, config.SCROLL_PROBE_CLICKS)
-        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        time.sleep(settle)
         if shifted:
             return True
     return False
@@ -610,12 +620,71 @@ def _wheel_paced(x, y, button, times):
         GLib.timeout_add(config.SCROLL_CLICK_DELAY, tick)
 
 
+def _focusable(region):
+    """Whether the toolkit calls this region keyboard-focusable.
+
+    The one piece of evidence that separates a real scroller from a box that
+    merely clips content, and does not cost a scroll to read: Chromium marks a
+    container focusable when it is a scroll container the keyboard can drive.
+    Measured on a page holding four identical 330x700 boxes of the same 80
+    paragraphs, differing only in their overflow rule -- both `overflow: auto`
+    boxes came back FOCUSABLE, and the `hidden` and `visible` ones did not,
+    while all four published the same content-taller-than-the-box overflow.
+
+    It is a hint, not a verdict, which is why it only ranks candidates rather
+    than filtering them: a scroller that holds focusable children of its own
+    is not itself focusable (devdocs.io's content pane, full of links, is
+    exactly that), and a toolkit that never sets it just leaves every
+    candidate equal here.
+
+    Cached on the region: a state-set read is a D-Bus round trip, and best()
+    and the entry check ask the same question about the same regions.
+    """
+    cached = getattr(region, "focusable", None)
+    if cached is not None:
+        return cached
+    accessible = region.accessible
+    focusable = False
+    if accessible is not None:
+        try:
+            focusable = accessible.get_state_set().contains(
+                Atspi.StateType.FOCUSABLE)
+        except Exception:
+            focusable = False
+    region.focusable = focusable
+    return focusable
+
+
+def _evidence(region):
+    """How well established it is that this region scrolls; lower is better.
+
+    Ranking, rather than area, is what decides between two regions that both
+    contain the pointer -- see best(). The smallest one is not usually the
+    scroller: a card that clips its own content sits inside the pane that
+    actually moves, and it wins on area every time.
+    """
+    proven = getattr(region, "scrolls_proven", None)
+    if proven is True:
+        return 0                            # scrolled, and something moved
+    if proven is False:
+        return 3                            # scrolled, and nothing moved
+    return 1 if _focusable(region) else 2
+
+
 def best(regions):
     """The region to act on without asking.
 
     Under the pointer wins, since that is where you are looking; otherwise the
     largest, which is the main content pane on essentially every layout.
     Asking first turned every scroll into pick-a-region-then-scroll.
+
+    Among several under the pointer, the best-evidenced one wins and area is
+    only the tie-break. It used to be area alone, and that is what "it scrolls
+    the wrong thing now" was: with the scroll-and-watch pass moved off the
+    entry path there is nothing left to drop the regions that cannot scroll,
+    so the smallest box under the cursor -- routinely one that clips its
+    content rather than scrolling it -- was chosen over the pane around it
+    that really moves.
     """
     if not regions:
         return None
@@ -625,7 +694,7 @@ def best(regions):
         under = [r for r in regions
                  if r.x <= px < r.x + r.w and r.y <= py < r.y + r.h]
         if under:
-            return min(under, key=lambda r: r.w * r.h)
+            return min(under, key=lambda r: (_evidence(r), r.w * r.h))
         # The pointer is over something AT-SPI never surfaced as a candidate
         # -- a sidebar built from a widget the role/overflow probes didn't
         # recognise, say. Falling back to the largest known region would
@@ -826,7 +895,7 @@ class ScrollSession:
         # After the outline is on screen, not before: this one scrolls the
         # page to find out what it is, and doing that while the screen still
         # shows nothing is what made entering the mode feel broken.
-        GLib.timeout_add(config.SCROLL_PROMOTE_DELAY_MS, self._promote_deferred)
+        GLib.timeout_add(config.SCROLL_PROMOTE_DELAY_MS, self._after_outline)
         # Never hold the keyboard indefinitely. The grab is exclusive, so
         # while a session is open every other binding on the desktop is dead
         # -- including the ones that would close it. A session left open by
@@ -1019,6 +1088,136 @@ class ScrollSession:
             return x, y
         return _clear_point(region, blockers, (px, py))
 
+    def _after_outline(self):
+        """The two questions only scrolling can answer, once the outline is up.
+
+        First whether the pointer is resting on a pane nothing could measure,
+        then whether the region actually chosen moves at all. Both were on the
+        entry path once and both are the same trade: the answer is worth
+        having, watching the page jump to get it before anything is drawn is
+        not. In order, because promoting settles what the second one is asked
+        about.
+        """
+        self._promote_deferred()
+        self._confirm_region()
+        return False
+
+    def _found(self):
+        """Regions detection actually reported, as opposed to the fallback.
+
+        The whole-window region is not evidence of anything: it is what the
+        session opens on when nothing was found, and it covers the pointer
+        wherever the pointer is. Counting it as "something is already under
+        the cursor" is what stopped the devdocs.io sidebar from ever being
+        promoted -- the one page the promotion exists for.
+        """
+        return [region for region in self.regions
+                if region.accessible is not None]
+
+    def _confirm_region(self):
+        """Settle a genuine ambiguity about which region to open on.
+
+        Entry chooses on evidence that cannot always tell a scroller from a
+        box that clips content it cannot scroll -- measured in Chromium, a div
+        with overflow:hidden publishes the same content-taller-than-its-box
+        reading as the scrollable div beside it, and the smaller of two nested
+        candidates is not usually the one that moves. Only scrolling settles
+        that, so it happens here: after the outline is drawn and the keyboard
+        is grabbed, on the one region the user is about to drive, and aimed
+        where the wheel would go anyway -- their own pointer, in the ordinary
+        case, with the cursor put back if the aim was somewhere else.
+
+        Three things keep it from being the old sweep in a new place:
+
+        It runs only when there is another detected region under the pointer
+        to switch to. With one candidate there is nothing a probe could
+        change, and scrolling the page to reach a conclusion nobody can act on
+        is exactly what made entering the mode feel broken. On the reported
+        devdocs.io layout that is every ordinary entry: sidebar and content
+        pane do not overlap, so neither is ever ambiguous with the other.
+
+        It moves on only when the replacement is *proved* to scroll, never
+        merely because the first probe came back empty. A probe that sees
+        nothing has two meanings -- the region cannot scroll, or it is already
+        at the end it was pushed towards, or nothing it can watch happens to
+        move -- and only one of them justifies dropping what the user is
+        looking at.
+
+        And it stands down the moment a key is pressed: their own scroll
+        answers the same question, and two of us scrolling one page at once is
+        worse than either.
+        """
+        if self._acted or not config.SCROLL_CONFIRM_ON_ENTRY:
+            return False
+        region = self.region
+        # The window fallback has no accessible to watch, so nothing about it
+        # can be proved either way.
+        if region is None or region.accessible is None:
+            return False
+        if getattr(region, "scrolls_proven", None) is not None:
+            return False
+        alternative = self._next_candidate()
+        if alternative is None:
+            return False
+        if self._probe(region):
+            region.scrolls_proven = True
+            return False
+        region.scrolls_proven = False
+        if self._acted or not self._probe(alternative):
+            return False
+        alternative.scrolls_proven = True
+        self.index = self.regions.index(alternative)
+        self.region = alternative
+        self.window.queue_draw()
+        GLib.idle_add(self._settle_aim)
+        return False
+
+    def _probe(self, region):
+        """Scroll `region` where the wheel would go; True if something moved.
+
+        The pointer goes back where it was whenever the aim was not the
+        pointer's own position, so the most this can cost on screen is one
+        scroll and its undo.
+        """
+        origin = _pointer_position()
+        if region is self.region:
+            x, y = self._aim_point(getattr(region, "aim", None) or "pointer")
+        else:
+            # Alternatives are under the pointer by construction, so the
+            # pointer's own position is inside them and needs no clamping.
+            x, y = origin or region.center
+        started = time.perf_counter()
+        moved = _scrolls_at(region, x, y, both_ways=True,
+                            settle_ms=config.SCROLL_CONFIRM_SETTLE_MS)
+        if origin and origin != (x, y):
+            _restore_pointer(origin)
+        if config.DEBUG_KEYS:
+            x11.debug_log(
+                f"[scroll] entry check ({region.x},{region.y},{region.w},"
+                f"{region.h}) at ({x},{y}) scrolls={moved} "
+                f"in {(time.perf_counter() - started) * 1000:.0f}ms")
+        return moved
+
+    def _next_candidate(self):
+        """The other region under the pointer that a probe could hand over to.
+
+        Detected regions only. The whole-window fallback is not a candidate
+        here: it aims at the same pointer position the current region does, so
+        switching to it changes the outline and nothing else -- which is not
+        worth scrolling the page to decide.
+        """
+        pointer = _pointer_position()
+        if not pointer:
+            return None
+        others = [region for region in self.regions
+                  if region is not self.region
+                  and region.accessible is not None
+                  and _inside(region, *pointer)
+                  and getattr(region, "scrolls_proven", None) is not False]
+        if not others:
+            return None
+        return min(others, key=lambda r: (_evidence(r), r.w * r.h))
+
     def _promote_deferred(self):
         """Once the outline is up, check whether the pointer is on something better.
 
@@ -1040,7 +1239,7 @@ class ScrollSession:
             return False
         pointer = _pointer_position()
         if not pointer or any(_inside(region, *pointer)
-                              for region in self.regions):
+                              for region in self._found()):
             return False                 # already on something that was found
         # The innermost candidate under the pointer: every wrapper around the
         # real scroller contains the pointer just as truly, and spending the
@@ -1056,6 +1255,11 @@ class ScrollSession:
                 region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
             return False
         region.scroll_y, region.scroll_x = True, False
+        region.scrolls_proven = True     # it just moved; nothing to re-check
+        if config.DEBUG_KEYS:
+            x11.debug_log(
+                f"[scroll] promoted ({region.x},{region.y},"
+                f"{region.w},{region.h}) from the deferred candidates")
         self.regions.insert(0, region)
         self.index = 0
         self.region = region
@@ -1079,11 +1283,16 @@ class ScrollSession:
         self._verify_regions()
         pending, self.deferred = self.deferred, []
         for region in pending:
-            if any(_overlapping(region, kept) for kept in self.regions):
+            # Against what was found, not against the window fallback: that
+            # one covers every candidate there is, so counting it here left
+            # Tab with nothing to rescue on exactly the pages -- the ones
+            # where detection reported nothing at all -- that need it most.
+            if any(_overlapping(region, kept) for kept in self._found()):
                 continue
             if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
                 region.scroll_y = True
                 region.scroll_x = False
+                region.scrolls_proven = True
                 self.regions.append(region)
 
     def _verify_regions(self):

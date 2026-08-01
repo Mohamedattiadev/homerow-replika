@@ -94,6 +94,12 @@ scroll:
   # verify: true
   # verify_on_entry: false
 
+  # Where two detected regions both sit under the pointer, the one the mode
+  # opened on is scrolled once after the outline is drawn, and the outline
+  # moves to the other only if that one is proven to move instead.
+  # confirm_on_entry: true
+  # confirm_settle_ms: 200
+
   # Outline drawn around the region being scrolled.
   # border: 2
   # radius: 6

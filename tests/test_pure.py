@@ -20,12 +20,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from homerow import config, hints, search  # noqa: E402
 
 
-class Fake:
-    """Stands in for elements.Element without touching AT-SPI."""
+_DETECTED = object()
 
-    def __init__(self, name="", role="link", x=0, y=0, w=10, h=10):
+
+class Fake:
+    """Stands in for elements.Element without touching AT-SPI.
+
+    `accessible` stands for something detection actually reported, since
+    scroll mode treats a region without one as the whole-window fallback --
+    pass accessible=None to be that.
+    """
+
+    def __init__(self, name="", role="link", x=0, y=0, w=10, h=10,
+                 accessible=_DETECTED):
         self.name, self.role = name, role
         self.x, self.y, self.w, self.h = x, y, w, h
+        self.accessible = accessible
 
     @property
     def center(self):
@@ -358,6 +368,42 @@ class ScrollBest(unittest.TestCase):
              unittest.mock.patch.object(
                 scroll, "window_region", return_value=window):
             self.assertIs(scroll.best([content]), window)
+
+    def test_a_box_that_only_clips_its_content_does_not_win_on_size(self):
+        from homerow import scroll
+        # Measured in Chromium: a div with overflow:hidden publishes the same
+        # content-taller-than-its-box reading as the pane around it, and being
+        # the smaller thing under the cursor used to be enough to be chosen.
+        # The toolkit does say which of the two it will let the keyboard
+        # scroll, and that outranks area.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.focusable = True
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.focusable = False
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
+
+    def test_a_region_already_proved_inert_is_never_chosen(self):
+        from homerow import scroll
+        # The entry check scrolled it and nothing moved. Nothing about the
+        # geometry has changed, so neither has the answer.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.scrolls_proven = False
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
+
+    def test_a_proved_scroller_beats_a_merely_plausible_one(self):
+        from homerow import scroll
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.scrolls_proven = True
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.focusable = True
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
 
     def test_no_pointer_falls_back_to_largest(self):
         from homerow import scroll
@@ -954,12 +1000,13 @@ class ScrollDeferredRescue(unittest.TestCase):
         # The devdocs.io case: nothing published measurable overflow, so the
         # session opened on the whole window while the pointer rested on a
         # virtualised sidebar. The probe runs after the outline is up.
-        window = Fake(x=0, y=0, w=1366, h=768)
-        sidebar = Fake(x=0, y=0, w=340, h=768)
-        instance = self.promoter(window, [window], [sidebar], pointer=(150, 400))
         # The pointer is inside the window region too, but that one was never
         # detected -- it is the fallback -- so being "on" it proves nothing.
-        instance.regions = []
+        # Counting it used to stop this from ever running on the very page it
+        # exists for, where detection reported nothing at all.
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [window], [sidebar], pointer=(150, 400))
         with self._pointer, unittest.mock.patch.object(
                 scroll, "_scrolls", return_value=True):
             instance._promote_deferred()
@@ -1031,6 +1078,155 @@ class ScrollDeferredRescue(unittest.TestCase):
             instance._rescue_deferred()
         self.assertEqual(instance.regions, [pane])
         self.assertEqual(scrolls.call_count, 0)
+
+
+class ScrollEntryCheck(unittest.TestCase):
+    """The region a session opens on is proved once the outline is drawn.
+
+    Entry has to choose from evidence that cannot tell a scroller from a box
+    that clips content it cannot scroll, so the choice is checked by scrolling
+    it -- one region, after the mode is usable, aimed where the wheel would go
+    anyway. Before this existed, the smallest box under the cursor won and
+    `j` did nothing at all.
+    """
+
+    def session(self, region, regions, pointer=(600, 300)):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        instance.regions = list(regions)
+        instance.deferred = []
+        instance.index = instance.regions.index(region) \
+            if region in instance.regions else 0
+        instance._acted = False
+        instance._verified = True
+        instance.window = unittest.mock.Mock()
+        self._pointer = unittest.mock.patch.object(
+            scroll, "_pointer_position", return_value=pointer)
+        return instance
+
+    def test_a_region_that_does_not_scroll_is_not_left_selected(self):
+        from homerow import scroll
+        # The pane moves, the card that sits inside it does not -- so the
+        # outline belongs on the pane, whatever the areas say.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", side_effect=lambda r, *a, **k: r is pane):
+            instance._confirm_region()
+        self.assertIs(instance.region, pane)
+        self.assertIs(instance.regions[instance.index], pane)
+        self.assertFalse(card.scrolls_proven)
+        self.assertTrue(pane.scrolls_proven)
+
+    def test_a_region_that_scrolls_is_kept_and_nothing_else_is_probed(self):
+        from homerow import scroll
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True) as probe:
+            instance._confirm_region()
+        self.assertIs(instance.region, card)
+        self.assertEqual(probe.call_count, 1)
+
+    def test_a_replacement_that_cannot_be_proved_is_not_switched_to(self):
+        from homerow import scroll
+        # Neither moved. That reads the same as a page already at the end it
+        # was pushed towards, and dropping what the user is looking at on that
+        # evidence is worse than leaving the guess alone.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=False):
+            instance._confirm_region()
+        self.assertIs(instance.region, card)
+
+    def test_nothing_is_scrolled_when_there_is_nothing_to_switch_to(self):
+        from homerow import scroll
+        # One candidate under the pointer: a probe could not change anything,
+        # so the page is not scrolled to reach a conclusion nobody can act on.
+        # This is every ordinary entry on the reported devdocs.io layout.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(pane, [pane, sidebar], pointer=(900, 300))
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+        self.assertIs(instance.region, pane)
+
+    def test_what_is_already_proved_is_not_scrolled_again(self):
+        from homerow import scroll
+        # The promotion probe just moved this one. Asking again is another
+        # visible jump for an answer already in hand.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.scrolls_proven = True
+        instance = self.session(pane, [pane])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_a_key_press_stands_the_check_down(self):
+        from homerow import scroll
+        # Their own scroll answers the same question, and two of us scrolling
+        # one page at once is worse than either.
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [card])
+        instance._acted = True
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_the_window_fallback_is_not_probed(self):
+        from homerow import scroll
+        # It has no accessible to watch, so nothing could be proved -- and a
+        # wheel event aimed where the cursor already is scrolls whatever is
+        # under it regardless.
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        instance = self.session(window, [window])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_the_window_fallback_is_never_the_replacement(self):
+        from homerow import scroll
+        # It aims at the same pointer position the current region does, so
+        # switching to it changes the outline and nothing else.
+        card = Fake(x=400, y=100, w=520, h=340)
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        instance = self.session(card, [card, window])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+        self.assertIs(instance.region, card)
+
+    def test_the_check_aims_where_the_wheel_would(self):
+        from homerow import scroll
+        # Aiming anywhere else is a warp the user watches happen, for a
+        # question about a region they are already pointing at.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card], pointer=(600, 300))
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True) as probe:
+            instance._confirm_region()
+        self.assertEqual(probe.call_args.args[1:3], (600, 300))
+
+    def test_entry_still_scrolls_nothing_before_the_outline(self):
+        from homerow import config, scroll
+        # The check is deferred, like the rescue and the scroll-and-watch
+        # pass: 316ms median and up to 2318ms of the cursor flying about over
+        # 151 real sessions is what running any of them on entry cost.
+        self.assertFalse(config.SCROLL_VERIFY_ON_ENTRY)
+        self.assertIn("_after_outline",
+                      scroll.ScrollSession.show.__code__.co_names)
 
 
 class ScrollWindowFallbackTabStop(unittest.TestCase):
