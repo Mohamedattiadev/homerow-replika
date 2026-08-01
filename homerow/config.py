@@ -352,6 +352,34 @@ EDIT_LIVE_WRITE = True
 # to see what you are writing. Raise it for a roomier box; the window is
 # still anchored on the field either way.
 EDIT_COMPACT_MIN_ROWS = 5
+
+# Told to the editor before the user's config runs, so a config can react to
+# being launched here. A statusline plugin standing down is the useful case:
+# LazyVim sets laststatus=3 and lualine then owns that row for good, which is
+# why a one-line field gets a box with more chrome in it than text. Add
+# homerow to the condition your statusline already uses for firenvim --
+#
+#     enabled = function()
+#       return not vim.g.started_by_firenvim and not vim.g.started_by_homerow
+#     end,
+#
+# -- and the editor comes out the size of the field. Nothing breaks without
+# it; the box is just taller. See EDIT_CHROME_ROWS_ASSUMED.
+EDIT_ANNOUNCE = ["--cmd", "let g:started_by_homerow = 1"]
+
+# Rows the editor spends on things that are not your text: a statusline row
+# plus the command line. Measured from the running editor rather than assumed
+# (see edit.chrome_rows) -- this is only the answer used when there is no warm
+# server to ask, and it is the pessimistic one, which is what the layout
+# assumed before it could ask at all.
+EDIT_CHROME_ROWS_ASSUMED = 2
+# Rows of actual text a compact editor should be able to show. The box is
+# this plus whatever chrome the editor turns out to cost.
+EDIT_COMPACT_TEXT_ROWS = 3
+# How long after the editor attaches before its chrome is measured again. The
+# warm server is headless and a statusline plugin may only appear once a UI
+# does, so the first answer sizes the window and this one corrects it.
+EDIT_REFIT_DELAY_MS = 350
 # Editors the compact settings above are valid for; anything else is launched
 # untouched rather than handed flags it will not understand.
 EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}

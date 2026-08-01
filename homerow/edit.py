@@ -184,7 +184,9 @@ def warm_socket_path():
     return os.path.join(runtime, config.EDIT_WARM_SOCKET)
 
 
-_warm = {"proc": None}
+# "chrome" caches how many rows this editor keeps for itself; it is a
+# property of the user's config, so it is measured once per server.
+_warm = {"proc": None, "chrome": None}
 
 
 def warm_alive():
@@ -214,7 +216,8 @@ def start_warm(editor=None, log=None):
     import subprocess
     try:
         _warm["proc"] = subprocess.Popen(
-            editor.split() + ["--headless", "--listen", socket_path],
+            editor.split() + config.EDIT_ANNOUNCE
+            + ["--headless", "--listen", socket_path],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
@@ -225,10 +228,80 @@ def start_warm(editor=None, log=None):
     return True
 
 
+def chrome_rows(editor=None, log=None):
+    """How many rows this editor spends on things that are not the text.
+
+    A statusline row plus the command line. It is asked rather than assumed
+    because the answer depends on the user's plugins: LazyVim sets
+    laststatus=3 and lualine then owns that row for good, so a one-line field
+    got a three-row editor of which one row was text. Somebody who has told
+    their statusline to stand down (see EDIT_ANNOUNCE and the README) gets a
+    box the size of the field instead, and that is worth measuring for rather
+    than hardcoding either answer.
+
+    Falls back to the pessimistic count, which is what the layout assumed
+    before this existed.
+    """
+    log = log or (lambda _m: None)
+    if _warm["chrome"] is not None:
+        return _warm["chrome"]
+    if not warm_alive():
+        return config.EDIT_CHROME_ROWS_ASSUMED
+    editor = resolve_editor(editor)
+    import subprocess
+    try:
+        # Ask for the compact settings first, then measure what is left. The
+        # question is not "what does this editor look like now" -- it is "what
+        # does it still cost after being told to give the rows back", which is
+        # a different number whenever a plugin owns the statusline.
+        result = subprocess.run(
+            editor.split() + [
+                "--server", warm_socket_path(), "--remote-expr",
+                f'execute("silent! {config.EDIT_COMPACT_SET}")'
+                '. ((&laststatus > 0 ? 1 : 0) + &cmdheight)'],
+            capture_output=True, timeout=5, check=False,
+        )
+        if result.returncode == 0:
+            measured = max(0, int(result.stdout.decode().strip()[-1:]))
+            _warm["chrome"] = measured
+            log(f"editor keeps {measured} row(s) of chrome when asked for none")
+            return measured
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        log(f"could not measure the editor's chrome: {error!r}")
+    return config.EDIT_CHROME_ROWS_ASSUMED
+
+
+def focused(fields):
+    """The field that already has keyboard focus, if exactly one does.
+
+    Half of all edit sessions here had two fields on screen, so the picker
+    was asking which of two things you meant when one of them was the box you
+    were already typing in. If the application says which that is, there is
+    nothing to ask. Exactly one, or none: two focused fields is a claim no
+    toolkit should make, and guessing between them is worse than hinting.
+    """
+    hit = None
+    for field in fields:
+        try:
+            if not field.accessible.get_state_set().contains(
+                    Atspi.StateType.FOCUSED):
+                continue
+        except Exception:
+            continue
+        if hit is not None:
+            return None
+        hit = field
+    return hit
+
+
 def stop_warm():
     """Kill the warm server, if any. Its buffer state is not reusable."""
     proc = _warm["proc"]
     _warm["proc"] = None
+    # Measured against the config the *next* server loads, which is the same
+    # config -- but the user may have just edited it, and a stale row count
+    # sizes every editor after that wrongly.
+    _warm["chrome"] = None
     if proc is None:
         return
     try:
@@ -247,7 +320,7 @@ def _vim_list(items):
         "'" + item.replace("'", "''") + "'" for item in items) + "]"
 
 
-def warm_open(path, compact, editor=None, log=None):
+def warm_open(path, compact, editor=None, log=None, cursor=None):
     """Load `path` into the warm server, set up as a cold nvim would be.
 
     One remote-expr rather than several: each is a process spawn, and the
@@ -258,6 +331,8 @@ def warm_open(path, compact, editor=None, log=None):
     commands = [f"edit {path}"] + list(config.EDIT_KEYMAPS)
     if compact:
         commands.append(f"silent! {config.EDIT_COMPACT_SET}")
+    if cursor:
+        commands.append("call cursor({}, {})".format(*cursor))
     import subprocess
     try:
         result = subprocess.run(
@@ -350,6 +425,22 @@ def read(accessible):
     return _text(iface, 0, count)
 
 
+def cursor_at(text, offset):
+    """(line, column) for a character offset, both 1-based as vim counts them.
+
+    Caret mode knows where the cursor is as an offset into the field's text;
+    an editor wants a line and a column. Handing over the position is most of
+    what makes opening the field from caret mode better than opening it from
+    scratch -- otherwise you land at the top of a paragraph you had already
+    navigated into.
+    """
+    offset = max(0, min(offset, len(text)))
+    before = text[:offset]
+    line = before.count("\n") + 1
+    column = offset - (before.rfind("\n") + 1) + 1
+    return line, column
+
+
 def strip_added_newline(original, edited):
     """Undo the trailing newline an editor adds to a file that lacked one.
 
@@ -387,7 +478,7 @@ def compact_rows(field_h, char_h, threshold):
     return field_h < threshold * char_h
 
 
-def editor_argv(path, editor=None, compact=False):
+def editor_argv(path, editor=None, compact=False, cursor=None):
     """The editor command for `path`.
 
     $VISUAL then $EDITOR then nvim, matching what every other tool that shells
@@ -397,6 +488,7 @@ def editor_argv(path, editor=None, compact=False):
     editor = resolve_editor(editor)
     argv = editor.split()
     if argv and os.path.basename(argv[0]) in config.EDIT_VIM_LIKE:
+        argv += config.EDIT_ANNOUNCE
         # -c, not --cmd: these have to run *after* the user's config, or
         # their own statusline plugin simply turns the settings back on, and
         # the mapping would be attached before there is a buffer to attach
@@ -405,6 +497,8 @@ def editor_argv(path, editor=None, compact=False):
             argv += ["-c", mapping]
         if compact:
             argv += ["-c", config.EDIT_COMPACT_SETTINGS]
+        if cursor:
+            argv += ["-c", "call cursor({}, {})".format(*cursor)]
     return argv + [path]
 
 
@@ -572,8 +666,12 @@ class EditSession:
     holds_unsaved_work = True
 
     def __init__(self, field, original, on_done=None, on_write=None,
-                 log=None):
+                 log=None, cursor=None):
         self.field = field
+        # Where to put the editor's cursor, as (line, column). Caret mode
+        # hands this over so that opening the field lands you where you
+        # already were rather than back at the top.
+        self.cursor = cursor
         self.original = original
         self.on_done = on_done or (lambda: None)
         self.on_write = on_write or (lambda _text: None)
@@ -663,8 +761,18 @@ class EditSession:
 
         self.compact = compact_rows(
             self.field.h, char_h, config.EDIT_COMPACT_ROWS)
-        rows = (config.EDIT_COMPACT_MIN_ROWS if self.compact
-                else config.EDIT_MIN_ROWS)
+        # Ask the editor how many rows it spends on chrome rather than
+        # assuming the worst. A config that stands its statusline down for us
+        # (see config.EDIT_ANNOUNCE) leaves only the command line, or nothing
+        # at all with cmdheight=0 -- and then a one-line field really can get
+        # a one-line editor instead of a box that is mostly not your text.
+        rows = config.EDIT_MIN_ROWS
+        if self.compact:
+            chrome = chrome_rows(log=self._log)
+            rows = max(1 + chrome,
+                       min(config.EDIT_COMPACT_MIN_ROWS,
+                           config.EDIT_COMPACT_TEXT_ROWS + chrome))
+            self._log(f"editor chrome costs {chrome} row(s); using {rows}")
         border = 2 * config.EDIT_BORDER
         min_w = config.EDIT_MIN_COLS * char_w + border
         min_h = rows * char_h + border
@@ -700,12 +808,14 @@ class EditSession:
         """
         editor = resolve_editor()
         if warm_alive() and is_vim_like(editor):
-            if warm_open(self.path, self.compact, editor, self._log):
+            if warm_open(self.path, self.compact, editor, self._log,
+                         cursor=self.cursor):
                 self.warm = True
                 return editor.split() + [
                     "--server", warm_socket_path(), "--remote-ui"]
             self._log("falling back to a cold editor")
-        return editor_argv(self.path, compact=self.compact)
+        return editor_argv(self.path, compact=self.compact,
+                           cursor=self.cursor)
 
     def show(self):
         self.window.show_all()
@@ -742,6 +852,29 @@ class EditSession:
         if error is not None or pid == -1:
             self._log(f"editor failed to start: {error!r}")
             self._close()
+            return
+        # Check the chrome count again now that a UI is attached. The warm
+        # server is headless, and a statusline plugin that does not load
+        # without a UI -- or reloads itself once there is one -- answers
+        # differently before and after. Measured here originally: lualine
+        # re-asserts laststatus=3 however late the setting is applied. So the
+        # first answer sizes the window and this one corrects it, rather than
+        # either being trusted alone.
+        if self.compact:
+            GLib.timeout_add(config.EDIT_REFIT_DELAY_MS, self._refit)
+
+    def _refit(self):
+        """Re-measure the editor's chrome and resize if the first answer was wrong."""
+        if self.closed:
+            return False
+        before = _warm["chrome"]
+        _warm["chrome"] = None
+        after = chrome_rows(log=self._log)
+        if after == before:
+            return False
+        self._log(f"chrome was {before} row(s), is {after}; resizing")
+        self._fit()
+        return False
 
     def _watch_for_saves(self):
         """Push the field on every `:w`, where that can be done quietly.

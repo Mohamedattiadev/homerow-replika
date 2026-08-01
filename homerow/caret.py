@@ -267,7 +267,8 @@ def _pointer_position():
 class CaretSession:
     """A vim-style caret over one text element."""
 
-    def __init__(self, element, on_done=None, blocks=None, on_search=None):
+    def __init__(self, element, on_done=None, blocks=None,
+                 on_search=None, on_edit=None):
         self.element = element
         self.on_done = on_done or (lambda: None)
         # / reopens caret search from inside caret mode, so landing on one
@@ -275,6 +276,8 @@ class CaretSession:
         # mode entirely and pressing the hotkey again from scratch -- see
         # _on_key's Gdk.KEY_slash handling.
         self.on_search = on_search or (lambda: None)
+        # i hands this block to edit mode, cursor and all. See _on_key.
+        self.on_edit = on_edit or (lambda _block, _offset: None)
         self.iface = element.accessible.get_text_iface()
         self.length = self.iface.get_character_count() if self.iface else 0
         self.text = _text_of(self.iface, 0, self.length)
@@ -464,6 +467,16 @@ class CaretSession:
             # one word and then wanting a different one shouldn't mean
             # backing all the way out and pressing the hotkey again.
             self._close(reopen_search=True)
+            return True
+        if key == Gdk.KEY_i:
+            # i is what vim presses to start typing, and this is the honest
+            # version of that: the caret cannot insert text of its own, but
+            # the field it is sitting in can be opened in the editor -- at
+            # this exact offset, so a paragraph navigated into stays
+            # navigated into. Only where the text is actually editable;
+            # opening page prose in an editor that could never write it back
+            # is a dead end dressed up as a feature.
+            self._close(open_editor=True)
             return True
         # Digits jump straight to a block. Tab was the only way to reach one,
         # which on a page with dozens of blocks meant pressing it dozens of
@@ -779,7 +792,7 @@ class CaretSession:
         self.linewise = False
         self.window.queue_draw()
 
-    def _close(self, reopen_search=False):
+    def _close(self, reopen_search=False, open_editor=False):
         if getattr(self, "_idle", None) is not None:
             GLib.source_remove(self._idle)
             self._idle = None
@@ -801,6 +814,8 @@ class CaretSession:
         # reference the instant the new session sets it.
         if reopen_search:
             self.on_search()
+        if open_editor:
+            self.on_edit(self.element, self.offset)
         self.on_done()
 
     # -- drawing --------------------------------------------------------
@@ -885,7 +900,8 @@ class CaretSession:
             # Already selecting; the key that starts a selection is the one
             # thing on this row that cannot do anything from here.
             pairs.append(("vV", "select"))
-        pairs += [("y", "yank"), ("xd", "cut"), ("p", "put"), ("/", "find")]
+        pairs += [("y", "yank"), ("xd", "cut"), ("p", "put"), ("/", "find"),
+                  ("i", "nvim")]
         if len(self.blocks) > 1:
             pairs.append(("1-9", "block"))
         pairs.append(("esc", "leave"))

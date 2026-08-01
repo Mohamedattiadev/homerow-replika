@@ -104,6 +104,7 @@ A real text cursor driven by vim motions, over AT-SPI's Text interface.
 | `p` | put the clipboard at the cursor |
 | `1`–`9` / `Tab` | jump between text blocks |
 | `/` | reopen caret search (see below) without leaving caret mode |
+| `i` | open this field in nvim, cursor where the caret is (see Edit) |
 | `Esc` | leave |
 
 Yanking stays in caret mode afterward, same as vim — it doesn't exit, so `yy`
@@ -121,6 +122,15 @@ kindaVim calls its Keyboard Strategy, reached from the same dead end.
 The overlay holds an exclusive keyboard grab, so it drops the grab for the
 length of those keystrokes and takes it again afterwards; otherwise the keys
 meant for the application would be delivered straight back to us.
+
+`i` is the bridge between the two modes that know the most about where you
+are. The caret cannot insert text of its own — it is a cursor over a Text
+interface, not an input method — so `i` does the honest version: it opens the
+field the caret is in as an editor, at that exact offset. Land on a word with
+caret search, press `i`, and nvim opens with the cursor already on it. Only
+where the text is actually editable; opening page prose in an editor that
+could never write it back is a dead end dressed up as a feature, so it says so
+instead.
 
 In apps with their own vim caret mode — qutebrowser, Firefox — it enters
 *theirs* instead, and says so.
@@ -154,11 +164,27 @@ and nothing is written.
 
 The window is measured in character cells off the running terminal, so it
 comes out the width of the field and as few rows as the editor can work in.
-A one-line field gets a three-row editor with no line numbers and no sign
-column — one row of text, one statusline, one command line. Three is the
-floor rather than one because a statusline plugin will not give its row up
-(measured: lualine re-asserts `laststatus=3` however late the setting is
-applied) and nvim keeps a row for the command line.
+A one-line field gets as few rows as the editor will actually work in. How
+few is **measured, not assumed**: the editor is asked to give its chrome back
+and then asked what it kept, because the answer depends on your plugins.
+LazyVim sets `laststatus=3` and lualine then owns that row for good, so the
+box ends up with more chrome in it than text. Tell your statusline to stand
+down and it does not:
+
+```lua
+-- lua/plugins/lualine.lua, the same condition firenvim already uses
+return {
+  "nvim-lualine/lualine.nvim",
+  enabled = function()
+    return not vim.g.started_by_firenvim and not vim.g.started_by_homerow
+  end,
+}
+```
+
+`g:started_by_homerow` is set before your config runs, on both the warm server
+and a cold start. Nothing breaks without it — the box is just taller. The
+count is checked once more after the editor attaches, because the warm server
+is headless and a statusline plugin may only appear once a UI does.
 
 | Key | Action |
 |---|---|
@@ -197,7 +223,12 @@ the next `:edit` would fail on. If anything about that path fails, the mode
 falls back to starting nvim from cold.
 
 With exactly one editable field on screen there is nothing to pick, so it
-opens straight away. While an editor is open no other homerow mode will
+opens straight away — and neither does a field you are already typing in. If
+the application says which field has focus, that is the one, and the picker is
+a question with a known answer. Measured over this desktop's log, half of all
+edit sessions had exactly two fields on screen, so the hint step was asking
+which of two things you meant when one of them was the box the cursor was
+already in. While an editor is open no other homerow mode will
 open — an overlay may be replaced freely, an editor holding unsaved text
 may not.
 

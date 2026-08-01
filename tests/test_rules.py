@@ -526,6 +526,109 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
                 self.assertNotIn("DWELL_TIMEOUT_S", source)
 
 
+class EditModeAsksLess(unittest.TestCase):
+    """A field you are already typing in does not need to be picked.
+
+    Measured over this desktop's log: half of all edit sessions had exactly
+    two fields on screen, so the picker was asking which of two things you
+    meant when one of them was the box the cursor was already in.
+    """
+
+    def field(self, focused):
+        import unittest.mock
+
+        from gi.repository import Atspi
+        element = unittest.mock.Mock()
+        states = element.accessible.get_state_set.return_value
+        states.contains.side_effect = (
+            lambda state: focused and state == Atspi.StateType.FOCUSED)
+        return element
+
+    def test_the_focused_field_is_the_answer(self):
+        from homerow import edit
+        wanted = self.field(True)
+        self.assertIs(edit.focused([self.field(False), wanted]), wanted)
+
+    def test_nothing_focused_means_pick_one(self):
+        from homerow import edit
+        self.assertIsNone(edit.focused([self.field(False), self.field(False)]))
+
+    def test_two_focused_fields_is_not_an_answer(self):
+        from homerow import edit
+        # No toolkit should claim it, and guessing between them is worse than
+        # hinting: hinting is at least honest about not knowing.
+        self.assertIsNone(edit.focused([self.field(True), self.field(True)]))
+
+    def test_a_field_that_will_not_answer_is_skipped_not_trusted(self):
+        import unittest.mock
+
+        from homerow import edit
+        broken = unittest.mock.Mock()
+        broken.accessible.get_state_set.side_effect = RuntimeError("gone")
+        wanted = self.field(True)
+        self.assertIs(edit.focused([broken, wanted]), wanted)
+
+
+class CaretOpensTheEditor(unittest.TestCase):
+    """i in caret mode hands the block to edit mode, cursor and all."""
+
+    def session(self):
+        import unittest.mock
+
+        from homerow import caret
+        instance = object.__new__(caret.CaretSession)
+        instance.element = "the block"
+        instance.offset = 42
+        instance.opened = []
+        instance.on_edit = lambda block, offset: instance.opened.append(
+            (block, offset))
+        instance.on_search = lambda: None
+        instance.on_done = lambda: None
+        instance._idle = None
+        instance._grabbed = False
+        instance.window = unittest.mock.Mock()
+        return instance
+
+    def test_closing_to_edit_hands_over_the_block_and_the_offset(self):
+        import unittest.mock
+
+        from homerow import caret
+        instance = self.session()
+        with unittest.mock.patch.object(caret.Gtk, "events_pending",
+                                        return_value=False), \
+             unittest.mock.patch.object(caret.Gdk, "Display"):
+            instance._close(open_editor=True)
+        self.assertEqual(instance.opened, [("the block", 42)])
+
+    def test_an_ordinary_close_opens_nothing(self):
+        import unittest.mock
+
+        from homerow import caret
+        instance = self.session()
+        with unittest.mock.patch.object(caret.Gtk, "events_pending",
+                                        return_value=False), \
+             unittest.mock.patch.object(caret.Gdk, "Display"):
+            instance._close()
+        self.assertEqual(instance.opened, [])
+
+    def test_text_that_cannot_be_written_back_is_refused(self):
+        import unittest.mock
+
+        from homerow import service
+        # Opening page prose in an editor that could never return it is a
+        # dead end dressed up as a feature.
+        instance = object.__new__(service.Daemon)
+        instance.debug = False
+        instance.log = None
+        block = unittest.mock.Mock()
+        block.accessible.get_state_set.return_value.contains.return_value = False
+        with unittest.mock.patch.object(service, "_notify") as told, \
+             unittest.mock.patch.object(service.Daemon, "_open_editor") as opened:
+            instance._edit_block(block, 5)
+        opened.assert_not_called()
+        told.assert_called_once()
+
+
 class InkIsReadable(unittest.TestCase):
     """Every ink has to be readable on the chip it is actually drawn on.
 

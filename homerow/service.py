@@ -426,7 +426,8 @@ class Daemon:
             def go():
                 self.overlay = caret.CaretSession(
                     block, self._finished, blocks=blocks,
-                    on_search=lambda: GLib.idle_add(self._caret_search))
+                    on_search=lambda: GLib.idle_add(self._caret_search),
+                    on_edit=self._edit_block)
                 self._set_mode("caret")
                 self.overlay.show()
                 return False
@@ -479,7 +480,8 @@ class Daemon:
             def go():
                 session = caret.CaretSession(
                     hit.block, self._finished, blocks=blocks,
-                    on_search=lambda: GLib.idle_add(self._caret_search))
+                    on_search=lambda: GLib.idle_add(self._caret_search),
+                    on_edit=self._edit_block)
                 session.offset = hit.offset
                 session._sync_caret()
                 self.overlay = session
@@ -537,6 +539,16 @@ class Daemon:
             self._open_editor(fields[0], window_id)
             return False
 
+        # Neither does a field you are already typing in. Measured over this
+        # log, half of all edit sessions had exactly two fields on screen, so
+        # the picker was asking which of two things you meant when one of them
+        # was the box the cursor was already sitting in.
+        already = edit.focused(fields)
+        if already is not None:
+            self._log("a field already has focus; skipping the picker")
+            self._open_editor(already, window_id)
+            return False
+
         def on_choose(field, _button, _modifiers):
             self._open_editor(field, window_id)
 
@@ -548,7 +560,35 @@ class Daemon:
         self.overlay.show()
         return False
 
-    def _open_editor(self, field, window_id):
+    def _edit_block(self, block, offset):
+        """Open the block the caret is in, at the caret's own position.
+
+        The bridge between the two modes that already know the most about
+        where you are: caret mode can put a cursor anywhere in any text on
+        screen, and edit mode can turn a field into nvim. Landing in the
+        editor at the top of a paragraph you had just navigated into would
+        throw away the half of that the caret was for.
+
+        Only for text that can be written back. Opening page prose in an
+        editor that could never return it is a dead end dressed up as a
+        feature, so this says so instead.
+        """
+        try:
+            editable = block.accessible.get_state_set().contains(
+                Atspi.StateType.EDITABLE)
+        except Exception:
+            editable = False
+        if not editable:
+            self._log("caret block is not editable; not opening an editor")
+            _notify("This text can't be edited — nothing could write it back.")
+            return
+        if not edit.available():
+            _notify("Edit mode needs the VTE terminal widget "
+                    "(gir1.2-vte-2.91).")
+            return
+        self._open_editor(block, _active_window_id(), offset=offset)
+
+    def _open_editor(self, field, window_id, offset=None):
         """Open one field's contents in the editor, and write back on exit."""
         try:
             original = edit.read(field.accessible)
@@ -564,10 +604,13 @@ class Daemon:
             used = edit.write(field, edited, window_id, log=self._log)
             self._log(f"wrote {len(edited)} chars back via {used}")
 
+        cursor = (edit.cursor_at(original, offset) if offset is not None
+                  else None)
+
         def go():
             session = edit.EditSession(
                 field, original, on_done=self._finished, on_write=on_write,
-                log=self._log)
+                log=self._log, cursor=cursor)
             self.overlay = session
             self._set_mode("edit")
             session.show()

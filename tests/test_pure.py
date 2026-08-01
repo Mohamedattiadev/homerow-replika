@@ -508,6 +508,41 @@ class ScrollAimCheck(unittest.TestCase):
         self.assertEqual(len(sent), 1)
 
 
+class CaretToEditorPosition(unittest.TestCase):
+    """edit.cursor_at turns a caret offset into the (line, column) vim wants.
+
+    Handing the position over is most of what makes opening a field from
+    caret mode better than opening it from scratch: otherwise you land at the
+    top of a paragraph you had just navigated into.
+    """
+
+    def at(self, text, offset):
+        from homerow import edit
+        return edit.cursor_at(text, offset)
+
+    def test_the_start_is_line_one_column_one(self):
+        # Both 1-based, as vim counts them -- not 0-based like the offset.
+        self.assertEqual(self.at("hello", 0), (1, 1))
+
+    def test_a_position_on_the_first_line(self):
+        self.assertEqual(self.at("hello", 3), (1, 4))
+
+    def test_a_position_after_a_newline_starts_the_next_line(self):
+        self.assertEqual(self.at("ab\ncd\nef", 3), (2, 1))
+        self.assertEqual(self.at("ab\ncd\nef", 6), (3, 1))
+
+    def test_a_position_partway_into_a_later_line(self):
+        self.assertEqual(self.at("ab\ncd", 4), (2, 2))
+
+    def test_an_offset_past_the_end_is_clamped(self):
+        # The field can change between the caret reading it and the editor
+        # opening; a cursor call with a nonsense line makes nvim complain.
+        self.assertEqual(self.at("abc", 99), (1, 4))
+
+    def test_a_negative_offset_is_clamped(self):
+        self.assertEqual(self.at("abc", -5), (1, 1))
+
+
 class LegendOnOneMonitor(unittest.TestCase):
     """The legend centres on the monitor in use, not on the span of all of them.
 
