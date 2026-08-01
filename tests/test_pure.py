@@ -8,8 +8,10 @@ shipped a regression that a screenshot had to catch.
 Run with:  python3 -m unittest discover -s tests -v
 """
 
+import contextlib
 import os
 import sys
+import types
 import unittest
 import unittest.mock
 
@@ -18,12 +20,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from homerow import config, hints, search  # noqa: E402
 
 
-class Fake:
-    """Stands in for elements.Element without touching AT-SPI."""
+_DETECTED = object()
 
-    def __init__(self, name="", role="link", x=0, y=0, w=10, h=10):
+
+class Fake:
+    """Stands in for elements.Element without touching AT-SPI.
+
+    `accessible` stands for something detection actually reported, since
+    scroll mode treats a region without one as the whole-window fallback --
+    pass accessible=None to be that.
+    """
+
+    def __init__(self, name="", role="link", x=0, y=0, w=10, h=10,
+                 accessible=_DETECTED):
         self.name, self.role = name, role
         self.x, self.y, self.w, self.h = x, y, w, h
+        self.accessible = accessible
 
     @property
     def center(self):
@@ -357,6 +369,42 @@ class ScrollBest(unittest.TestCase):
                 scroll, "window_region", return_value=window):
             self.assertIs(scroll.best([content]), window)
 
+    def test_a_box_that_only_clips_its_content_does_not_win_on_size(self):
+        from homerow import scroll
+        # Measured in Chromium: a div with overflow:hidden publishes the same
+        # content-taller-than-its-box reading as the pane around it, and being
+        # the smaller thing under the cursor used to be enough to be chosen.
+        # The toolkit does say which of the two it will let the keyboard
+        # scroll, and that outranks area.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.focusable = True
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.focusable = False
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
+
+    def test_a_region_already_proved_inert_is_never_chosen(self):
+        from homerow import scroll
+        # The entry check scrolled it and nothing moved. Nothing about the
+        # geometry has changed, so neither has the answer.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.scrolls_proven = False
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
+
+    def test_a_proved_scroller_beats_a_merely_plausible_one(self):
+        from homerow import scroll
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.scrolls_proven = True
+        card = Fake(x=400, y=100, w=520, h=340)
+        card.focusable = True
+        with unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=(600, 300)):
+            self.assertIs(scroll.best([pane, card]), pane)
+
     def test_no_pointer_falls_back_to_largest(self):
         from homerow import scroll
         content = Fake(x=200, y=0, w=800, h=600)
@@ -367,7 +415,7 @@ class ScrollBest(unittest.TestCase):
 
 
 class ScrollAimCheck(unittest.TestCase):
-    """ScrollSession._check_aim() settles where the wheel goes by testing it.
+    """The wheel's aim is settled by watching the user's own scroll land.
 
     Recorded live in qutebrowser (Qt WebEngine): AT-SPI publishes a devdocs.io
     page as one document and nothing else, so with the cursor resting on the
@@ -375,6 +423,13 @@ class ScrollAimCheck(unittest.TestCase):
     scrolled the sidebar -- the content pane did not move in a single frame.
     Geometry cannot see a scroller that was never published, so the aim has to
     be tested against the region itself.
+
+    That test used to run on entry, as a synthetic scroll-and-undo at each
+    candidate point: measured live on Wikipedia in Chromium, 12 wheel events
+    over 1.14s of the page jumping before a key could be pressed. So the same
+    measurement now rides on the scroll the user actually asked for, and these
+    tests drive it through _apply() -- the aim is a consequence of scrolling,
+    not a phase before it.
     """
 
     def session(self, region, regions=None):
@@ -382,23 +437,51 @@ class ScrollAimCheck(unittest.TestCase):
         instance = object.__new__(scroll.ScrollSession)
         instance.region = region
         instance.regions = list(regions) if regions else [region]
+        instance.count = ""
+        instance.window = unittest.mock.Mock()
         return instance
+
+    @contextlib.contextmanager
+    def world(self, scrolls_when, watchers=("watcher",), pointer=(150, 400)):
+        """A page that moves only when the wheel lands where `scrolls_when` says.
+
+        `_position` reads the offset the fake wheel maintains, so the aim logic
+        runs against real movement readings rather than a patched verdict.
+        """
+        from homerow import scroll
+        offset = {"y": 0}
+        sent = []
+
+        def wheel(x, y, button, clicks):
+            sent.append((x, y, button, clicks))
+            if scrolls_when(x, y):
+                # A click of the wheel is worth tens of pixels, well past the
+                # couple of pixels of slop _moved allows for.
+                offset["y"] += clicks * 50 * (
+                    1 if button == scroll.WHEEL_DOWN else -1)
+
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=list(watchers)), \
+             unittest.mock.patch.object(
+                scroll, "_position", lambda _w: offset["y"]), \
+             unittest.mock.patch.object(scroll, "_wheel_paced", wheel), \
+             unittest.mock.patch.object(scroll.time, "sleep"), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=pointer):
+            yield sent
 
     def test_pointer_aim_is_kept_when_it_scrolls_the_region(self):
         from homerow import scroll
         document = Fake(x=0, y=15, w=1366, h=736)
         instance = self.session(document)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=True) as scrolls, \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
             self.assertEqual(document.aim, "pointer")
             self.assertEqual(instance._wheel_target(), (150, 400))
-        # Tried the cheap, no-cursor-movement aim first.
-        self.assertEqual(scrolls.call_args_list[0].args[1:], (150, 400))
+        # One wheel event, at the cursor: a correct aim costs no extra motion
+        # and never moves the cursor.
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][:2], (150, 400))
 
     def test_aim_moves_off_the_pointer_when_the_region_does_not_move(self):
         from homerow import scroll
@@ -407,23 +490,18 @@ class ScrollAimCheck(unittest.TestCase):
         # region itself never moves and the aim must shift to its middle.
         document = Fake(x=0, y=15, w=1366, h=736)
         instance = self.session(document)
-
-        def only_away_from_the_sidebar(_region, x, _y, both_ways=False):
-            return x > 340
-
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", only_away_from_the_sidebar), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: x > 340) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
             self.assertEqual(document.aim, "center_x")
             x, y = instance._wheel_target()
         self.assertEqual(x, document.center[0])
         # The cursor keeps its height: leaving the sidebar is a sideways move,
         # so there is no reason to also drag it up or down the page.
         self.assertEqual(y, 400)
+        # The retry is the scroll the user asked for, re-sent where it works --
+        # and nothing is scrolled back, so there is no visible bounce.
+        self.assertEqual([event[2:] for event in sent],
+                         [(scroll.WHEEL_DOWN, scroll.config.SCROLL_LINE_CLICKS)] * 2)
 
     def test_unverifiable_region_aims_down_the_middle(self):
         from homerow import scroll
@@ -431,41 +509,724 @@ class ScrollAimCheck(unittest.TestCase):
         # watch and no way to test the aim.
         window = Fake(x=0, y=0, w=1366, h=768)
         instance = self.session(window)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=[]), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: True, watchers=()) as sent:
+            instance._settle_aim()
             self.assertEqual(window.aim, "center_x")
             self.assertEqual(instance._wheel_target(), (window.center[0], 400))
+            instance._apply(scroll.WHEEL_DOWN, "line")
+        # Settled without a probe, so scrolling sends exactly one wheel event.
+        self.assertEqual(len(sent), 1)
 
-    def test_an_unscrollable_region_leaves_the_cursor_alone(self):
+    def test_a_wall_does_not_settle_the_aim(self):
         from homerow import scroll
+        # Nothing moves anywhere: either the region does not scroll, or it is
+        # simply already at the end being scrolled towards. Those are
+        # indistinguishable, so no verdict is recorded -- pressing j at the
+        # bottom of a page must not teach the session a wrong aim -- and the
+        # cursor is left where it was.
         region = Fake(x=0, y=0, w=800, h=600)
         instance = self.session(region)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=False), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
-            self.assertEqual(region.aim, "pointer")
+        with self.world(lambda x, y: False):
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            self.assertFalse(getattr(region, "aim_fixed", False))
             self.assertEqual(instance._wheel_target(), (150, 400))
 
-    def test_the_check_runs_once_per_region(self):
+    def test_a_settled_aim_is_not_reprobed_per_keystroke(self):
         from homerow import scroll
         region = Fake(x=0, y=0, w=800, h=600)
         instance = self.session(region)
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            self.assertTrue(region.aim_fixed)
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            instance._apply(scroll.WHEEL_DOWN, "line")
+        # Three keystrokes, three wheel events: the check is not repaid.
+        self.assertEqual(len(sent), 3)
+
+    def test_a_sideways_scroll_never_settles_the_aim(self):
+        from homerow import scroll
+        # _position watches one axis, so a horizontal scroll reads as no
+        # movement -- and would condemn an aim that is perfectly good.
+        region = Fake(x=0, y=0, w=800, h=600)
+        instance = self.session(region)
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_RIGHT, "line")
+        self.assertFalse(getattr(region, "aim_fixed", False))
+        self.assertEqual(len(sent), 1)
+
+
+class ChipSitsOnItsElement(unittest.TestCase):
+    """A hint chip goes on the thing it labels, not in the gap beside it.
+
+    Beside was tried first for years, and it is what makes a label
+    ambiguous: a chip in the gap between two controls belongs to whichever
+    one you assume, and on a toolbar or a row of links the assumption is
+    wrong about half the time. Homerow and Vimium both put it on the target
+    and accept covering a few pixels.
+    """
+
+    def place(self, element, placed=(), others=None, screen=(1366, 768)):
+        from homerow import overlay
+        rects = others if others is not None else [
+            (element.x, element.y, element.w, element.h)]
+        return overlay.place_chip(element, 20, 14, screen[0], screen[1],
+                                  0, rects, list(placed))
+
+    def test_the_chip_lands_on_the_elements_own_corner(self):
+        element = Fake(x=400, y=300, w=200, h=40)
+        self.assertEqual(self.place(element), (400, 300))
+
+    def test_a_neighbour_does_not_push_it_off_its_element(self):
+        from homerow import overlay
+        # A link nested inside a list item overlaps it completely. Honouring
+        # that would push every chip back out into the ambiguous gap.
+        element = Fake(x=400, y=300, w=200, h=40)
+        others = [(400, 300, 200, 40), (395, 295, 220, 50)]
+        spot = overlay.place_chip(element, 20, 14, 1366, 768, 0, others, [])
+        self.assertEqual(spot, (400, 300))
+
+    def test_another_chip_does_move_it(self):
+        # Two chips on one spot means one of them is unreadable, which is
+        # worse than one of them sitting beside its element.
+        element = Fake(x=400, y=300, w=200, h=40)
+        spot = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertNotEqual(spot, (400, 300))
+
+    def test_but_it_moves_around_its_element_before_moving_off_it(self):
+        # Where the displaced chip goes matters as much as that it moves: the
+        # gap beside two controls close enough to collide is exactly where a
+        # chip reads as belonging to the wrong one. Measured over a real
+        # page, two chips in sixty-nine left their own element; both had room
+        # to stay on it.
+        element = Fake(x=400, y=300, w=200, h=40)
+        x, y = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertTrue(400 <= x <= 400 + 200 - 20, f"chip at x={x}")
+        self.assertTrue(300 <= y <= 300 + 40 - 14, f"chip at y={y}")
+
+    def test_an_element_too_small_to_hold_the_chip_still_gives_way(self):
+        # Sliding to the "far corner" of something narrower than the chip
+        # puts it straight back over the neighbour this is avoiding, so a
+        # small element is allowed to send its chip beside it.
+        element = Fake(x=400, y=300, w=12, h=10)
+        x, y = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertNotEqual((x, y), (400, 300))
+
+    def test_it_stays_on_screen(self):
+        element = Fake(x=-30, y=-20, w=100, h=40)
+        x, y = self.place(element)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+
+    def test_a_packed_corner_falls_back_onto_the_element(self):
+        # Every alternative taken: better an overlapping chip on the right
+        # element than a clean one on the wrong element.
+        element = Fake(x=400, y=300, w=200, h=40)
+        blocked = [(x, y, 400, 400) for x, y in
+                   ((0, 0), (300, 200), (500, 200), (300, 400), (600, 300))]
+        spot = self.place(element, placed=blocked)
+        self.assertEqual(spot, (400, 300))
+
+
+class EditorHeight(unittest.TestCase):
+    """The editor is as tall as the text, not as tall as the field.
+
+    Matching the field exactly gave a one-line box for a one-line field. It
+    looked right and edited badly: a line that wraps, or a field holding a
+    paragraph, left you typing through a slot with no sight of the lines
+    above or below. The window floats over the page, so it may be taller than
+    the thing it sits on -- it just should not be taller than it needs to be.
+    """
+
+    def rows(self, text, cols=76):
+        from homerow import edit
+        return edit.wrapped_rows(text, cols)
+
+    def test_an_empty_field_still_has_a_line_to_type_on(self):
+        self.assertEqual(self.rows(""), 1)
+
+    def test_a_short_line_is_one_row(self):
+        self.assertEqual(self.rows("Eadasda"), 1)
+
+    def test_a_line_that_wraps_counts_every_row_it_wraps_to(self):
+        self.assertEqual(self.rows("x" * 76), 1)
+        self.assertEqual(self.rows("x" * 77), 2)
+        self.assertEqual(self.rows("x" * 152), 2)
+        self.assertEqual(self.rows("x" * 153), 3)
+
+    def test_newlines_count_as_rows(self):
+        self.assertEqual(self.rows("a\nb\nc"), 3)
+
+    def test_a_blank_line_is_still_a_row(self):
+        self.assertEqual(self.rows("a\n\nb"), 3)
+
+    def test_wrapping_and_newlines_together(self):
+        self.assertEqual(self.rows("x" * 100 + "\nshort"), 3)
+
+    def test_a_nonsense_width_does_not_divide_by_zero(self):
+        # char_width can come back 0 from a terminal that is not realized yet.
+        self.assertEqual(self.rows("anything", cols=0), 1)
+
+
+class CaretToEditorPosition(unittest.TestCase):
+    """edit.cursor_at turns a caret offset into the (line, column) vim wants.
+
+    Handing the position over is most of what makes opening a field from
+    caret mode better than opening it from scratch: otherwise you land at the
+    top of a paragraph you had just navigated into.
+    """
+
+    def at(self, text, offset):
+        from homerow import edit
+        return edit.cursor_at(text, offset)
+
+    def test_the_start_is_line_one_column_one(self):
+        # Both 1-based, as vim counts them -- not 0-based like the offset.
+        self.assertEqual(self.at("hello", 0), (1, 1))
+
+    def test_a_position_on_the_first_line(self):
+        self.assertEqual(self.at("hello", 3), (1, 4))
+
+    def test_a_position_after_a_newline_starts_the_next_line(self):
+        self.assertEqual(self.at("ab\ncd\nef", 3), (2, 1))
+        self.assertEqual(self.at("ab\ncd\nef", 6), (3, 1))
+
+    def test_a_position_partway_into_a_later_line(self):
+        self.assertEqual(self.at("ab\ncd", 4), (2, 2))
+
+    def test_an_offset_past_the_end_is_clamped(self):
+        # The field can change between the caret reading it and the editor
+        # opening; a cursor call with a nonsense line makes nvim complain.
+        self.assertEqual(self.at("abc", 99), (1, 4))
+
+    def test_a_negative_offset_is_clamped(self):
+        self.assertEqual(self.at("abc", -5), (1, 1))
+
+
+class LegendOnOneMonitor(unittest.TestCase):
+    """The legend centres on the monitor in use, not on the span of all of them.
+
+    screen_size() spans every monitor, which is right for the overlay window
+    and wrong for anything centred: the middle of a two-monitor desktop is the
+    seam between the screens, so the pill would be drawn half on each.
+    """
+
+    def test_a_single_monitor_is_the_whole_screen(self):
+        from homerow import overlay
+        self.assertEqual(overlay.focused_monitor(1366, 768), (0, 0, 1366, 768))
+
+    def test_the_pill_lands_on_the_monitor_the_pointer_is_on(self):
+        import cairo
+
+        from homerow import overlay, theme
+        # Two 1366-wide screens side by side, pointer on the right-hand one.
+        right = (1366, 0, 1366, 768)
+        drawn = []
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8)
+        cr = cairo.Context(surface)
+        original = overlay._rounded_rect
+
+        def record(context, x, y, w, h, radius):
+            drawn.append((x, y, w, h))
+            return original(context, x, y, w, h, radius)
+
         with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]) as probe, \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=True), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
-            instance._check_aim()
+                overlay, "focused_monitor", return_value=right), \
+             unittest.mock.patch.object(overlay, "_rounded_rect", record):
+            overlay.draw_legend(cr, [overlay.badge("SCROLL")], 2732, 768,
+                                theme.palette())
+        pill_x, _, pill_w, _ = drawn[0]
+        centre = pill_x + pill_w / 2
+        self.assertGreater(centre, 1366)      # not on the left screen
+        self.assertAlmostEqual(centre, 1366 + 683, delta=2)   # centred on the right
+
+
+class LegendLayout(unittest.TestCase):
+    """The legend row is laid out from parts, and measured the way it draws.
+
+    It used to be one concatenated string per mode -- mode name, live state
+    and forty characters of static help in one weight and one colour. Caret
+    mode's reached 150 characters and most of a screen wide, and the part that
+    changed while you worked was the part you were least likely to notice.
+    """
+
+    def context(self):
+        import cairo
+        return cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 8, 8))
+
+    def parts(self, pairs=6):
+        from homerow import overlay
+        return [overlay.badge("CARET"), overlay.badge("d…  2/7"),
+                overlay.keys([(f"k{i}", f"meaning{i}") for i in range(pairs)])]
+
+    def test_a_row_that_fits_is_left_alone(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        kept = overlay._fit(cr, parts, 10_000)
+        self.assertEqual(kept, parts)
+
+    def test_a_row_too_wide_loses_pairs(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        full = overlay._lay_out(cr, parts)[0]
+        kept = overlay._fit(cr, parts, full / 2)
+        self.assertLessEqual(overlay._lay_out(cr, kept)[0], full / 2)
+        self.assertLess(len(kept[-1][1]), len(parts[-1][1]))
+
+    def test_the_way_out_is_never_dropped(self):
+        from homerow import overlay
+        cr = self.context()
+        parts = self.parts()
+        # esc is the last pair in every mode's list. A legend that has dropped
+        # the way out is worse than one that is a little too wide.
+        last = parts[-1][1][-1]
+        for budget in (400, 200, 80, 10):
+            with self.subTest(budget=budget):
+                kept = overlay._fit(cr, parts, budget)
+                self.assertEqual(kept[-1][1][-1], last)
+
+    def test_fitting_does_not_mutate_the_caller(self):
+        from homerow import overlay
+        # The modes rebuild their parts every draw, but a mode that hoisted
+        # the list to a constant would otherwise lose keys permanently the
+        # first time it was drawn on a narrow screen.
+        cr = self.context()
+        parts = self.parts()
+        overlay._fit(cr, parts, 50)
+        self.assertEqual(len(parts[-1][1]), 6)
+
+    def test_keys_are_placed_as_a_key_then_its_meaning(self):
+        from homerow import overlay
+        cr = self.context()
+        _, placed = overlay._lay_out(
+            cr, [overlay.badge("CARET"),
+                 overlay.keys([("y", "yank"), ("esc", "leave")])])
+        self.assertEqual([kind for kind, _, _, _ in placed],
+                         ["badge", "key", "meaning", "key", "meaning"])
+        # Left to right, in the order given, never overlapping.
+        offsets = [offset for _, _, offset, _ in placed]
+        self.assertEqual(offsets, sorted(offsets))
+        for (_, _, offset, span), (_, _, next_offset, _) in zip(placed,
+                                                                placed[1:]):
+            self.assertLessEqual(offset + span, next_offset)
+
+    def test_a_key_sits_closer_to_its_meaning_than_to_the_next_pair(self):
+        from homerow import overlay
+        # This is the whole grouping mechanism: the gaps say which meaning
+        # belongs to which key, so the row is scanned rather than read.
+        cr = self.context()
+        _, placed = overlay._lay_out(
+            cr, [overlay.keys([("y", "yank"), ("p", "put")])])
+        key, meaning, next_key = placed[0], placed[1], placed[2]
+        own = meaning[2] - (key[2] + key[3])
+        across = next_key[2] - (meaning[2] + meaning[3])
+        self.assertLess(own, across)
+
+    def test_a_bare_string_still_draws(self):
+        from homerow import overlay, theme
+        # Pickers pass a prompt with nothing to group. It has to keep working:
+        # this is the one caller that has no key/meaning structure at all.
+        cr = self.context()
+        overlay.draw_legend(cr, "pick a field", 1366, 768, theme.palette())
+
+
+class EscapeUndoesTypingBeforeItLeaves(unittest.TestCase):
+    """Escape backs out of the wrong turn, not out of the mode.
+
+    Reported: with hints up you press `h`, meaning to pick `kj`. Escape used
+    to close the whole overlay, so correcting one keystroke meant hinting
+    every target again. Caret mode already worked this way -- Escape drops
+    the selection anchor before it closes -- and now they all do.
+    """
+
+    def hint_session(self, typed="", filter_text=""):
+        from homerow import overlay
+        instance = object.__new__(overlay.Overlay)
+        instance.typed = typed
+        instance.filter = filter_text
+        instance.closed = []
+        instance._close = lambda: instance.closed.append(True)
+        instance._touch = lambda: None
+        instance.window = unittest.mock.Mock()
+        instance.all_elements = []
+        instance.elements = []
+        instance.labels = []
+        instance._apply_filter = lambda: None
+        return instance
+
+    def escape(self, instance):
+        from gi.repository import Gdk
+
+        from homerow import overlay
+        event = unittest.mock.Mock()
+        event.keyval = Gdk.KEY_Escape
+        event.state = 0
+        return overlay.Overlay._on_key(instance, None, event)
+
+    def test_a_half_typed_label_is_cleared_and_the_overlay_stays(self):
+        instance = self.hint_session(typed="h")
+        self.escape(instance)
+        self.assertEqual(instance.typed, "")
+        self.assertEqual(instance.closed, [])
+
+    def test_a_filter_is_cleared_next(self):
+        instance = self.hint_session(filter_text="save")
+        self.escape(instance)
+        self.assertEqual(instance.filter, "")
+        self.assertEqual(instance.closed, [])
+
+    def test_escape_on_a_clean_slate_still_closes(self):
+        instance = self.hint_session()
+        self.escape(instance)
+        self.assertEqual(instance.closed, [True])
+
+
+class ScrollDeferredRescue(unittest.TestCase):
+    """Candidates that can only be proved by scrolling them wait for Tab.
+
+    Rescuing a virtualised pane means scrolling it and putting it back, which
+    the user watches happen. Measured on a Wikipedia article in Chromium,
+    doing that for the whole shortlist on entry was ~1.25s of the page moving
+    before the outline appeared; probing only what best() actually needs cut
+    that to ~0.5s, and the rest happens on the keystroke that asks for it.
+    """
+
+    def session(self, region, regions, deferred, verified=True):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        instance.regions = list(regions)
+        instance.deferred = list(deferred)
+        # The scroll-and-watch pass is Tab's business now too; these tests are
+        # about the rescue half, so it starts already done.
+        instance._verified = verified
+        instance.index = 0
+        return instance
+
+    def test_entry_does_not_scroll_anything_to_check_it(self):
+        from homerow import config, scroll
+        # The pass that scrolls each candidate and watches what moves warps
+        # the pointer onto every one of them in turn. Doing it before the
+        # outline was drawn is what the cursor flying about on entry was --
+        # 316ms median and up to 2318ms over 151 real sessions.
+        self.assertFalse(config.SCROLL_VERIFY_ON_ENTRY)
+        del scroll
+
+    def test_tab_runs_the_check_that_entry_skipped(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        ghost = Fake(x=0, y=0, w=340, h=768)      # cannot actually scroll
+        instance = self.session(content, [content, ghost], [], verified=False)
+        with unittest.mock.patch.object(
+                scroll, "verify", return_value=[content]) as checked, \
+             unittest.mock.patch.object(scroll, "_scrolls",
+                                        return_value=False):
+            instance._rescue_deferred()
+        checked.assert_called_once()
+        self.assertEqual(instance.regions, [content])
+
+    def test_the_check_runs_once_however_often_tab_is_pressed(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        instance = self.session(content, [content], [], verified=False)
+        with unittest.mock.patch.object(
+                scroll, "verify", return_value=[content]) as checked:
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+        self.assertEqual(checked.call_count, 1)
+
+    def test_the_region_in_use_survives_a_check_that_rejects_it(self):
+        from homerow import scroll
+        # The user can see it and may already have scrolled it. Dropping the
+        # thing under their eyes to satisfy a probe is worse than an extra
+        # Tab stop.
+        content = Fake(x=340, y=0, w=1000, h=768)
+        other = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content, other], [], verified=False)
+        with unittest.mock.patch.object(scroll, "verify",
+                                        return_value=[other]):
+            instance._rescue_deferred()
+        self.assertIn(content, instance.regions)
+        self.assertIs(instance.region, content)
+
+    def test_tab_rescues_what_entry_left_alone(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content], [sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True):
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [content, sidebar])
+        self.assertTrue(sidebar.scroll_y)
+
+    def test_a_candidate_that_does_not_scroll_is_not_offered(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        banner = Fake(x=0, y=0, w=340, h=100)
+        instance = self.session(content, [content], [banner])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=False):
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [content])
+
+    def test_the_rescue_is_paid_for_once(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content], [sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+        # Tab is pressed repeatedly to cycle; the probing is not.
+        self.assertEqual(scrolls.call_count, 1)
+
+    def promoter(self, region, regions, deferred, pointer=(150, 400)):
+        from homerow import scroll
+        instance = self.session(region, regions, deferred)
+        instance.index = 0
+        instance._acted = False
+        instance.window = unittest.mock.Mock()
+        self._pointer = unittest.mock.patch.object(
+            scroll, "_pointer_position", return_value=pointer)
+        return instance
+
+    def test_the_outline_snaps_to_a_pane_only_scrolling_could_find(self):
+        from homerow import scroll
+        # The devdocs.io case: nothing published measurable overflow, so the
+        # session opened on the whole window while the pointer rested on a
+        # virtualised sidebar. The probe runs after the outline is up.
+        # The pointer is inside the window region too, but that one was never
+        # detected -- it is the fallback -- so being "on" it proves nothing.
+        # Counting it used to stop this from ever running on the very page it
+        # exists for, where detection reported nothing at all.
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [window], [sidebar], pointer=(150, 400))
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True):
+            instance._promote_deferred()
+        self.assertIs(instance.region, sidebar)
+        self.assertEqual(instance.index, 0)
+        self.assertIn(sidebar, instance.regions)
+
+    def test_a_user_who_already_pressed_something_wins(self):
+        from homerow import scroll
+        # Their scroll answers the same question, and two of us scrolling one
+        # page at once is worse than either.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [sidebar])
+        instance._acted = True
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        scrolls.assert_not_called()
+        self.assertIs(instance.region, window)
+
+    def test_nothing_is_probed_when_the_pointer_is_on_a_found_region(self):
+        from homerow import scroll
+        # Something detected is already under the cursor, so there is no
+        # question left to answer and no reason to scroll the page.
+        content = Fake(x=0, y=0, w=1000, h=768)
+        other = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(content, [content], [other])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        scrolls.assert_not_called()
+
+    def test_a_candidate_that_does_not_scroll_changes_nothing(self):
+        from homerow import scroll
+        window = Fake(x=0, y=0, w=1366, h=768)
+        banner = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [banner])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=False):
+            instance._promote_deferred()
+        self.assertIs(instance.region, window)
+        self.assertEqual(instance.regions, [])
+
+    def test_the_innermost_candidate_under_the_pointer_is_the_one_probed(self):
+        from homerow import scroll
+        # Every wrapper around the real scroller contains the pointer just as
+        # truly; spending the one probe on a wrapper is how devdocs.io's
+        # content pane went undiscovered.
+        window = Fake(x=0, y=0, w=1366, h=768)
+        wrapper = Fake(x=0, y=0, w=800, h=768)
+        pane = Fake(x=0, y=0, w=340, h=768)
+        instance = self.promoter(window, [], [wrapper, pane])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._promote_deferred()
+        self.assertIs(scrolls.call_args.args[0], pane)
+
+    def test_a_candidate_already_covered_is_not_probed(self):
+        from homerow import scroll
+        # collect()'s own rescue found this one at entry, because the pointer
+        # was on it. Probing the wrapper around it again would offer a second
+        # Tab stop that scrolls the same thing.
+        pane = Fake(x=0, y=0, w=340, h=768)
+        wrapper = Fake(x=0, y=0, w=344, h=768)
+        instance = self.session(pane, [pane], [wrapper])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [pane])
+        self.assertEqual(scrolls.call_count, 0)
+
+
+class ScrollEntryCheck(unittest.TestCase):
+    """The region a session opens on is proved once the outline is drawn.
+
+    Entry has to choose from evidence that cannot tell a scroller from a box
+    that clips content it cannot scroll, so the choice is checked by scrolling
+    it -- one region, after the mode is usable, aimed where the wheel would go
+    anyway. Before this existed, the smallest box under the cursor won and
+    `j` did nothing at all.
+    """
+
+    def session(self, region, regions, pointer=(600, 300)):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        instance.regions = list(regions)
+        instance.deferred = []
+        instance.index = instance.regions.index(region) \
+            if region in instance.regions else 0
+        instance._acted = False
+        instance._verified = True
+        instance.window = unittest.mock.Mock()
+        self._pointer = unittest.mock.patch.object(
+            scroll, "_pointer_position", return_value=pointer)
+        return instance
+
+    def test_a_region_that_does_not_scroll_is_not_left_selected(self):
+        from homerow import scroll
+        # The pane moves, the card that sits inside it does not -- so the
+        # outline belongs on the pane, whatever the areas say.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", side_effect=lambda r, *a, **k: r is pane):
+            instance._confirm_region()
+        self.assertIs(instance.region, pane)
+        self.assertIs(instance.regions[instance.index], pane)
+        self.assertFalse(card.scrolls_proven)
+        self.assertTrue(pane.scrolls_proven)
+
+    def test_a_region_that_scrolls_is_kept_and_nothing_else_is_probed(self):
+        from homerow import scroll
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True) as probe:
+            instance._confirm_region()
+        self.assertIs(instance.region, card)
         self.assertEqual(probe.call_count, 1)
+
+    def test_a_replacement_that_cannot_be_proved_is_not_switched_to(self):
+        from homerow import scroll
+        # Neither moved. That reads the same as a page already at the end it
+        # was pushed towards, and dropping what the user is looking at on that
+        # evidence is worse than leaving the guess alone.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=False):
+            instance._confirm_region()
+        self.assertIs(instance.region, card)
+
+    def test_nothing_is_scrolled_when_there_is_nothing_to_switch_to(self):
+        from homerow import scroll
+        # One candidate under the pointer: a probe could not change anything,
+        # so the page is not scrolled to reach a conclusion nobody can act on.
+        # This is every ordinary entry on the reported devdocs.io layout.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(pane, [pane, sidebar], pointer=(900, 300))
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+        self.assertIs(instance.region, pane)
+
+    def test_what_is_already_proved_is_not_scrolled_again(self):
+        from homerow import scroll
+        # The promotion probe just moved this one. Asking again is another
+        # visible jump for an answer already in hand.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        pane.scrolls_proven = True
+        instance = self.session(pane, [pane])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_a_key_press_stands_the_check_down(self):
+        from homerow import scroll
+        # Their own scroll answers the same question, and two of us scrolling
+        # one page at once is worse than either.
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [card])
+        instance._acted = True
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_the_window_fallback_is_not_probed(self):
+        from homerow import scroll
+        # It has no accessible to watch, so nothing could be proved -- and a
+        # wheel event aimed where the cursor already is scrolls whatever is
+        # under it regardless.
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        instance = self.session(window, [window])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+
+    def test_the_window_fallback_is_never_the_replacement(self):
+        from homerow import scroll
+        # It aims at the same pointer position the current region does, so
+        # switching to it changes the outline and nothing else.
+        card = Fake(x=400, y=100, w=520, h=340)
+        window = Fake(x=0, y=0, w=1366, h=768, accessible=None)
+        instance = self.session(card, [card, window])
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at") as probe:
+            instance._confirm_region()
+        probe.assert_not_called()
+        self.assertIs(instance.region, card)
+
+    def test_the_check_aims_where_the_wheel_would(self):
+        from homerow import scroll
+        # Aiming anywhere else is a warp the user watches happen, for a
+        # question about a region they are already pointing at.
+        pane = Fake(x=340, y=0, w=1000, h=768)
+        card = Fake(x=400, y=100, w=520, h=340)
+        instance = self.session(card, [pane, card], pointer=(600, 300))
+        with self._pointer, unittest.mock.patch.object(
+                scroll, "_scrolls_at", return_value=True) as probe:
+            instance._confirm_region()
+        self.assertEqual(probe.call_args.args[1:3], (600, 300))
+
+    def test_entry_still_scrolls_nothing_before_the_outline(self):
+        from homerow import config, scroll
+        # The check is deferred, like the rescue and the scroll-and-watch
+        # pass: 316ms median and up to 2318ms of the cursor flying about over
+        # 151 real sessions is what running any of them on entry cost.
+        self.assertFalse(config.SCROLL_VERIFY_ON_ENTRY)
+        self.assertIn("_after_outline",
+                      scroll.ScrollSession.show.__code__.co_names)
 
 
 class ScrollWindowFallbackTabStop(unittest.TestCase):
@@ -815,6 +1576,463 @@ class CaretSearchMatching(unittest.TestCase):
         with self.patched(caret.word_hits):
             hits = caret.word_hits(pairs, "canvas", limit=5)
         self.assertEqual(len(hits), 5)
+
+
+class EditWriteBack(unittest.TestCase):
+    """The parts of edit mode that decide what text goes back into a field."""
+
+    def test_editor_added_newline_comes_off(self):
+        from homerow import edit
+        # The case that matters: a one-line search box, where a stray newline
+        # is not whitespace but a submit.
+        self.assertEqual(edit.strip_added_newline("query", "edited\n"),
+                         "edited")
+
+    def test_newline_the_field_already_had_is_kept(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("a\n", "b\n"), "b\n")
+
+    def test_only_one_newline_comes_off(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("q", "a\n\n"), "a\n")
+
+    def test_text_without_a_trailing_newline_is_untouched(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("q", "abc"), "abc")
+
+    def test_empty_original_still_loses_the_added_newline(self):
+        from homerow import edit
+        self.assertEqual(edit.strip_added_newline("", "typed\n"), "typed")
+
+
+class EditWindowPlacement(unittest.TestCase):
+    def test_a_one_line_field_stays_a_one_line_box(self):
+        from homerow import edit
+        # The omnibox case, and the whole point of measuring in cells: a
+        # 28px-tall field must not open a 400px-tall editor over the page.
+        field = Fake(x=100, y=200, w=565, h=28)
+        # One row of a 17px cell plus the border.
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 17 + 4)
+        self.assertEqual((w, h), (565, 28))
+
+    def test_anchor_is_the_field_corner(self):
+        from homerow import edit
+        field = Fake(x=100, y=200, w=565, h=28)
+        x, y, _, _ = edit.frame_rect(field, 1920, 1080, 260, 21)
+        self.assertEqual((x, y), (100, 200))
+
+    def test_a_tiny_field_grows_to_the_floor(self):
+        from homerow import edit
+        field = Fake(x=10, y=10, w=40, h=8)
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 21)
+        self.assertEqual((w, h), (260, 21))
+
+    def test_large_field_keeps_its_own_size(self):
+        from homerow import edit
+        field = Fake(x=10, y=10, w=900, h=600)
+        _, _, w, h = edit.frame_rect(field, 1920, 1080, 260, 120)
+        self.assertEqual((w, h), (900, 600))
+
+    def test_field_near_an_edge_is_pushed_back_on_screen(self):
+        from homerow import edit
+        field = Fake(x=1800, y=1050, w=400, h=300)
+        x, y, w, h = edit.frame_rect(field, 1920, 1080, 260, 120)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+        self.assertLessEqual(x + w, 1920)
+        self.assertLessEqual(y + h, 1080)
+
+    def test_editor_wider_than_the_screen_still_starts_on_it(self):
+        from homerow import edit
+        field = Fake(x=50, y=50, w=10, h=10)
+        x, y, _, _ = edit.frame_rect(field, 400, 300, 720, 400)
+        self.assertEqual((x, y), (0, 0))
+
+
+class EditTerminalTrim(unittest.TestCase):
+    """A Vte.Terminal keeps padding of its own around its grid.
+
+    Sizing a window at rows * char_height ignores it and buys one row fewer
+    than asked for -- and in a compact box that row is the only one the text
+    was going to be on, so what is left is a statusline and nothing else.
+    Measured live: a 2-row box came out a 1-row widget while nvim still had
+    &lines=2, which is the mismatch that made nvim scroll.
+    """
+
+    class FakeStyle:
+        def __init__(self, pad, border):
+            self._pad, self._border = pad, border
+
+        def get_state(self):
+            return 0
+
+        def get_padding(self, _state):
+            return self._pad
+
+        def get_border(self, _state):
+            return self._border
+
+    class Edges:
+        def __init__(self, top=0, bottom=0, left=0, right=0):
+            self.top, self.bottom = top, bottom
+            self.left, self.right = left, right
+
+    def terminal(self, pad, border=None):
+        style = self.FakeStyle(pad, border or self.Edges())
+        return types.SimpleNamespace(get_style_context=lambda: style)
+
+    def test_padding_on_every_edge_is_counted(self):
+        from homerow import edit
+        term = self.terminal(self.Edges(top=1, bottom=1, left=1, right=1))
+        self.assertEqual(edit.cell_padding(term), (2, 2))
+
+    def test_a_css_border_counts_too(self):
+        from homerow import edit
+        term = self.terminal(self.Edges(top=1, bottom=1, left=1, right=1),
+                             self.Edges(top=2, bottom=2, left=2, right=2))
+        self.assertEqual(edit.cell_padding(term), (6, 6))
+
+    def test_a_terminal_that_keeps_nothing_is_left_alone(self):
+        from homerow import edit
+        self.assertEqual(edit.cell_padding(self.terminal(self.Edges())), (0, 0))
+
+    def test_an_unreadable_style_costs_nothing(self):
+        from homerow import edit
+
+        def explode():
+            raise RuntimeError("no style context")
+
+        self.assertEqual(
+            edit.cell_padding(
+                types.SimpleNamespace(get_style_context=explode)), (0, 0))
+
+    def test_the_trim_is_what_buys_the_row_back(self):
+        """The arithmetic _fit does, with and without counting the trim."""
+        from homerow import edit
+        char_h, rows, frame = 23, 2, 2 * config.EDIT_BORDER
+        pad_h = edit.cell_padding(
+            self.terminal(self.Edges(top=1, bottom=1)))[1]
+
+        ignoring_it = rows * char_h + frame
+        counting_it = rows * char_h + frame + pad_h
+        fits = lambda height: (height - frame - pad_h) // char_h   # noqa: E731
+
+        self.assertEqual(fits(ignoring_it), rows - 1)   # the row that vanished
+        self.assertEqual(fits(counting_it), rows)
+
+
+class EditCompactHeight(unittest.TestCase):
+    """A one-row box is a slot, not an editor -- reported live: "it shows only
+    2 lines and when I click enter I see empty, then I go up or down"."""
+
+    def height(self, text_rows, chrome=1):
+        from homerow import edit
+        return edit.compact_height(text_rows, chrome)
+
+    def test_a_one_line_field_still_opens_as_an_editor(self):
+        self.assertEqual(self.height(1), config.EDIT_COMPACT_MIN_ROWS)
+
+    def test_the_floor_leaves_more_than_one_row_to_type_on(self):
+        """Whatever the floor is set to, what is left after the editor's own
+        rows has to be somewhere to write rather than a single line."""
+        for chrome in (0, 1, 2):
+            with self.subTest(chrome=chrome):
+                self.assertGreaterEqual(self.height(1, chrome) - chrome, 2)
+
+    def test_it_follows_the_text_once_that_is_taller_than_the_floor(self):
+        self.assertEqual(self.height(6), 7)
+
+    def test_it_stops_at_the_cap_rather_than_covering_the_page(self):
+        self.assertEqual(self.height(400), config.EDIT_COMPACT_MAX_ROWS)
+
+    def test_the_cap_is_never_undercut_by_the_floor(self):
+        self.assertLessEqual(config.EDIT_COMPACT_MIN_ROWS,
+                             config.EDIT_COMPACT_MAX_ROWS)
+
+
+class EditBoxGrows(unittest.TestCase):
+    """Growing is what makes it behave like the field it stands in for."""
+
+    def session(self, rows, chrome=1):
+        from homerow import edit
+        instance = object.__new__(edit.EditSession)
+        instance.closed = False
+        instance.field = Fake(x=10, y=10, w=400, h=30)
+        instance._rows, instance._cell_h = rows, 23
+        instance._chrome_px, instance._chrome_rows = 6, chrome
+        instance._log = lambda _m: None
+        instance.terminal = types.SimpleNamespace(
+            get_column_count=lambda: 50, set_size=lambda *_a: None)
+        instance.resized = []
+        instance.window = types.SimpleNamespace(
+            move=lambda *_a: None,
+            resize=lambda w, h: instance.resized.append((w, h)))
+        return instance
+
+    def test_pressing_enter_past_the_last_row_makes_room(self):
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=5)
+            instance._grow(6)
+        self.assertEqual(instance._rows, 7)
+        self.assertEqual(len(instance.resized), 1)
+
+    def test_deleting_a_line_does_not_take_the_box_back(self):
+        """The resize with nothing to offer: it moves the text under the
+        cursor to reclaim space nobody asked for."""
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=9)
+            instance._grow(1)
+        self.assertEqual(instance._rows, 9)
+        self.assertEqual(instance.resized, [])
+
+    def test_it_stops_growing_at_the_cap(self):
+        from homerow import edit
+        with unittest.mock.patch.object(edit, "screen_size",
+                                        lambda: (1920, 1080)):
+            instance = self.session(rows=5)
+            instance._grow(500)
+        self.assertEqual(instance._rows, config.EDIT_COMPACT_MAX_ROWS)
+
+    def test_a_closed_session_does_not_resize_a_destroyed_window(self):
+        instance = self.session(rows=5)
+        instance.closed = True
+        instance._grow(20)
+        self.assertEqual(instance.resized, [])
+
+
+class EditEditorSetup(unittest.TestCase):
+    """The warm and cold paths have to be told the same things. A mapping
+    that only works on one of them is worse than one that works on neither,
+    because it is the path nobody takes."""
+
+    def test_both_paths_ask_the_editor_to_report_its_height(self):
+        from homerow import edit
+        warm = edit.setup_commands("/tmp/f.md", compact=True)
+        cold = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        watch = edit.rows_watch("/tmp/f.md")
+        self.assertIn(watch, warm)
+        self.assertIn(watch, cold)
+
+    def test_both_paths_get_every_keymap(self):
+        from homerow import edit
+        warm = edit.setup_commands("/tmp/f.md", compact=True)
+        cold = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn(mapping, warm)
+            self.assertIn(mapping, cold)
+
+    def test_the_report_goes_beside_the_buffer_not_over_it(self):
+        from homerow import edit
+        self.assertNotEqual(edit.rows_path("/tmp/f.md"), "/tmp/f.md")
+        self.assertTrue(edit.rows_path("/tmp/f.md").startswith("/tmp/f.md"))
+
+    def test_it_is_buffer_local_so_it_cannot_touch_another_buffer(self):
+        from homerow import edit
+        self.assertIn("<buffer>", edit.rows_watch("/tmp/f.md"))
+
+    def test_growing_off_means_nothing_is_asked_of_the_editor(self):
+        from homerow import edit
+        with unittest.mock.patch.object(config, "EDIT_GROW", False):
+            self.assertIsNone(edit.rows_watch("/tmp/f.md"))
+            self.assertNotIn(
+                "TextChanged",
+                " ".join(edit.editor_argv("/tmp/f.md", editor="nvim")))
+
+
+class EditCompactMode(unittest.TestCase):
+    def test_a_single_line_field_is_compact(self):
+        from homerow import edit
+        self.assertTrue(edit.compact_rows(28, 17, 3))
+
+    def test_a_textarea_is_not_compact(self):
+        from homerow import edit
+        self.assertFalse(edit.compact_rows(220, 17, 3))
+
+    def test_an_unmeasured_cell_is_never_compact(self):
+        from homerow import edit
+        self.assertFalse(edit.compact_rows(28, 0, 3))
+
+    def test_compact_hides_chrome_for_vim(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim", compact=True)
+        self.assertIn("-c", argv)
+        self.assertIn(config.EDIT_COMPACT_SETTINGS, argv)
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_compact_leaves_a_non_vim_editor_alone(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="helix", compact=True)
+        self.assertEqual(argv, ["helix", "/tmp/f.md"])
+
+    def test_a_full_size_field_gets_no_compact_flags(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim", compact=False)
+        self.assertNotIn(config.EDIT_COMPACT_SETTINGS, argv)
+
+    def test_save_shortcuts_are_present_whatever_the_size(self):
+        from homerow import edit
+        for compact in (True, False):
+            argv = edit.editor_argv("/tmp/f.md", editor="nvim",
+                                    compact=compact)
+            for mapping in config.EDIT_KEYMAPS:
+                self.assertIn(mapping, argv)
+
+    def test_both_q_and_space_w_are_mapped(self):
+        joined = " ".join(config.EDIT_KEYMAPS)
+        self.assertIn("> q :", joined)
+        self.assertIn("<Space>w", joined)
+
+    def test_the_mappings_are_buffer_local(self):
+        # Otherwise they would shadow macro recording and the leader key in
+        # the user's own nvim.
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn("<buffer>", mapping)
+
+    def test_the_shortcuts_write_rather_than_discarding(self):
+        for mapping in config.EDIT_KEYMAPS:
+            self.assertIn("wq", mapping)
+
+    def test_a_non_vim_editor_gets_no_mapping(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="helix", compact=False)
+        self.assertEqual(argv, ["helix", "/tmp/f.md"])
+
+    def test_an_absolute_editor_path_is_still_recognised(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="/usr/bin/nvim",
+                                compact=True)
+        self.assertIn("-c", argv)
+
+
+class EditorCommand(unittest.TestCase):
+    def test_visual_wins_over_editor(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"VISUAL": "helix", "EDITOR": "vim"}):
+            self.assertEqual(edit.editor_argv("/tmp/f.md"),
+                             ["helix", "/tmp/f.md"])
+
+    def test_editor_is_used_when_visual_is_unset(self):
+        from homerow import edit
+        env = dict(os.environ)
+        env.pop("VISUAL", None)
+        env["EDITOR"] = "vim"
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            argv = edit.editor_argv("/tmp/f.md")
+        self.assertEqual(argv[0], "vim")
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_an_editor_with_arguments_is_split(self):
+        from homerow import edit
+        argv = edit.editor_argv("/tmp/f.md", editor="nvim -u NONE")
+        self.assertEqual(argv[:3], ["nvim", "-u", "NONE"])
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+    def test_falls_back_to_the_configured_editor(self):
+        from homerow import edit
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("VISUAL", "EDITOR")}
+        with unittest.mock.patch.dict(os.environ, env, clear=True):
+            argv = edit.editor_argv("/tmp/f.md")
+        self.assertEqual(argv[0], config.EDIT_EDITOR)
+        self.assertEqual(argv[-1], "/tmp/f.md")
+
+
+class WarmEditor(unittest.TestCase):
+    """The warm nvim server that opening a field attaches to."""
+
+    def test_only_vim_speaks_the_remote_protocol(self):
+        from homerow import edit
+        self.assertTrue(edit.is_vim_like("nvim"))
+        self.assertTrue(edit.is_vim_like("/usr/bin/nvim"))
+        self.assertTrue(edit.is_vim_like("nvim -u NONE"))
+        self.assertFalse(edit.is_vim_like("helix"))
+        self.assertFalse(edit.is_vim_like(""))
+
+    def test_visual_still_wins_when_resolving(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"VISUAL": "helix", "EDITOR": "vim"}):
+            self.assertEqual(edit.resolve_editor(), "helix")
+        self.assertEqual(edit.resolve_editor("nvim"), "nvim")
+
+    def test_commands_become_a_vim_list(self):
+        from homerow import edit
+        self.assertEqual(edit._vim_list(["a", "b"]), "['a','b']")
+
+    def test_quotes_in_a_command_are_escaped(self):
+        from homerow import edit
+        # A path with an apostrophe would otherwise end the string literal
+        # and the rest would be parsed as vimscript.
+        self.assertEqual(edit._vim_list(["edit /tmp/it's.md"]),
+                         "['edit /tmp/it''s.md']")
+
+    def test_the_socket_lives_in_the_runtime_dir(self):
+        from homerow import edit
+        with unittest.mock.patch.dict(
+                os.environ, {"XDG_RUNTIME_DIR": "/run/user/42"}):
+            self.assertEqual(edit.warm_socket_path(),
+                             "/run/user/42/" + config.EDIT_WARM_SOCKET)
+
+
+class EditDismissal(unittest.TestCase):
+    """A dismissed editor must never write its buffer into the field.
+
+    Two editors were once open over one field at the same time; both wrote
+    back two milliseconds apart, and the abandoned one landed last and
+    overwrote the real edit.
+    """
+
+    def session(self):
+        from homerow import edit
+        # Built without __init__: constructing one needs a display, a VTE
+        # widget and a temp file, none of which this is about.
+        session = edit.EditSession.__new__(edit.EditSession)
+        session.closed = True          # so _close() is a no-op
+        session._dismissed = False
+        session.original = "real contents"
+        session.path = "/nonexistent/homerow-test.md"
+        session.written = []
+        session.on_write = session.written.append
+        session.on_done = lambda: None
+        session._log = lambda _m: None
+        return session
+
+    def test_dismissed_session_does_not_write_back(self):
+        session = self.session()
+        session.dismiss()
+        session._on_child_exited(None, 0)
+        self.assertEqual(session.written, [])
+
+    def test_dismissal_is_what_suppresses_it_not_the_exit_status(self):
+        session = self.session()
+        session._dismissed = True
+        session._on_child_exited(None, 0)
+        self.assertEqual(session.written, [])
+
+    def test_an_editor_that_was_killed_does_not_write_back(self):
+        session = self.session()
+        session._on_child_exited(None, 9)
+        self.assertEqual(session.written, [])
+
+    def test_only_edit_sessions_claim_unsaved_work(self):
+        from homerow import edit, overlay
+        self.assertTrue(edit.EditSession.holds_unsaved_work)
+        self.assertFalse(
+            getattr(overlay.Overlay, "holds_unsaved_work", False))
+
+
+class EditSafety(unittest.TestCase):
+    def test_password_fields_are_refused(self):
+        # Edit mode writes a field's contents to a temp file. The match rule
+        # no longer filters by role, so this set is the only thing standing
+        # between a password field and disk.
+        self.assertIn("password text", config.EDIT_SKIP_ROLES)
+        self.assertIn("terminal", config.EDIT_SKIP_ROLES)
 
 
 if __name__ == "__main__":

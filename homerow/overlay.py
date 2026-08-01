@@ -9,6 +9,7 @@ _NET_WM_STRUT, so no space is reserved for it either.
 
 import sys
 
+import cairo
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -28,8 +29,9 @@ BUTTON_PREFIXES = {",": 3, ".": 2}  # right, middle
 # screen the whole time; hint mode used to show nothing until you started
 # typing, which meant the one mode most likely to be used cold had no
 # on-screen reminder of shift/ctrl/,/. at all.
-HINT_LEGEND = ("label click · shift+ new tab · ctrl+ bg tab · "
-               ", right-click · . middle-click · type to filter · esc")
+HINT_KEYS = [("a-l", "click"), ("shift", "new tab"), ("ctrl", "bg tab"),
+             (",", "right"), (".", "middle"), ("type", "filter"),
+             ("esc", "leave")]
 
 
 def normalize_key(key, state):
@@ -48,6 +50,56 @@ def normalize_key(key, state):
             and not state & Gdk.ModifierType.SHIFT_MASK):
         return Gdk.keyval_to_lower(key)
     return key
+
+
+# The mode hotkeys, minus the modifier, as the daemon names the commands.
+# Shift is part of the key here rather than a flag because alt+shift+c is a
+# different mode from alt+c, and nothing else in the table cares.
+MODE_KEYS = {
+    Gdk.KEY_space: "hint",
+    Gdk.KEY_j: "scroll",
+    Gdk.KEY_slash: "search",
+    Gdk.KEY_c: "caret",
+    Gdk.KEY_C: "caret_search",
+    Gdk.KEY_e: "edit",
+}
+
+# Set by the daemon to its own command dispatch; None when a session is
+# running outside one (the standalone CLI), where there is nothing to switch
+# to and the keys should fall through to the mode's own handling.
+_switch = None
+
+
+def set_mode_switcher(dispatch):
+    """Let sessions ask for another mode. `dispatch` takes a command name."""
+    global _switch
+    _switch = dispatch
+
+
+def mode_switch(event):
+    """Handle a mode hotkey pressed inside a running mode; True if it was one.
+
+    Every mode holds the keyboard exclusively -- it has to, or its letters
+    leak into the application underneath -- and that also takes the mode
+    hotkeys away from the window manager, which is what made switching
+    impossible: alt+j inside hint mode reached this overlay and was read as
+    the letter j, so the only way to scroll was Esc first, then the hotkey.
+    Escaping first is a keystroke spent saying "not this", which is exactly
+    what pressing another mode's key already says.
+
+    The modifier is required, so nothing here can shadow a mode's own plain
+    letters: j still scrolls, c is still a hint label, e is still a word
+    motion. Caps Lock is deliberately not treated as a modifier for this even
+    though it is bound as one (see normalize_key) -- a stuck Caps Lock would
+    otherwise turn every j into a mode switch.
+    """
+    if _switch is None or not event.state & Gdk.ModifierType.MOD1_MASK:
+        return False
+    command = MODE_KEYS.get(event.keyval)
+    if command is None:
+        return False
+    _switch(command)
+    return True
 
 
 def set_identity():
@@ -75,6 +127,31 @@ def screen_size():
         right = max(right, geometry.x + geometry.width)
         bottom = max(bottom, geometry.y + geometry.height)
     return right, bottom
+
+
+def focused_monitor(width, height):
+    """(x, y, w, h) of the monitor the pointer is on; the whole screen if unsure.
+
+    screen_size() spans every monitor, which is right for an overlay window --
+    it has to cover all of them -- and wrong for anything centred, because the
+    middle of a two-monitor span is the seam between them. The legend would
+    have been drawn straddling the gap, half on each screen. Latent on a
+    single-head desktop, which is why it went unnoticed.
+    """
+    whole = (0, 0, width, height)
+    try:
+        display = Gdk.Display.get_default()
+        pointer = display.get_default_seat().get_pointer()
+        _, x, y = pointer.get_position()[:3]
+        monitor = display.get_monitor_at_point(x, y)
+        if monitor is None:
+            return whole
+        area = monitor.get_geometry()
+        if area.width <= 0 or area.height <= 0:
+            return whole
+        return area.x, area.y, area.width, area.height
+    except Exception:
+        return whole
 
 
 class Overlay:
@@ -272,7 +349,24 @@ class Overlay:
             x11.debug_log(f"[hint] key={char!r} typed={self.typed!r} "
                           f"pointer={x11.pointer_position()}")
 
+        if mode_switch(event):
+            return True
         if key in CANCEL_KEYS:
+            # Escape backs out of what you have typed before it backs out of
+            # the mode. Half a label is a wrong turn -- you meant `kj` and
+            # pressed `h` -- and closing the whole overlay to correct one
+            # keystroke means finding every target again. Escape on a clean
+            # slate still closes, so nothing is lost, and this is the same
+            # shape as leaving insert before leaving the editor in edit mode.
+            if self.typed:
+                self.typed = ""
+                self.window.queue_draw()
+                return True
+            if self.filter:
+                self.filter = ""
+                self._apply_filter()
+                self.window.queue_draw()
+                return True
             self._close()
             return True
         if key == Gdk.KEY_BackSpace:
@@ -399,17 +493,22 @@ class Overlay:
         if self.filter:
             self._draw_filter(cr)
         elif self.prompt:
-            draw_legend(cr, self.prompt, self.width, self.height, self.colors)
+            draw_legend(cr, [badge("PICK"), text_part(self.prompt)],
+                        self.width, self.height, self.colors)
         else:
-            draw_legend(cr, HINT_LEGEND, self.width, self.height, self.colors)
+            draw_legend(cr, [badge("HINT"), keys(HINT_KEYS)],
+                        self.width, self.height, self.colors)
         return True
 
     def _draw_filter(self, cr):
         """Show what is being filtered on, and how much survived."""
         count = len(self.elements)
-        text = (f"filter: {self.filter}_    {count} left"
-                if count else f"filter: {self.filter}_    no match")
-        draw_legend(cr, text, self.width, self.height, self.colors,
+        # The chip turns over to the window colour on no match, which is the
+        # loudest thing the palette has to say without inventing a red the
+        # theme never gave us.
+        draw_legend(cr, [badge("FILTER"), text_part(f"{self.filter}_"),
+                         badge(f"{count} left" if count else "no match")],
+                    self.width, self.height, self.colors,
                     chip="chip" if count else "chip_window")
 
     def _draw_hint(self, cr, element, label, index, element_rects, placed):
@@ -446,33 +545,198 @@ class Overlay:
             cx += cr.text_extents(char).x_advance
 
 
-def draw_legend(cr, text, width, height, colors, chip="chip"):
-    """Bottom-center pill of text: every mode's legend/prompt/status line.
+# The three kinds of thing a legend row is made of. A mode composes a list of
+# them; draw_legend lays them out and nothing else has to know the geometry.
+# Which ink goes with which chip. A mode draws its legend on its own chip, and
+# the text has to contrast with that one rather than with the default.
+_INK_FOR = {
+    "chip": ("ink", "ink_dim"),
+    "chip_matched": ("ink_matched", "ink_dim_matched"),
+    "chip_window": ("ink_window", "ink_dim_window"),
+}
+
+BADGE = "badge"    # inverted sub-pill: the mode, and whatever is live in it
+TEXT = "text"      # free text, e.g. a query being typed
+KEYS = "keys"      # (key, meaning) pairs -- key in ink, meaning dimmed
+
+
+def badge(text):
+    return (BADGE, text)
+
+
+def text_part(text):
+    return (TEXT, text)
+
+
+def keys(pairs):
+    return (KEYS, list(pairs))
+
+
+def _face(cr, bold=False):
+    cr.select_font_face(
+        config.FONT_FAMILY, cairo.FONT_SLANT_NORMAL,
+        cairo.FONT_WEIGHT_BOLD if bold else cairo.FONT_WEIGHT_NORMAL)
+    cr.set_font_size(config.FONT_SIZE)
+
+
+def _advance(cr, text, bold=False):
+    _face(cr, bold)
+    return cr.text_extents(text).x_advance
+
+
+def _lay_out(cr, parts):
+    """Place every piece of the row left to right; (total width, placements).
+
+    Measuring and drawing walk the same list in the same order, so the pill
+    cannot come out a different width from what is drawn into it -- which is
+    exactly the drift that made one shared pill worth having.
+    """
+    placements = []
+    x = 0
+    for index, (kind, value) in enumerate(parts):
+        if index:
+            x += config.LEGEND_SEGMENT_GAP
+        if kind == BADGE:
+            width = _advance(cr, value, True) + config.LEGEND_BADGE_PAD * 2
+            placements.append((BADGE, value, x, width))
+            x += width
+        elif kind == TEXT:
+            width = _advance(cr, value, True)
+            placements.append((TEXT, value, x, width))
+            x += width
+        else:
+            for pair_index, (key, meaning) in enumerate(value):
+                if pair_index:
+                    x += config.LEGEND_PAIR_GAP
+                width = _advance(cr, key, True)
+                placements.append(("key", key, x, width))
+                x += width + config.LEGEND_KEY_GAP
+                width = _advance(cr, meaning)
+                placements.append(("meaning", meaning, x, width))
+                x += width
+    return x, placements
+
+
+def _fit(cr, parts, budget):
+    """Drop key pairs from the end until the row fits `budget` pixels.
+
+    The last pair is always kept: it is `esc leave` in every mode, and a
+    legend that has dropped the way out is worse than one that is a little
+    too wide. Pairs go from the end because the lists are written in the
+    order they are worth learning -- motions before operators before the
+    escape hatch -- so what goes first is what was least likely to be read.
+    """
+    parts = [(kind, list(value) if kind == KEYS else value)
+             for kind, value in parts]
+    while _lay_out(cr, parts)[0] > budget:
+        longest = max(
+            (part for part in parts if part[0] == KEYS and len(part[1]) > 1),
+            key=lambda part: len(part[1]), default=None)
+        if longest is None:
+            break
+        del longest[1][-2]
+    return parts
+
+
+def draw_legend(cr, parts, width, height, colors, chip="chip"):
+    """Bottom-center pill: every mode's legend, prompt and status line.
 
     Scroll, search, caret and hint mode each used to draw this by hand, and
     had drifted -- scroll's pill was a few pixels shorter than the others'.
     One shape, drawn once, is what keeps that from happening again.
-    """
-    cr.select_font_face(config.FONT_FAMILY)
-    cr.set_font_size(config.FONT_SIZE)
-    ext = cr.text_extents(text)
-    pad = 8
-    w, h = ext.width + pad * 2, config.FONT_SIZE + pad * 2
-    x = max((width - w) // 2, 0)
-    y = max(height - h - config.LEGEND_MARGIN, 0)
 
+    `parts` is a list built from badge()/text_part()/keys(). It used to be one
+    string, and every mode built its own by concatenation: the mode name, the
+    live state and forty characters of static help all ran together in one
+    weight and one colour, so the part that changed while you worked was the
+    part you were least likely to notice. Caret mode's reached 150 characters
+    and most of a screen wide. Now the mode and its live state are inverted
+    sub-pills, and each key is inked while its meaning recedes -- the row is
+    scanned by shape rather than read as a sentence.
+    """
+    if isinstance(parts, str):        # a bare prompt, with nothing to group
+        parts = [text_part(parts)]
+    pad = config.LEGEND_PAD
+    height_of_pill = config.FONT_SIZE + pad * 2
+    # Centred on the monitor in use, not on the span of all of them: the
+    # middle of a two-monitor desktop is the seam between the screens.
+    area_x, area_y, area_w, area_h = focused_monitor(width, height)
+    parts = _fit(cr, parts, area_w - config.LEGEND_SCREEN_MARGIN - pad * 2)
+    row, placements = _lay_out(cr, parts)
+
+    w = row + pad * 2
+    x = max(area_x + (area_w - w) // 2, 0)
+    y = max(area_y + area_h - height_of_pill - config.LEGEND_MARGIN, 0)
     cr.set_source_rgba(*colors[chip])
-    _rounded_rect(cr, x, y, w, h, config.RADIUS)
+    _rounded_rect(cr, x, y, w, height_of_pill, config.RADIUS)
     cr.fill()
-    cr.set_source_rgba(*colors["ink"])
-    cr.move_to(x + pad, y + h - pad - 2)
-    cr.show_text(text)
+
+    # The ink that belongs to *this* chip. A legend on the cyan or the purple
+    # chip was being drawn in the ink computed for the default one, which is
+    # how its meanings ended up at 2.5:1 against the chip actually behind
+    # them.
+    ink = colors.get(_INK_FOR.get(chip, ("ink",))[0], colors["ink"])
+    ink_dim = colors.get(_INK_FOR.get(chip, (None, "ink_dim"))[1],
+                         colors["ink_dim"])
+
+    baseline = y + height_of_pill - pad - 2
+    for kind, value, offset, span in placements:
+        left = x + pad + offset
+        if kind == BADGE:
+            # Inverted: the chip's own colour on a block of ink. The mode and
+            # its live state are the only things here that change, so they are
+            # the only things that invert.
+            cr.set_source_rgba(*ink)
+            _rounded_rect(cr, left, y + config.LEGEND_BADGE_INSET, span,
+                          height_of_pill - config.LEGEND_BADGE_INSET * 2,
+                          config.RADIUS)
+            cr.fill()
+            cr.set_source_rgba(*colors[chip][:3], 1.0)
+            _face(cr, True)
+            cr.move_to(left + config.LEGEND_BADGE_PAD, baseline)
+            cr.show_text(value)
+            continue
+        if kind == "meaning":
+            cr.set_source_rgba(*ink_dim)
+            _face(cr)
+        else:
+            # A key and a query being typed are both things the user is
+            # producing, so they carry the same weight; the meanings behind
+            # them are reference material and recede.
+            cr.set_source_rgba(*ink)
+            _face(cr, True)
+        cr.move_to(left, baseline)
+        cr.show_text(value)
 
 
 def _rects_overlap(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
     return ax < bx + bw and bx < ax + aw and ay < by + bh and by < ay + ah
+
+
+def _on_element_spots(element, w, h):
+    """Places a chip can sit and still be *on* the element it labels.
+
+    Its other three corners, then its middle. A chip anywhere in here cannot
+    be misread as belonging to a neighbour, which is the whole reason chips
+    sit on their target rather than beside it -- so a collision is worth
+    moving around the element for before it is worth moving off it.
+
+    Only spots the element is actually big enough to hold: sliding a chip to
+    the "far corner" of something narrower than the chip puts it right back
+    over the neighbour this is avoiding.
+    """
+    spots = []
+    if element.w >= w:
+        spots.append((element.x + element.w - w, element.y))
+    if element.h >= h:
+        spots.append((element.x, element.y + element.h - h))
+    if element.w >= w and element.h >= h:
+        spots.append((element.x + element.w - w, element.y + element.h - h))
+        spots.append((element.x + (element.w - w) // 2,
+                      element.y + (element.h - h) // 2))
+    return spots
 
 
 def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
@@ -491,20 +755,46 @@ def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
     slightly-overlapping chip beats one that never got drawn.
     """
     gap = config.HINT_GAP
-    candidates = [
+    # On the element first, overlapping its own top-left corner. Beside it was
+    # tried first for years and is what makes a label ambiguous: a chip in the
+    # gap between two controls belongs to whichever one you assume, and on a
+    # toolbar or a row of links the assumption is wrong about half the time.
+    # Reported live -- chips reading as though they labelled the neighbour.
+    # A chip sitting *on* a thing cannot be misread, which is why Homerow and
+    # Vimium both put it there and accept covering a few pixels of the target.
+    on_element = (element.x, element.y)
+    beside = [
         (element.x - w - gap, element.y + (element.h - h) // 2),  # left
         (element.x + element.w + gap, element.y + (element.h - h) // 2),  # right
         (element.x, element.y - h - gap),  # above
         (element.x, element.y + element.h + gap),  # below
-        (element.x, element.y),  # inside, last resort
     ]
 
-    fallback = None
-    for x, y in candidates:
-        x = min(max(x, 0), max(screen_w - w, 0))
-        y = min(max(y, 0), max(screen_h - h, 0))
-        if fallback is None:
-            fallback = (x, y)
+    def clamp(spot):
+        return (min(max(spot[0], 0), max(screen_w - w, 0)),
+                min(max(spot[1], 0), max(screen_h - h, 0)))
+
+    # Only chip-versus-chip collisions can move it off its own element:
+    # covering part of the element it labels is the point, and an element
+    # nested inside another (a link inside a list item) would otherwise push
+    # every chip back out into the ambiguous gap.
+    x, y = clamp(on_element)
+    if not any(_rects_overlap((x, y, w, h), other) for other in placed):
+        return x, y
+
+    # Still on the element, just not in its corner. Two controls close enough
+    # for their chips to collide are exactly where a chip pushed out into the
+    # gap becomes ambiguous, and that gap is what `beside` below is -- so
+    # every spot that keeps the chip on the thing it labels is tried first.
+    # Measured over a real page: two chips in sixty-nine ended up off their
+    # own element, both of them here.
+    for spot in _on_element_spots(element, w, h):
+        x, y = clamp(spot)
+        if not any(_rects_overlap((x, y, w, h), other) for other in placed):
+            return x, y
+
+    for spot in beside:
+        x, y = clamp(spot)
         rect = (x, y, w, h)
         if any(_rects_overlap(rect, other) for other in placed):
             continue
@@ -515,7 +805,9 @@ def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
         ):
             continue
         return x, y
-    return fallback
+    # Everywhere clean is taken. Back on the element, where at least it is
+    # unambiguous which thing it labels.
+    return clamp(on_element)
 
 
 def _rounded_rect(cr, x, y, w, h, r):

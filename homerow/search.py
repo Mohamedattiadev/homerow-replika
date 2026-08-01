@@ -19,7 +19,10 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from . import config, theme, x11  # noqa: E402
-from .overlay import draw_legend, place_chip, screen_size, set_identity  # noqa: E402
+from .overlay import (  # noqa: E402
+    badge, draw_legend, keys, mode_switch, place_chip, screen_size,
+    set_identity, text_part,
+)
 
 
 def _score(haystack, terms):
@@ -192,7 +195,17 @@ class SearchPrompt:
         if config.DEBUG_KEYS:
             x11.debug_log(f"[search] key={Gdk.keyval_name(key)!r} "
                           f"query={self.query!r} hits={len(self.hits)}")
+        if mode_switch(event):
+            return True
         if key == Gdk.KEY_Escape:
+            # Clear the query before leaving, the way caret mode drops its
+            # anchor before leaving and hint mode drops a half-typed label.
+            # A wrong query is a wrong turn, not a decision to leave, and
+            # retyping one from a reopened mode costs the whole search again.
+            if self.query:
+                self.query = ""
+                self._refresh()
+                return True
             self._close()
             return True
         if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
@@ -372,14 +385,15 @@ class SearchPrompt:
 
             self._draw_labels(cr)
 
-        label = f"search: {self.query}_"
         if self.hits and self.query:
             count = f"{self.current + 1}/{len(self.hits)}"
         else:
             count = f"{len(self.hits)} match" + (
                 "" if len(self.hits) == 1 else "es")
         if self.indexed < len(self.elements):
-            count += f"  (reading {self.indexed}/{len(self.elements)})"
-        text = f"{label}    {count}    1-9 pick · tab next · enter click · esc"
-        draw_legend(cr, text, self.width, self.height, self.colors)
+            count += f"  reading {self.indexed}/{len(self.elements)}"
+        legend = [badge("SEARCH"), text_part(f"{self.query}_"), badge(count),
+                  keys([("1-9", "pick"), ("tab", "next"), ("enter", "click"),
+                        ("esc", "leave")])]
+        draw_legend(cr, legend, self.width, self.height, self.colors)
         return True

@@ -8,8 +8,8 @@ PartOf=graphical-session.target
 Type=simple
 # Matches the clone path the README's Install section uses. Adjust both
 # lines if you cloned homerow-replika somewhere else.
-ExecStart=%h/homerow-replika/homerow-daemon
-ExecStop=%h/homerow-replika/homerow-daemon --quit
+ExecStart=%h/homerow-replika/bin/homerow --daemon
+ExecStop=%h/homerow-replika/bin/homerow --quit
 Restart=on-failure
 RestartSec=2
 # The daemon needs the X display and the accessibility bus of the running

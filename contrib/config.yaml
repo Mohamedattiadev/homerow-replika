@@ -1,0 +1,243 @@
+# homerow -- ~/.config/homerow/config.yaml
+#
+# Everything here is commented out and shows the built-in default, so copying
+# this file changes nothing until you uncomment a line. `homerow
+# --write-config` puts it in the right place for you.
+#
+# Keys are the names from homerow/config.py, lowercased. They can be nested
+# under the prefix they share (`hint: {alphabet: ...}` is HINT_ALPHABET) or
+# written flat (`hint_alphabet: ...`) -- both work, so grouping is for
+# reading, never something to get right.
+#
+# config.py is the full list and the reason for every default. Anything named
+# there can be set here; nothing else can. Two commands to check yourself:
+#
+#   homerow --check-config      what it read, and what it could not use
+#   homerow --show-config       every setting and its value right now
+#
+# A bad value never takes the daemon down. An unknown key, a string where a
+# number belongs, a file that is not YAML at all -- each is reported in the
+# log and the built-in default stands.
+#
+# The daemon reads this once at startup: `homerow --restart` after editing it.
+
+
+# --- hint mode -------------------------------------------------------------
+hint:
+  # Characters labels are built from. Home row first. Lowercase and unique.
+  # alphabet: "asdfghjkl"
+
+  # Type a character outside the alphabet to narrow the hints by element name
+  # instead of reading every label. Labels are recomputed over the survivors.
+  # filter: true
+
+  # Label other windows too, in a second colour, so the same keypress that
+  # clicks a button can switch apps instead.
+  # windows: true
+
+  # Pixels between a chip and the element it labels.
+  # gap: 2
+
+# Elements smaller than this are almost always layout artefacts, and ones
+# larger than this fraction of the screen are almost always the page itself.
+# min_size: 4
+# max_fraction_of_screen: 0.9
+
+# Roles worth hinting, as Atspi.Role member names. Unknown names are skipped,
+# so this stays portable across atspi versions. `homerow --show-config` prints
+# the full default list; setting either of these recomputes the combined one
+# they feed.
+# container_roles: [LIST_ITEM, TABLE_CELL, TREE_ITEM]
+
+
+# --- scroll mode -----------------------------------------------------------
+scroll:
+  # How far j/k and d/u go, in wheel clicks.
+  # line_clicks: 1
+  # page_clicks: 6
+  # edge_clicks: 400
+
+  # Largest count prefix accepted: 50j, not 5000j.
+  # max_count: 50
+
+  # A whole-pass deadline for collecting regions. Atspi's own timeout bounds
+  # one call; a pass makes many, and they add up when the accessibility
+  # service is slow rather than hung.
+  # collect_budget_ms: 2500
+
+  # Which key does what while scroll mode is open. Key names are what `xev`
+  # prints -- single letters are themselves, the rest are names like Down,
+  # Page_Up, Home, End. Actions are: down, up, left, right, page down,
+  # page up, top, bottom.
+  #
+  # Writing this replaces the whole map, so copy the defaults and change the
+  # lines you want. `gg`, counts (3j), Tab and Esc are grammar rather than
+  # bindings and are not listed here.
+  # keys:
+  #   j: down
+  #   k: up
+  #   h: left
+  #   l: right
+  #   d: page down
+  #   u: page up
+  #   G: bottom
+  #   Home: top
+  #   End: bottom
+  #   Down: down
+  #   Up: up
+  #   Page_Down: page down
+  #   Page_Up: page up
+
+  # Regions that measure as scrollable are proven by scrolling them, which
+  # means scrolling each candidate and putting it back -- so it happens the
+  # first time Tab asks for another region, not when the mode opens.
+  # verify: true
+  # verify_on_entry: false
+
+  # Where two detected regions both sit under the pointer, the one the mode
+  # opened on is scrolled once after the outline is drawn, and the outline
+  # moves to the other only if that one is proven to move instead.
+  # confirm_on_entry: true
+  # confirm_settle_ms: 200
+
+  # Outline drawn around the region being scrolled.
+  # border: 2
+  # radius: 6
+
+
+# --- search and caret ------------------------------------------------------
+search:
+  # Digits, so every letter stays usable in the query -- that is what lets
+  # one prompt both filter and pick.
+  # labels: "123456789"
+  # min_query: 2
+  # max_outlines: 12
+
+caret:
+  # labels: "123456789"
+  # paste: "ctrl+v"
+  # Largest number of keystrokes the fallback write path will press at an
+  # application that publishes no EditableText.
+  # max_keystrokes: 400
+
+# caret_search:
+  # max_hits: 200
+
+
+# --- edit mode -------------------------------------------------------------
+edit:
+  # $VISUAL, then $EDITOR, then this.
+  # editor: "nvim"
+
+  # Extension of the temp file, which is what gives the buffer its filetype.
+  # suffix: ".md"
+
+  # Smallest editor box, in character cells rather than pixels, so it comes
+  # out as close to the field's own rectangle as an editor can be.
+  # min_cols: 32
+  # min_rows: 6
+
+  # A field shorter than this many rows is edited in "compact" nvim: no
+  # statusline, no line numbers, no sign column.
+  # compact_rows: 3
+
+  # How tall a compact box gets. It opens at the floor, grows as you type,
+  # and stops at the cap -- past which the editor scrolls. The floor earns
+  # its keep: three rows is a statusline, a command line and one row to type
+  # on, which reads as a slot rather than as an editor.
+  # compact_min_rows: 5
+  # compact_max_rows: 12
+
+  # Grow the box as the buffer grows. It never shrinks -- see config.py.
+  # grow: true
+
+  # Rows the editor keeps for itself, assumed rather than asked. Homerow
+  # measures what its own editor actually kept and sizes the *next* field for
+  # that, so this is only the first field's guess.
+  # chrome_rows: 2
+
+  # Keep a headless editor running so opening a field does not pay to load
+  # your config -- measured at 285ms. Turning it off costs that per open.
+  # warm_server: true
+
+  # Push the field on every `:w`, not only when the editor closes. Only ever
+  # where AT-SPI can write the field directly; a browser field still waits
+  # for the close, because writing it means stealing focus back off you.
+  # live_write: true
+
+  # Border drawn around the editor, so an undecorated box over a page still
+  # reads as something homerow put there.
+  # border: 2
+
+  # Fields never offered: a password has no business in a temp file, and a
+  # terminal is already an editor's worth of keyboard.
+  # skip_roles: ["password text", terminal]
+
+
+# --- colours ---------------------------------------------------------------
+# By default colours come from your desktop theme (theme-apply, else pywal),
+# re-read on every press, so switching theme changes the hints without
+# restarting anything. Two ways to have it otherwise, and they stack -- a
+# named preset first, then individual colours over the top of it.
+
+theme:
+  # A built-in palette by name. `homerow --list-themes` prints them all with
+  # their colours: doom-one, gruvbox-dark, gruvbox-light, nord, dracula,
+  # catppuccin-mocha, catppuccin-latte, tokyo-night, solarized-dark,
+  # solarized-light, everforest-dark, rose-pine.
+  #
+  # Naming one stops the desktop theme being followed -- asking for nord and
+  # getting your wallpaper's colours is not what anyone means by it. Empty
+  # means "follow the desktop", which is what you want if you run theme-apply
+  # or pywal. Write e.g. `preset: nord` to pin one.
+  # preset: ""
+
+  # Individual colours, laid over whatever the above resolved to. Any of the
+  # eight slots -- bg, fg, red, green, yellow, blue, purple, cyan -- as hex.
+  # Use it to keep your theme and change one thing; writing
+  # `colors: {purple: "#ff8800"}` makes only the window chips orange.
+  # colors: {}
+
+  # Follow the desktop theme at all. Off with no preset named means the
+  # built-in fallback palette.
+  # follow_theme: true
+
+  # Which slot each kind of chip takes its colour from -- the name of a slot,
+  # not a colour. "green" is the dominant accent rather than literally green:
+  # it is wal's color10, the wallpaper's most-used hue, which is what the
+  # qtile bar highlights with, so hints match the rest of the desktop.
+  # chip_slot: green
+  # chip_slot_matched: cyan
+  # chip_slot_window: purple
+
+# Text on a chip is chosen by measuring contrast against it, so light themes
+# stay readable. This is the floor it has to clear.
+# ink_min_contrast: 4.5
+
+# Dim the rest of the screen while a mode is open.
+# dim_background: true
+# dim_alpha: 0.18
+# chip_alpha: 0.96
+
+# font_family: monospace
+# font_size: 13
+# radius: 3
+
+
+# --- timing ----------------------------------------------------------------
+# Every mode holds the keyboard exclusively, so one left open by accident is
+# indistinguishable from the keyboard breaking. These are the two ways out.
+# idle_timeout_s: 12     # nothing typed at all
+# dwell_timeout_s: 45    # typed, then abandoned
+
+# A cap on any single AT-SPI call, so one hung application cannot take the
+# daemon down with it.
+# atspi_call_timeout_ms: 3000
+
+# Ceiling on elements collected in one pass.
+# max_elements: 400
+# walk_budget_ms: 400
+
+# Log every keypress. Loud, and useful when a mode is not seeing your keys.
+# debug_keys: false
+# log_max_bytes: 524288
