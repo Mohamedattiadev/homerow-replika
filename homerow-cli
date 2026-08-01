@@ -81,6 +81,10 @@ def build_parser():
                                "default path, if nothing is there yet")
 
     other = parser.add_argument_group("other")
+    other.add_argument("--doctor", action="store_true",
+                       help="check everything homerow needs is installed and "
+                            "working, and say what to do about anything that "
+                            "is not")
     other.add_argument("-l", "--list", action="store_true",
                        help="print what would be hinted, and draw nothing")
     other.add_argument("--standalone", action="store_true",
@@ -221,6 +225,168 @@ def do_write_config():
     return 0
 
 
+# --- doctor ----------------------------------------------------------------
+# What homerow needs is spread across three package managers' worth of names
+# and two settings that are not packages at all, and every one of them fails
+# in its own way -- a missing xdotool is a mode that half-works, a Chromium
+# without its flag is a browser that reports no elements and looks exactly
+# like homerow being broken. Answering "is this installed correctly" by
+# reading a README and checking by hand is how a stranger gives up on it.
+
+REQUIRED_BINARIES = {
+    "xdotool": "pointer moves, wheel clicks and window activation",
+    "xclip": "the clipboard, for yanking and for writing browser fields",
+    "nc": "the fast client (openbsd-netcat)",
+}
+OPTIONAL_BINARIES = {
+    "notify-send": "desktop notifications when a mode has nothing to offer",
+    "nvim": "edit mode's warm server; any $EDITOR works without it",
+}
+TYPELIBS = {
+    ("Atspi", "2.0"): ("at-spi2-core", "reading the accessibility tree"),
+    ("Gtk", "3.0"): ("gtk3", "the overlay"),
+    ("Gdk", "3.0"): ("gtk3", "screen geometry"),
+    ("Vte", "2.91"): ("vte3", "edit mode only; every other mode works "
+                              "without it"),
+}
+
+
+class Doctor:
+    """Collects findings so the exit code can reflect all of them."""
+
+    def __init__(self):
+        self.failed = False
+
+    def report(self, ok, name, detail, fix=None, required=True):
+        if ok:
+            mark = "ok      "
+        elif required:
+            mark, self.failed = "MISSING ", True
+        else:
+            mark = "absent  "
+        print(f"  {mark} {name:22} {detail}")
+        if not ok and fix:
+            print(f"           {' ' * 22} -> {fix}")
+
+
+def do_doctor():
+    import ctypes.util
+    import shutil
+    import subprocess
+
+    doctor = Doctor()
+    print(f"homerow {__version__}")
+
+    print("\npython")
+    doctor.report(sys.version_info >= (3, 9), "python3",
+                  f"{sys.version.split()[0]}", "python 3.9 or newer")
+    try:
+        import gi
+        doctor.report(True, "python-gobject", f"{gi.__version__}")
+    except ImportError:
+        gi = None
+        doctor.report(False, "python-gobject", "not importable",
+                      "install python-gobject")
+    try:
+        import yaml
+        doctor.report(True, "PyYAML", f"{yaml.__version__} (optional)",
+                      required=False)
+    except ImportError:
+        doctor.report(False, "PyYAML", "optional; the built-in reader "
+                                       "handles the config file without it",
+                      required=False)
+
+    print("\ntypelibs")
+    for (namespace, version), (package, why) in TYPELIBS.items():
+        if gi is None:
+            doctor.report(False, namespace, why, f"install {package}")
+            continue
+        try:
+            gi.require_version(namespace, version)
+            __import__("gi.repository", fromlist=[namespace])
+            doctor.report(True, namespace, f"{version} -- {why}")
+        except (ImportError, ValueError):
+            doctor.report(namespace == "Vte", namespace, why,
+                          f"install {package}",
+                          required=namespace != "Vte")
+
+    print("\nlibraries")
+    for library, why in (("X11", "window and pointer queries, through ctypes"),
+                         ("Xtst", "synthetic clicks, through ctypes")):
+        found = ctypes.util.find_library(library)
+        doctor.report(bool(found), f"lib{library}", found or why,
+                      f"install lib{library.lower()}")
+
+    print("\ncommands")
+    for binary, why in REQUIRED_BINARIES.items():
+        found = shutil.which(binary)
+        doctor.report(bool(found), binary, found or why,
+                      "openbsd-netcat" if binary == "nc" else
+                      f"install {binary}")
+    for binary, why in OPTIONAL_BINARIES.items():
+        found = shutil.which(binary)
+        doctor.report(bool(found), binary, found or why, required=False)
+
+    print("\nsession")
+    display = os.environ.get("DISPLAY")
+    doctor.report(bool(display), "DISPLAY", display or "not set",
+                  "homerow is X11 only")
+    try:
+        answer = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface",
+             "toolkit-accessibility"],
+            capture_output=True, timeout=3, check=False)
+        enabled = answer.stdout.decode().strip() == "true"
+    except (OSError, subprocess.SubprocessError):
+        enabled = None
+    if enabled is None:
+        doctor.report(False, "toolkit-accessibility", "could not ask "
+                      "gsettings", required=False)
+    else:
+        doctor.report(enabled, "toolkit-accessibility",
+                      "GTK applications publish their tree" if enabled
+                      else "GTK applications publish nothing",
+                      "gsettings set org.gnome.desktop.interface "
+                      "toolkit-accessibility true")
+
+    print("\nchromium and electron")
+    print("     Each reads its own flags file, and publishes nothing to")
+    print("     accessibility without --force-renderer-accessibility in it.")
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    flag_files = sorted(
+        path for path in (
+            os.path.join(base, name) for name in os.listdir(base))
+        if path.endswith("-flags.conf")) if os.path.isdir(base) else []
+    for path in flag_files:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                has_flag = "--force-renderer-accessibility" in handle.read()
+        except OSError:
+            continue
+        doctor.report(has_flag, os.path.basename(path),
+                      "has the flag" if has_flag else "does not have the flag",
+                      f"echo --force-renderer-accessibility >> {path}",
+                      required=False)
+    if not flag_files:
+        print("     (no *-flags.conf found; nothing to check)")
+
+    print("\nhomerow")
+    doctor.report(service.is_running(), "daemon",
+                  service.socket_path() if service.is_running()
+                  else "not running",
+                  "homerow --restart, or start it from your autostart",
+                  required=False)
+    result = userconfig.load()
+    doctor.report(result.ok, "config", result.summary(),
+                  "homerow --check-config", required=False)
+
+    if doctor.failed:
+        print("\nSomething required is missing; the marked lines say what.")
+        return 1
+    print("\nEverything homerow needs is here.")
+    return 0
+
+
 # --- modes -----------------------------------------------------------------
 
 def send(mode, config_path=None):
@@ -311,6 +477,8 @@ def main(argv=None):
         return do_check_config(args.config)
     if args.write_config:
         return do_write_config()
+    if args.doctor:
+        return do_doctor()
     if args.status:
         return do_status()
     if args.log is not None:

@@ -172,10 +172,19 @@ and nothing is written.
 
 The window is measured in character cells off the running terminal, so it
 comes out the width of the field and as few rows as the editor can work in.
-A one-line field gets a small box, and it grows with the content — wrapping
-counted — up to a cap. Two rows are budgeted for whatever the editor keeps for
-itself (a statusline, a command line), so your text is visible whatever your
-config does.
+A one-line field gets a small box, sized to the content it opens with —
+wrapping counted — up to a cap. Two rows are budgeted for whatever the editor
+keeps for itself (a statusline, a command line), so your text is visible
+whatever your config does.
+
+The box does **not** grow as you type past it; the editor scrolls, the way an
+editor in any other window does. A box that resized itself under your cursor
+would move the text you were reading to make room for text you had not
+written yet, and nvim already has a good answer for running out of room.
+
+Sizing it means counting three things and getting all three right: the cell,
+the frame homerow draws, and the padding the terminal widget keeps for
+itself. Missing the third cost exactly one row — see the note at the end.
 
 **Nothing has to be added to your editor config for this.** An earlier version
 announced homerow to nvim as `g:started_by_homerow` and asked you to add a
@@ -305,17 +314,48 @@ field whose role cannot be read is dropped, not kept.
 
 ## Install
 
-Requires `at-spi2-core`, `python-gobject`, `libX11`/`libXtst`, `picom`,
-`openbsd-netcat`. All present on a typical Arch desktop.
+### 1. Dependencies
+
+```sh
+# Arch; the names differ elsewhere, the libraries do not
+sudo pacman -S at-spi2-core python-gobject libx11 libxtst \
+               xdotool xclip openbsd-netcat vte3
+```
+
+| | For |
+|---|---|
+| `at-spi2-core` | the accessibility tree — this is the whole premise |
+| `python-gobject`, `gtk3` | the overlay, and the AT-SPI bindings |
+| `libX11`, `libXtst` | window queries and synthetic clicks, through ctypes |
+| `xdotool` | pointer moves, wheel clicks, window activation |
+| `xclip` | the clipboard, for yanking and for writing browser fields |
+| `openbsd-netcat` | the fast client — one line to a unix socket |
+| `vte3` | **edit mode only**, imported lazily |
+| `picom` | only if your compositor is not already one |
+
+Nothing else, and nothing to build. `vte3` is the one dependency a mode can
+do without: it is imported lazily, so a desktop lacking it loses edit mode
+and keeps the other five.
+
+### 2. Clone, and check
 
 ```sh
 git clone <this repo> ~/homerow-replika
+~/homerow-replika/bin/homerow --doctor
 ```
 
-Bind the modes (qtile shown; any WM works — they are just commands):
+`--doctor` is the install instructions in executable form. It checks every
+library, typelib and command above, whether your session publishes an
+accessibility tree at all, and whether the browsers you have installed have
+the flag they need — and prints the command to fix each thing it finds. It is
+also the first thing to run when a mode is not seeing anything.
+
+### 3. Bind the modes
+
+They are just commands, so any window manager works. qtile:
 
 ```python
-HOMEROW = os.path.expanduser("~/homerow-replika/homerow-hint")
+HOMEROW = os.path.expanduser("~/homerow-replika/bin/homerow")
 Key([mod2], "space",        lazy.spawn(HOMEROW)),
 Key([mod2], "j",            lazy.spawn(HOMEROW + " --scroll")),
 Key([mod2], "slash",        lazy.spawn(HOMEROW + " --search")),
@@ -324,23 +364,26 @@ Key([mod2, "shift"], "c",   lazy.spawn(HOMEROW + " --caret-search")),
 Key([mod2], "e",            lazy.spawn(HOMEROW + " --edit")),
 ```
 
-Edit mode additionally needs `vte3` (the terminal widget nvim runs in). It is
-the only mode with a dependency outside the list above, and it is imported
-lazily, so a desktop without it loses edit mode and keeps everything else.
+That is the only file of yours homerow asks you to touch, and it asks
+because binding a key is your window manager's job and nobody else's.
+Nothing needs adding to your nvim config, your GTK settings or your shell —
+if a version of this ever asks you to, that is a bug, and one this project
+has already made and removed once (see Edit).
 
-Start the daemon at login — a line in your autostart, or the unit in
-`contrib/homerow.service`:
+### 4. Start the daemon at login
+
+A line in your autostart, or the unit in `contrib/homerow.service`:
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp contrib/homerow.service ~/.config/systemd/user/
+cp ~/homerow-replika/contrib/homerow.service ~/.config/systemd/user/
 systemctl --user enable --now homerow
 ```
 
-If it is not running, the client starts it and retries, so nothing breaks when
-you forget.
+If it is not running, the client starts it and retries, so nothing breaks
+when you forget.
 
-### Chromium and Electron need a flag
+### 5. Chromium and Electron need a flag
 
 They expose nothing to accessibility by default. Add it to
 `~/.config/brave-flags.conf`, `~/.config/code-flags.conf`,
@@ -357,35 +400,94 @@ VS Code additionally switches into "Screen Reader Optimized" mode with the
 flag; `"editor.accessibilitySupport": "off"` in its settings keeps hints
 without that.
 
+`homerow --doctor` checks both of these and prints the exact line to add.
+
+## Configure
+
+Everything is tunable, and none of it requires editing the source.
+
+```sh
+homerow --write-config      # ~/.config/homerow/config.yaml, fully commented
+homerow --check-config      # what it read, and what it could not use
+homerow --show-config       # every setting and its value right now
+homerow --restart           # the daemon reads the file once, at startup
+```
+
+The file layers over the built-in defaults, so it only has to name what you
+want changed:
+
+```yaml
+hint:
+  alphabet: "arstdhneio"     # colemak home row
+  windows: false             # stop labelling other windows
+scroll:
+  page_clicks: 10
+edit:
+  editor: "hx"
+chip_slot: blue              # which slot of the desktop theme a chip takes
+idle_timeout_s: 20
+```
+
+Keys are the names from `homerow/config.py`, lowercased. They can be grouped
+under the prefix they share, as above, or written flat (`hint_alphabet:`) —
+both work, so the grouping is there to read, never to get right.
+`config.py` stays the schema and the reason for every default: anything named
+there is settable, nothing else is, and the default's *type* is what a value
+is checked against. There is no second list to fall out of step with it.
+
+**A config file cannot break your desktop.** An unknown key, a string where a
+number belongs, an empty alphabet that would leave hint mode with no labels,
+a file that is not YAML at all — each is reported in the log and the built-in
+default stands. Keyboard control that dies over a stray tab is worse than
+keyboard control that ignores the line.
+
+PyYAML is used if you have it, and a small reader for the subset the config
+file needs stands in if you do not — so this adds no dependency. Both are
+tested against the same shipped example and required to agree.
+
 ## How it runs
 
 A resident daemon holds the Python interpreter, the PyGObject imports and the
-AT-SPI connection. `homerow-hint` is a shell script that writes one line to a
+AT-SPI connection. `bin/homerow` is a shell script that writes one line to a
 unix socket and exits — deliberately not Python, because the interpreter alone
-cost more than all the real work combined.
+cost more than all the real work combined. Measured here: 35ms through the
+shell, 645ms for the identical request through `python3`.
 
 ```
 alt+space
-  └─ homerow-hint (sh + nc, ~12ms)
+  └─ bin/homerow (sh + nc, ~12ms)
        └─ $XDG_RUNTIME_DIR/homerow.sock
-            └─ homerow-daemon ── collect ~25ms ── overlay ~2ms
+            └─ the daemon ── collect ~25ms ── overlay ~2ms
 ```
+
+So `bin/homerow` understands the six mode flags and nothing else. Everything
+that happens at human speed goes to `homerow-cli` unread, which is where the
+whole surface lives — one command, `homerow --help`:
 
 ```sh
-homerow-daemon --status       # is one answering?
-homerow-daemon --log          # tail the log
-homerow-daemon --quit         # stop it
-homerow-daemon -d/--debug     # foreground, mirror the log to stdout
-homerow-daemon -h/--help      # usage
-homerow-daemon -v/--version   # installed version
+homerow                  # hint and click
+homerow --edit           # …and the other five modes
+
+homerow --status         # is one answering?
+homerow --log 40         # tail the log
+homerow --quit           # stop it
+homerow --restart        # stop it and start another
+homerow --daemon         # run one in the foreground
+homerow --doctor         # check the install
+
+homerow --config PATH    # use this file instead of the default
+homerow --show-config    # …see Configure above
+homerow -l/--list        # print what would be hinted, draw nothing
+homerow --standalone     # a hint pass without a daemon, when one won't start
+homerow -h/-v/-d         # help, version, debug
 ```
 
-The daemon always logs to `$XDG_STATE_HOME/homerow/homerow.log`. Restart it
-after editing anything under `homerow/` — it holds the modules in memory.
+`homerow-hint` and `homerow-daemon` still work — they are two-line shims now,
+kept because somebody has them in their keybindings.
 
-`homerow-hint` itself takes `-h/--help` and `-v/--version` too (it forwards
-them to `homerow-cli`, same as `-l/--list` and `-d/--debug`), so `homerow-hint
--v` works whether or not a daemon is running.
+The daemon always logs to `$XDG_STATE_HOME/homerow/homerow.log`. It holds the
+modules in memory, so `homerow --restart` is what makes an edit under
+`homerow/` take effect.
 
 ## Theming
 
@@ -398,9 +500,9 @@ lands immediately:
 
 | Role | Slot | Setting |
 |---|---|---|
-| hint chip | dominant accent | `CHIP_SLOT` |
-| typed prefix, scroll outline | cyan | `CHIP_SLOT_MATCHED` |
-| window chip | purple | `CHIP_SLOT_WINDOW` |
+| hint chip | dominant accent | `chip_slot` |
+| typed prefix, scroll outline | cyan | `chip_slot_matched` |
+| window chip | purple | `chip_slot_window` |
 
 Text colour is chosen by measuring its **contrast** against the chip, so light
 themes stay readable. It used to threshold the chip's luminance and trust the
@@ -409,12 +511,13 @@ near the middle: measured here, the window chip's ink came out at 2.24:1 and a
 legend's meanings at 2.49:1, both well under readable. Contrast is the thing
 actually being asked about, so it is the thing measured — the theme's own
 foreground or background wherever one of them clears
-`INK_MIN_CONTRAST`, and plain black or white only when neither does. Nothing
+`ink_min_contrast`, and plain black or white only when neither does. Nothing
 is hardcoded: even the fallback is hex names run through the same slot and
-contrast logic. `FOLLOW_THEME = False` pins it.
+contrast logic. `follow_theme: false` pins it.
 
 Everything tunable lives in `homerow/config.py` — named settings, no magic
-numbers left in the modules.
+numbers left in the modules — and every one of them can be set from
+`~/.config/homerow/config.yaml` without touching the source. See Configure.
 
 ## Coverage
 
@@ -443,6 +546,14 @@ ranking, dedup, overflow detection); `test_rules.py` covers the decisions
 (which window counts as focused, what is worth offering, how a match is graded)
 plus structural checks that caught real crashes — every `connect()` handler
 must exist, every module referenced must be imported.
+
+Two of those structural checks are about documentation that would otherwise
+go stale unnoticed. `contrib/config.yaml` ships with every setting commented
+out, so nothing about reading it reveals that a setting it names has been
+renamed or that a default it states has moved on — the tests uncomment it and
+load it for real. And it is loaded through *both* YAML readers and the results
+compared, because an install without PyYAML must not be quietly a different
+program.
 
 ## Notes from building this
 
@@ -538,11 +649,38 @@ scrolling one page at once is worse than either. Measured over three runs on
 the same page and pointer position, counting frames that actually move:
 ~1250ms of motion before a key could be pressed, and none now.
 
+**A widget's grid is its allocation, not what you set it to.** Edit mode sized
+its window at `rows * char_height` plus its own frame, and every box came out
+one row short of what it had computed. `Vte.Terminal` fits
+`(allocation - padding) // cell` characters, not `allocation // cell` — it
+carries 1px of CSS padding on each edge under this theme — and it re-derives
+its grid from the allocation on the next size-allocate, so the
+`set_size(cols, rows)` before it is overruled a moment later regardless.
+
+In a compact box the missing row is the only one the text was going to be on.
+Measured on a 681x30 field: the widget settled at 96x1 while nvim still had
+`&lines=2`, so nvim drew two rows into a one-row grid, the terminal scrolled,
+and the one visible row was lualine's statusline — a box showing a statusline,
+dead space, and none of your text. Same field with the padding counted:
+allocation 677x48, grid 96x2, `&lines=2`, text on row 1.
+
+Two things worth keeping from how that was found. The obvious suspect was
+`set_size()` running *before* `spawn_async()`, since VTE creates the pty
+during spawn — and it was innocent: a probe spawning `stty size` showed the
+child getting the grid we asked for. And the whole thing was measured
+offscreen, against `nvim --remote-expr &lines` and `screenstring()`, without
+opening a window on the desktop being worked on. An `OffscreenWindow` was
+tried first and lies about exactly the thing under test — it ignores
+`resize()` after `show()` — so the probe used a real window parked at
+-4000,-4000 with `set_focus_on_map(False)`. Reasoning about geometry is how
+this bug survived several attempts; asking the editor what it thinks its
+screen is is what ended it.
+
 **A wall-clock deadline for the whole pass, not just each call.**
 `Atspi.set_timeout()` bounds one D-Bus call; `scroll.collect()` makes many of
 them per press. Each easily dodges that per-call cap alone, but they can sum
 to a real stall when the accessibility service is merely slow, not hung. A
-single overall budget (`SCROLL_COLLECT_BUDGET_MS`) covers that case instead,
+single overall budget (`scroll: collect_budget_ms`) covers that case instead,
 learned from reading a comparable project's collector
 ([museslabs/stochos](https://github.com/museslabs/stochos)), which wraps its
 whole async collection in one outer deadline for the same reason.
