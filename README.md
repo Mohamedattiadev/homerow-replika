@@ -159,13 +159,23 @@ sidebar and stopped, and entering with the pointer on the docs opened an
 outline around the whole window. Asking for the role too costs 3 extra matches
 out of 42 on that page and reports the pane as 1033x584 holding 55959px of
 content. Entering there now opens on the sidebar with the pointer on the
-sidebar and on the content pane with the pointer on the content pane —
-measured by scrolling each and diffing the screen: 9.2 grey levels of movement
-in the pane under the cursor, 0.0 in the other one. Entry costs 49–75ms
-median, 137ms at worst, and 0 of 137 pointer samples taken at 4ms during it
-were anywhere but where the cursor started. The same page with the sweep put
-back in front (`scroll: verify_on_entry: true`) costs 408–425ms and moves the
-pointer for 391 of 470 samples.
+sidebar and on the content pane with the pointer on the content pane.
+
+Measured on a real desktop, driving the daemon over its own socket and
+diffing the screen after the overlay closed: with the pointer on the sidebar
+the sidebar moves 10.6 grey levels and the content pane 0.0; with it on the
+content pane the content pane moves 2.9 and the sidebar 0.0. Entry costs
+78–94ms median and 140ms at worst, and 0 of 177 pointer samples taken every
+4ms during it were anywhere but where the cursor started. The same page with
+the sweep put back in front (`scroll: verify_on_entry: true`, on a nested
+display so the probes could not reach anything real) costs 408–425ms and
+moves the pointer for 391 of 470 samples.
+
+The region it *chose* is what changed there, more than what moved: the wheel
+is aimed at the pointer either way, so the old code often scrolled the right
+pane while outlining the whole window and offering nothing else to `Tab`. The
+case where the wrong region means `j` does nothing at all needs a nested
+non-scroller under the cursor, which is the four-box page above.
 
 ### Search
 
