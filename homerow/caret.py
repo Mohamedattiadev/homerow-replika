@@ -274,6 +274,7 @@ class CaretSession:
         self.linewise = False       # True for V (visual line), False for v
         self.pending_g = False
         self.pending_y = False
+        self.pending_d = False
 
         set_identity()
         self.colors = theme.palette()
@@ -483,8 +484,32 @@ class CaretSession:
                 self.anchor, self.linewise = self.offset, True
             self.window.queue_draw()
             return True
+        if key == Gdk.KEY_x:
+            self.pending_g = self.pending_y = self.pending_d = False
+            self._delete_selection_or_char()
+            return True
+        if key == Gdk.KEY_d:
+            self.pending_g = self.pending_y = False
+            if self.anchor is not None:
+                # Visual mode: d deletes the selection now, same as vim --
+                # there is no motion left to wait for.
+                self.pending_d = False
+                self._delete_selection_or_char()
+                return True
+            if self.pending_d:
+                self.pending_d = False
+                self._delete_line()
+            else:
+                self.pending_d = True
+                self.window.queue_draw()
+            return True
+        if key == Gdk.KEY_p:
+            self.pending_g = self.pending_y = self.pending_d = False
+            self._put(self._clipboard_text())
+            return True
         if key == Gdk.KEY_y:
             self.pending_g = False
+            self.pending_d = False
             if self.anchor is not None:
                 # Visual mode: y always yanks the selection immediately,
                 # same as vim -- there is no motion left to wait for.
@@ -510,8 +535,8 @@ class CaretSession:
                 self.pending_g = True
                 return True
         else:
-            if self.pending_y:
-                self.pending_y = False
+            if self.pending_y or self.pending_d:
+                self.pending_y = self.pending_d = False
                 self.window.queue_draw()
             self.pending_g = False
 
@@ -593,6 +618,12 @@ class CaretSession:
         except Exception:
             _clipboard_fallback(text)
 
+    def _clipboard_text(self):
+        try:
+            return Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()
+        except Exception:
+            return None
+
     def _yank(self):
         """Yank the selection, or the word under the cursor if none.
 
@@ -611,6 +642,116 @@ class CaretSession:
         self.anchor = None
         self.linewise = False
         self.window.queue_draw()
+
+    def _editable(self):
+        """This block's EditableText interface, if it publishes one."""
+        try:
+            return self.element.accessible.get_editable_text_iface()
+        except Exception:
+            return None
+
+    def _delete(self, start, end):
+        """Remove [start, end) from the field.
+
+        Two ways, same split as edit mode and for the same reason: Chromium
+        publishes no EditableText at all. What it does publish is a caret
+        that can be set, so the fallback puts the caret at the start of the
+        range and presses Delete over it -- which is what kindaVim calls its
+        Keyboard Strategy, arrived at from the same dead end.
+        """
+        start = max(0, min(start, self.length))
+        end = max(start, min(end, self.length))
+        if end <= start:
+            return
+
+        iface = self._editable()
+        if iface is not None:
+            try:
+                Atspi.EditableText.delete_text(iface, start, end)
+                self.offset = start
+                self._refresh()
+                return
+            except Exception:
+                pass                 # advertised and refused; press keys
+        self._by_keystroke(start, [("Delete", end - start)])
+
+    def _put(self, text):
+        """Insert `text` at the caret."""
+        if not text:
+            return
+        iface = self._editable()
+        if iface is not None:
+            try:
+                Atspi.EditableText.insert_text(
+                    iface, self.offset, text, len(text))
+                self.offset += len(text)
+                self._refresh()
+                return
+            except Exception:
+                pass
+        self._set_clipboard(text)
+        self._by_keystroke(self.offset, [(config.CARET_PASTE, 1)])
+
+    def _by_keystroke(self, offset, combos):
+        """Put the caret at `offset`, then send keys to the app itself.
+
+        The overlay holds an exclusive keyboard grab, so synthetic keys would
+        otherwise be delivered straight back to us instead of to the
+        application underneath. The grab is dropped for the duration and
+        taken again afterwards.
+        """
+        try:
+            Atspi.Text.set_caret_offset(self.iface, offset)
+        except Exception:
+            return
+        self._release_grab()
+        x11.release_modifiers()
+        for combo, times in combos:
+            for _ in range(min(times, config.CARET_MAX_KEYSTROKES)):
+                x11.send_combo(combo)
+
+        def resume():
+            # The application processes those keys on its own loop, so the
+            # text is only worth re-reading once it has had a moment to.
+            self.offset = offset
+            self._refresh()
+            GLib.idle_add(self._grab)
+            return False
+
+        GLib.timeout_add(config.CARET_EDIT_SETTLE_MS, resume)
+
+    def _release_grab(self):
+        if self._grabbed:
+            try:
+                Gdk.Display.get_default().get_default_seat().ungrab()
+            except Exception:
+                pass
+            self._grabbed = False
+
+    def _refresh(self):
+        """Re-read the block after it was edited underneath us."""
+        try:
+            self.length = self.iface.get_character_count()
+            self.text = _text_of(self.iface, 0, self.length)
+        except Exception:
+            pass
+        self.offset = max(0, min(self.offset, self.length))
+        self.anchor = None
+        self.linewise = False
+        self._sync_caret()
+        self.window.queue_draw()
+
+    def _delete_selection_or_char(self):
+        """x, and d in visual mode."""
+        span = self._selection()
+        if span is None:
+            span = (self.offset, min(self.offset + 1, self.length))
+        self._delete(*span)
+
+    def _delete_line(self):
+        """dd: the line, and the newline ending it if there is one."""
+        start, end = self._line_bounds(self.offset)
+        self._delete(start, min(end + 1, self.length))
 
     def _yank_line(self):
         """yy: yank the current line, cursor-position selection or not."""
@@ -721,9 +862,12 @@ class CaretSession:
         else:
             mode = "CARET"
         legend = (f"{mode}   h/j/k/l move   w/b/e word   0/$ line   "
-                  f"gg/G doc   v/V select   y yank   yy line   / search   esc")
+                  f"gg/G doc   v/V select   y yank   x/d cut   p put   "
+                  f"/ search   esc")
         if self.pending_y:
             legend = "y…   " + legend
+        if self.pending_d:
+            legend = "d…   " + legend
         if len(self.blocks) > 1:
             legend = (f"[{self.index + 1}/{len(self.blocks)} "
                       f"1-9 jump, tab next]   " + legend)

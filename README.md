@@ -90,6 +90,9 @@ A real text cursor driven by vim motions, over AT-SPI's Text interface.
 | `v` / `V` | visual select / visual line select |
 | `y` | yank the selection (or the word under the cursor) |
 | `yy` | yank the current line |
+| `x` | delete the selection, or the character under the cursor |
+| `d` | delete the selection (visual), `dd` the line |
+| `p` | put the clipboard at the cursor |
 | `1`–`9` / `Tab` | jump between text blocks |
 | `/` | reopen caret search (see below) without leaving caret mode |
 | `Esc` | leave |
@@ -98,6 +101,17 @@ Yanking stays in caret mode afterward, same as vim — it doesn't exit, so `yy`
 can be followed by more motion or another yank. `/` works the same way: land
 on a word via caret search, select or yank something, then `/` again to find
 the next thing — no need to back out to Esc and press the hotkey over again.
+
+`x`, `d` and `p` change the text, and do it the same two ways edit mode
+writes a field back: through AT-SPI's `EditableText` where the app publishes
+one, and by pressing keys at the app where it does not. Chromium publishes no
+`EditableText` — but it does accept a caret position, so the fallback puts
+the caret where the range starts and presses `Delete` over it. That is what
+kindaVim calls its Keyboard Strategy, reached from the same dead end.
+
+The overlay holds an exclusive keyboard grab, so it drops the grab for the
+length of those keystrokes and takes it again afterwards; otherwise the keys
+meant for the application would be delivered straight back to us.
 
 In apps with their own vim caret mode — qutebrowser, Firefox — it enters
 *theirs* instead, and says so.

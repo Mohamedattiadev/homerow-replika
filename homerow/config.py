@@ -244,6 +244,18 @@ CARET_SEARCH_MAX_HITS = 200
 CARET_SEARCH_LABELS = SEARCH_LABELS
 CARET_SEARCH_MIN_QUERY = SEARCH_MIN_QUERY
 
+# Caret mode's operators (x, d, dd, p) write through EditableText where the
+# app publishes one, and press keys at the app where it does not -- Chromium
+# publishes no EditableText and does accept a caret position, so the fallback
+# is to put the caret where the range starts and press Delete over it.
+CARET_PASTE = "ctrl+v"
+# Ceiling on that. Deleting a 4000-character line one Delete at a time is a
+# visible freeze and almost certainly not what was meant.
+CARET_MAX_KEYSTROKES = 400
+# How long the application is given to process those keys before the block is
+# read back. Reading immediately returns the text as it was before them.
+CARET_EDIT_SETTLE_MS = 120
+
 # --- edit (open a field in nvim, on top of the field) ----------------------
 # Edit mode asks for the EDITABLE *state* and does not filter by role at all.
 # A role list was tried first and kept missing things for no good reason:
