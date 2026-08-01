@@ -21,6 +21,7 @@ gets.
 """
 
 import os
+import subprocess
 import tempfile
 import time
 
@@ -365,6 +366,37 @@ def focused(fields):
     return hit
 
 
+def wait_warm(timeout_ms=None, log=None):
+    """Block until the warm server answers, or the timeout runs out.
+
+    Called on the way out of a session, where nobody is waiting on us, so
+    that the *next* open finds a server instead of paying for a cold start.
+    Existence of the socket is not enough -- nvim creates it before the
+    config has finished loading -- so this asks it a question.
+    """
+    log = log or (lambda _m: None)
+    timeout_ms = timeout_ms or config.EDIT_WARM_READY_MS
+    editor = resolve_editor()
+    if not is_vim_like(editor):
+        return False
+    import subprocess
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if warm_alive():
+            try:
+                answer = subprocess.run(
+                    editor.split() + ["--server", warm_socket_path(),
+                                      "--remote-expr", "1"],
+                    capture_output=True, timeout=2, check=False)
+                if answer.returncode == 0:
+                    return True
+            except (OSError, subprocess.SubprocessError):
+                pass
+        time.sleep(config.EDIT_WARM_POLL_MS / 1000)
+    log("warm editor did not come back in time; the next open may be cold")
+    return False
+
+
 def stop_warm():
     """Kill the warm server, if any. Its buffer state is not reusable."""
     proc = _warm["proc"]
@@ -379,8 +411,22 @@ def stop_warm():
         return
     try:
         proc.terminate()
+        # Reaped before anything replaces it, and this is load-bearing rather
+        # than tidiness. nvim unlinks its listen socket as it exits; the
+        # replacement server is started immediately after this returns and
+        # creates a socket at the same path, so an unreaped predecessor
+        # deletes its successor's socket on the way out. Measured: every edit
+        # after the first found no server and started from cold, and the
+        # "warm" path was warm exactly once per daemon.
+        proc.wait(timeout=config.EDIT_WARM_STOP_MS / 1000)
     except OSError:
         pass
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait(timeout=config.EDIT_WARM_STOP_MS / 1000)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
         os.unlink(warm_socket_path())
     except OSError:
@@ -457,7 +503,8 @@ def sweep_temp_files():
     """
     import glob
     removed = 0
-    pattern = os.path.join(tempfile.gettempdir(), f"homerow-*{config.EDIT_SUFFIX}")
+    pattern = os.path.join(tempfile.gettempdir(),
+                           f"homerow-*{config.EDIT_SUFFIX}")
     for path in glob.glob(pattern):
         try:
             os.unlink(path)
@@ -605,6 +652,54 @@ def write(field, text, window_id=None, log=None):
         log("EditableText refused the write; falling back to paste")
     _write_paste(field, text, window_id, log)
     return PASTE
+
+
+def keep_buffer(text, log=None):
+    """Save `text` where the user can get it back; returns the path, or None.
+
+    For the one write that cannot be undone by editing again: replacing a
+    field's contents with nothing. Editing again cannot recover what was
+    there, so a copy outlives the session. Swept at the next daemon start
+    like every other buffer this mode leaves behind.
+    """
+    log = log or (lambda _m: None)
+    try:
+        handle, path = tempfile.mkstemp(prefix="homerow-kept-",
+                                        suffix=config.EDIT_SUFFIX)
+        with os.fdopen(handle, "w", encoding="utf-8") as temp:
+            temp.write(text)
+        log(f"kept the field's previous contents at {path}")
+        return path
+    except OSError as error:
+        log(f"could not keep the field's previous contents: {error!r}")
+        return None
+
+
+def verify(field, expected, log=None):
+    """Read the field back and say whether it holds what was sent.
+
+    Answers the question the mode could not answer before: did it land? The
+    Text interface reads without focus and without a keystroke -- the same
+    property that makes reading a field possible in the first place -- so
+    checking costs one round trip and nothing else.
+
+    Worth doing because the paste path cannot fail loudly. It borrows the
+    clipboard, focuses the window and presses ctrl+a ctrl+v at it; every one
+    of those can be swallowed by an application that was busy, and the mode
+    would report success either way. Returns True, False, or None when the
+    field cannot be read at all.
+    """
+    log = log or (lambda _m: None)
+    try:
+        actual = read(field.accessible)
+    except Exception as error:
+        log(f"could not read the field back: {error!r}")
+        return None
+    if actual.strip() == expected.strip():
+        return True
+    log(f"write-back did not land: field holds {len(actual)} chars, "
+        f"sent {len(expected)}")
+    return False
 
 
 def _write_editable_text(accessible, text):
@@ -1120,6 +1215,14 @@ class EditSession:
             # background, off the path of anything the user is waiting for.
             stop_warm()
             start_warm(log=self._log)
+            # ...but "in the background" is not "instantly": measured, the
+            # replacement takes over a second to load the config and answer.
+            # Edit two fields in quick succession and the second one found no
+            # server and started an editor from cold -- the slow path, for no
+            # reason other than arriving too soon after the first. Waiting for
+            # the socket costs nothing here (this is the close, nobody is
+            # typing) and spares the next open.
+            wait_warm(log=self._log)
         # The field's contents were on disk; they should not stay there --
         # unless this is the one case that deliberately left them, where the
         # file is the only copy of the edit (see close_for_workspace). The

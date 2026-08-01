@@ -393,6 +393,21 @@ EDIT_PROBE_ATTACH_MS = 400
 # How long after the warm server starts before it is probed; it has to
 # finish loading the user's config first.
 EDIT_PROBE_DELAY_MS = 1500
+
+# How long after a write-back before the field is read again to check it
+# landed. The paste path is asynchronous -- it focuses the window and presses
+# keys at it -- so the characters have not arrived yet when write() returns.
+EDIT_VERIFY_DELAY_MS = 700
+
+# How long to wait, on the way out of a session, for the replacement warm
+# server to be ready. Measured: it takes over a second to load the config, and
+# a second edit inside that window found nothing and started from cold.
+EDIT_WARM_READY_MS = 4000
+EDIT_WARM_POLL_MS = 100
+# How long to wait for the outgoing warm server to actually die. It has
+# to be gone before its replacement starts: nvim unlinks its listen
+# socket as it exits, and that is the path the new one is about to use.
+EDIT_WARM_STOP_MS = 2000
 # Editors the compact settings above are valid for; anything else is launched
 # untouched rather than handed flags it will not understand.
 EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}

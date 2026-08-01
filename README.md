@@ -236,6 +236,23 @@ rather than reused, because a dismissed editor leaves a modified buffer that
 the next `:edit` would fail on. If anything about that path fails, the mode
 falls back to starting nvim from cold.
 
+**Reap the old server before starting its replacement.** nvim unlinks its
+listen socket as it exits, and the replacement listens on the same path — so
+an unreaped predecessor deletes its successor's socket on the way out.
+Measured over three real sessions: every edit after the first found no server
+and started cold, so the warm path was warm exactly once per daemon. Worse
+than slow, too — while both are alive, a command sent to "the socket" and a UI
+attached to it can reach different processes, and then the editor you are
+looking at is not the one holding your field.
+
+**The write-back is checked.** After the text goes back, the field is read
+again and compared. The paste path cannot fail loudly — it borrows the
+clipboard, focuses the window and presses `ctrl+a ctrl+v`, and an application
+that was busy swallows any of that while the mode reports success. Reading
+needs no focus and no keystroke, so confirming costs one round trip. And an
+edit that empties a field which had something in it keeps a copy of what was
+there and says where: it is the one write that editing again cannot undo.
+
 With exactly one editable field on screen there is nothing to pick, so it
 opens straight away — and neither does a field you are already typing in. If
 the application says which field has focus, that is the one, and the picker is

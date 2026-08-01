@@ -526,6 +526,131 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
                 self.assertNotIn("DWELL_TIMEOUT_S", source)
 
 
+class WarmServerHandover(unittest.TestCase):
+    """The outgoing warm editor must be dead before its replacement starts.
+
+    nvim unlinks its listen socket as it exits, and the replacement is
+    started immediately after and listens on the same path -- so an unreaped
+    predecessor deletes its successor's socket on the way out. Measured over
+    three real sessions: every edit after the first found no server, and the
+    warm path was warm exactly once per daemon. Worse than slow, because
+    while both are alive a command sent to "the socket" and a UI attached to
+    it can reach different processes.
+    """
+
+    def test_stopping_waits_for_the_process_to_die(self):
+        import unittest.mock
+
+        from homerow import edit
+        proc = unittest.mock.Mock()
+        proc.poll.return_value = None
+        with unittest.mock.patch.dict(edit._warm, {"proc": proc}), \
+             unittest.mock.patch("os.unlink"):
+            edit.stop_warm()
+        proc.terminate.assert_called_once()
+        proc.wait.assert_called()          # reaped, not just signalled
+
+    def test_a_process_that_will_not_die_is_killed(self):
+        import subprocess
+        import unittest.mock
+
+        from homerow import edit
+        proc = unittest.mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired("nvim", 2), None]
+        with unittest.mock.patch.dict(edit._warm, {"proc": proc}), \
+             unittest.mock.patch("os.unlink"):
+            edit.stop_warm()
+        proc.kill.assert_called_once()
+
+    def test_the_reference_is_dropped_even_if_stopping_fails(self):
+        import unittest.mock
+
+        from homerow import edit
+        proc = unittest.mock.Mock()
+        proc.terminate.side_effect = OSError("gone")
+        with unittest.mock.patch.dict(edit._warm, {"proc": proc}), \
+             unittest.mock.patch("os.unlink"):
+            edit.stop_warm()
+        # Otherwise warm_alive() keeps answering for a process that is gone.
+        self.assertIsNone(edit._warm["proc"])
+
+
+class AnEmptyingWriteKeepsTheText(unittest.TestCase):
+    """Replacing a field's contents with nothing must leave a copy behind.
+
+    It is the one write editing again cannot undo: the text it replaced is
+    gone. Reported live -- a field holding 54 characters came back 0, twice,
+    with nothing to restore it from.
+    """
+
+    def test_the_previous_contents_are_saved(self):
+        from homerow import edit
+        path = edit.keep_buffer("fifty four characters of somebody's actual work")
+        self.assertIsNotNone(path)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(),
+                             "fifty four characters of somebody's actual work")
+
+    def test_what_it_leaves_is_swept_at_the_next_start(self):
+        from homerow import config, edit
+        # Otherwise it is somebody's field contents sitting in /tmp forever.
+        path = edit.keep_buffer("something")
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        self.assertTrue(os.path.basename(path).startswith("homerow-"))
+        self.assertTrue(path.endswith(config.EDIT_SUFFIX))
+
+
+class TheWriteIsChecked(unittest.TestCase):
+    """Reading the field back is what turns "sent" into "landed".
+
+    The paste path cannot fail loudly: it borrows the clipboard, focuses the
+    window and presses ctrl+a ctrl+v, and an application that was busy
+    swallows any of that while the mode reports success.
+    """
+
+    def field(self, holds):
+        import unittest.mock
+        return unittest.mock.Mock(), holds
+
+    def test_matching_text_confirms(self):
+        import unittest.mock
+
+        from homerow import edit
+        target = unittest.mock.Mock()
+        with unittest.mock.patch.object(edit, "read", return_value="hello"):
+            self.assertIs(edit.verify(target, "hello"), True)
+
+    def test_different_text_is_reported(self):
+        import unittest.mock
+
+        from homerow import edit
+        target = unittest.mock.Mock()
+        with unittest.mock.patch.object(edit, "read", return_value="old text"):
+            self.assertIs(edit.verify(target, "new text"), False)
+
+    def test_a_field_that_cannot_be_read_is_not_a_failure(self):
+        import unittest.mock
+
+        from homerow import edit
+        # Unknown is not the same as wrong; claiming the edit failed when the
+        # field simply will not answer would cry wolf on every such app.
+        target = unittest.mock.Mock()
+        with unittest.mock.patch.object(edit, "read",
+                                        side_effect=RuntimeError("no")):
+            self.assertIsNone(edit.verify(target, "anything"))
+
+    def test_trailing_whitespace_does_not_count_as_a_mismatch(self):
+        import unittest.mock
+
+        from homerow import edit
+        # The editor adds a trailing newline; the field will not have one.
+        target = unittest.mock.Mock()
+        with unittest.mock.patch.object(edit, "read", return_value="hello"):
+            self.assertIs(edit.verify(target, "hello\n"), True)
+
+
 class LeavingTheChordIsGuarded(unittest.TestCase):
     """Only leave a qtile chord when there is one to leave.
 
