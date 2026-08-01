@@ -99,14 +99,13 @@ def collect(screen_w, screen_h):
     # five tabs alive otherwise offers five pages of fields on one viewport.
     frame = elements.active_frame(app, (win_x, win_y, win_w, win_h))
     scope = frame if frame is not None else app
+    document = None
     try:
         title = x11.window_name(x11.active_window_id() or 0) if \
             x11.available() else ""
         document = elements.active_document(scope, title)
-        if document is not None:
-            scope = document
     except Exception:
-        pass
+        document = None
 
     collection = scope.get_collection_iface()
     if collection is None:
@@ -138,10 +137,25 @@ def collect(screen_w, screen_h):
     except Exception:
         return []
 
+    # Fields inside a background tab, dropped by rectangle rather than by
+    # scoping the query to the foreground document. Scoping was how this used
+    # to narrow, and it threw the browser's own chrome away with the
+    # background tabs: reported live on Google Drive, the page's search box
+    # got a hint and the address bar beside it did not, because the address
+    # bar is not inside any document. Every tab's document reports the same
+    # viewport rectangle, so "inside the viewport but not in the foreground
+    # document" is the thing to reject, and chrome -- which is outside the
+    # viewport entirely -- is kept.
+    viewport = _rect_of(document) if document is not None else None
+    background = _background_documents(scope, document, win_x, win_y)
+
     found = []
     for accessible, ext in elements._extents(matches, win_x, win_y):
         cx, cy = ext.x + ext.width // 2, ext.y + ext.height // 2
         if not (left <= cx < right and top <= cy < bottom):
+            continue
+        if viewport is not None and background and _within(viewport, cx, cy) \
+                and not _belongs_to(accessible, document):
             continue
         if ext.width < config.EDIT_MIN_SIZE or \
                 ext.height < config.EDIT_MIN_SIZE:
@@ -167,6 +181,71 @@ def collect(screen_w, screen_h):
 
     found.sort(key=lambda e: e.w * e.h, reverse=True)
     return found
+
+
+def _rect_of(accessible):
+    """Screen rectangle of an accessible, or None."""
+    try:
+        component = accessible.get_component_iface()
+        if component is None:
+            return None
+        ext = component.get_extents(Atspi.CoordType.SCREEN)
+        if ext.width <= 0 or ext.height <= 0:
+            return None
+        return ext.x, ext.y, ext.width, ext.height
+    except Exception:
+        return None
+
+
+def _within(rect, x, y):
+    left, top, width, height = rect
+    return left <= x < left + width and top <= y < top + height
+
+
+def _background_documents(scope, document, win_x, win_y):
+    """True if this window has documents other than the foreground one.
+
+    Only then is any of the ancestry checking below worth paying for: a
+    single-document window has no background tab to confuse anything with,
+    and every field in it is either the page or the chrome.
+    """
+    if document is None:
+        return False
+    try:
+        collection = scope.get_collection_iface()
+        if collection is None:
+            return False
+        rule = Atspi.MatchRule.new(
+            Atspi.StateSet.new([]), Atspi.CollectionMatchType.ALL,
+            {}, Atspi.CollectionMatchType.ALL,
+            [Atspi.Role.DOCUMENT_WEB], Atspi.CollectionMatchType.ANY,
+            [], Atspi.CollectionMatchType.ALL, False)
+        return len(collection.get_matches(
+            rule, Atspi.CollectionSortOrder.CANONICAL, 8, True)) > 1
+    except Exception:
+        return False
+
+
+def _belongs_to(accessible, document):
+    """True if `accessible` is inside `document`.
+
+    Walks up rather than down, and only for the few candidates that sit
+    inside the viewport at all -- editable fields are a handful per window,
+    so the round trips this costs are affordable where hint mode's would not
+    be. Bounded, because a broken tree with a parent cycle would otherwise
+    hang the daemon on a mode that is meant to feel instant.
+    """
+    node = accessible
+    for _ in range(config.EDIT_ANCESTOR_LIMIT):
+        if node is None:
+            return False
+        try:
+            if node == document:
+                return True
+            node = node.get_parent()
+        except Exception:
+            return False
+    return False
 
 
 def resolve_editor(editor=None):
@@ -276,71 +355,106 @@ def chrome_rows(editor=None, log=None):
 
 
 def probe_chrome(editor=None, log=None):
-    """Measure the editor's chrome now, by attaching a throwaway UI.
+    """Measure the editor's chrome at startup, on an editor of our own.
 
     The number is only observable while a UI is attached -- probed directly,
     lualine sets laststatus back to 3 the moment one is, whatever it was told
-    before -- so measuring it on the headless warm server always answers 0 and
-    the first field of the session comes out a row short before correcting
-    itself. Attaching a UI over a bare pty is what the VTE widget does anyway,
-    minus the widget, so it can be done here at warm-up where nobody is
-    waiting rather than in front of the user.
+    before -- and the warm server is headless. The obvious move is to attach a
+    throwaway UI to the warm server and ask it, and that is wrong: nvim keeps
+    the phantom UI's geometry after the process goes, so the real editor then
+    opened at the phantom's 80x24 instead of the field's size. Measured, with
+    the box asked for 2 rows: `&lines` came back 24 and only the statusline
+    drew, because nvim was painting a 24-row screen into a 2-row window.
 
-    Costs one nvim process for a few hundred milliseconds, at daemon start.
-    Failure is not an error: the assumed count still works, it is just a row
-    out until the first session corrects it.
+    So this starts an editor of its own, on its own socket, asks it, and kills
+    it. Costs one nvim for a few hundred milliseconds at daemon start, where
+    nobody is waiting, and the warm server is never touched.
     """
     log = log or (lambda _m: None)
-    if not warm_alive() or _warm["chrome"] is not None:
+    if _warm["chrome"] is not None:
         return _warm["chrome"]
     editor = resolve_editor(editor)
     if not is_vim_like(editor):
         return None
     import pty
-    import subprocess
+    handle, socket_path = tempfile.mkstemp(prefix="homerow-probe-", suffix=".sock")
+    os.close(handle)
+    os.unlink(socket_path)
+    # With a file to edit, because that is the state being measured. Started
+    # with no arguments the editor lands on its dashboard, where a statusline
+    # plugin commonly hides itself -- so it answered "no chrome" and the first
+    # real field then opened a row short and resized.
+    handle, sample = tempfile.mkstemp(prefix="homerow-probe-",
+                                      suffix=config.EDIT_SUFFIX)
+    with os.fdopen(handle, "w", encoding="utf-8") as temp:
+        temp.write("homerow\n")
     primary = secondary = None
-    ui = None
+    proc = None
     try:
-        # Ask for the rows back first, exactly as warm_open does for a real
-        # session. Without this the probe measures a server that was never
-        # told to be compact -- LazyVim sets laststatus=3 in its own options,
-        # so the answer came back 1 even with the statusline plugin disabled,
-        # which is the untold-server's answer and not the session's.
+        # Headless first, then a UI -- the order a real session runs in, and
+        # the order is the whole measurement. A statusline plugin re-asserts
+        # its row when a UI *arrives*; told to stand down while one is already
+        # attached, it simply obeys. Probed both ways: apply-then-attach ends
+        # at laststatus=3, attach-then-apply stays at 0. Only the first is
+        # what a field will actually get.
+        proc = subprocess.Popen(
+            editor.split() + config.EDIT_ANNOUNCE
+            + ["--headless", "--listen", socket_path, sample],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+        deadline = time.monotonic() + config.EDIT_PROBE_READY_MS / 1000
+        while time.monotonic() < deadline:
+            if os.path.exists(socket_path):
+                break
+            time.sleep(config.EDIT_WARM_POLL_MS / 1000)
+        else:
+            log("chrome probe editor did not start")
+            return None
         subprocess.run(
-            editor.split() + ["--server", warm_socket_path(), "--remote-expr",
+            editor.split() + ["--server", socket_path, "--remote-expr",
                               f'execute("silent! {config.EDIT_COMPACT_SET}")'],
             capture_output=True, timeout=5, check=False)
         primary, secondary = pty.openpty()
         ui = subprocess.Popen(
-            editor.split() + ["--server", warm_socket_path(), "--remote-ui"],
+            editor.split() + ["--server", socket_path, "--remote-ui"],
             stdin=secondary, stdout=secondary, stderr=subprocess.DEVNULL,
             start_new_session=True)
-        time.sleep(config.EDIT_PROBE_ATTACH_MS / 1000)
-        return chrome_rows(editor, log)
+        time.sleep(config.EDIT_PROBE_SETTLE_MS / 1000)
+        try:
+            ui.kill()
+            ui.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        answer = subprocess.run(
+            editor.split() + ["--server", socket_path, "--remote-expr",
+                              "(&laststatus > 0 ? 1 : 0) + &cmdheight"],
+            capture_output=True, timeout=5, check=False)
+        if answer.returncode == 0:
+            measured = max(0, int(answer.stdout.decode().strip()))
+            _warm["chrome"] = measured
+            log(f"editor keeps {measured} row(s) for itself")
+            return measured
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         log(f"could not probe the editor's chrome: {error!r}")
-        return None
     finally:
-        if ui is not None:
-            # Reaped, not just signalled: terminate() alone leaves a zombie
-            # for as long as the daemon runs, and the daemon runs all session.
+        if proc is not None:
             try:
-                ui.terminate()
-                ui.wait(timeout=2)
-            except OSError:
+                proc.kill()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
-            except subprocess.TimeoutExpired:
-                ui.kill()
+        for fd in (primary, secondary):
+            if fd is not None:
                 try:
-                    ui.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-        for handle in (primary, secondary):
-            if handle is not None:
-                try:
-                    os.close(handle)
+                    os.close(fd)
                 except OSError:
                     pass
+        for path in (socket_path, sample):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return None
 
 
 def focused(fields):

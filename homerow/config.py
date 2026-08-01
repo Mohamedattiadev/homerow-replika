@@ -375,12 +375,13 @@ EDIT_ANNOUNCE = ["--cmd", "let g:started_by_homerow = 1"]
 EDIT_CHROME_ROWS_ASSUMED = 2
 # Rows of actual text a compact editor should be able to show. The box is
 # this plus whatever chrome the editor turns out to cost.
-# Rows of text a compact editor shows at minimum, whatever the field's own
-# height is. One matched a one-line field exactly and edited badly: a line
-# that wraps, or a field holding a paragraph, left you typing through a slot
-# with no sight of the line above or below. Three is a line and its
-# neighbours. The box grows past this when the text needs it, up to the cap.
-EDIT_COMPACT_TEXT_ROWS = 3
+# Rows of text a compact editor shows at minimum. One, because the box grows
+# with the content anyway (wrapping counted) and a row with nothing in it is
+# just a black strip -- padding a one-line field out to three left two dead
+# rows under the text, which reads worse than a box that fits. Contrast the
+# statusline: that row is also "not your text", but it says which mode you
+# are in, so it earns its place. See EDIT_ANNOUNCE.
+EDIT_COMPACT_TEXT_ROWS = 1
 EDIT_COMPACT_MAX_ROWS = 12
 # How long after the editor attaches before its chrome is measured again. The
 # warm server is headless and a statusline plugin may only appear once a UI
@@ -408,6 +409,16 @@ EDIT_WARM_POLL_MS = 100
 # to be gone before its replacement starts: nvim unlinks its listen
 # socket as it exits, and that is the path the new one is about to use.
 EDIT_WARM_STOP_MS = 2000
+
+# How far up the tree to look when asking which document a field belongs
+# to. Bounded so a tree with a parent cycle cannot hang the daemon.
+EDIT_ANCESTOR_LIMIT = 24
+
+# How long to wait for the throwaway probe editor to create its socket.
+EDIT_PROBE_READY_MS = 5000
+# How long to let plugins react to the compact settings before reading
+# back what they kept. Measured: lualine re-asserts within ~300ms.
+EDIT_PROBE_SETTLE_MS = 500
 # Editors the compact settings above are valid for; anything else is launched
 # untouched rather than handed flags it will not understand.
 EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}

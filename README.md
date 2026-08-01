@@ -55,6 +55,14 @@ Labels every clickable element, and every other visible window.
 Windows are labelled in a second colour, so the same keypress that clicks a
 button can instead switch apps.
 
+Chips sit **on** the element they label, overlapping its top-left corner, and
+only move aside for another chip. Beside it was tried first for years, and it
+is what makes a label ambiguous: a chip in the gap between two controls
+belongs to whichever one you assume, and on a toolbar or a row of links the
+assumption is wrong about half the time. A chip sitting on a thing cannot be
+misread, which is why Homerow and Vimium both put it there and accept covering
+a few pixels of the target.
+
 ### Scroll
 
 Enters immediately on the region under the pointer, else the largest. No picker.
@@ -184,21 +192,27 @@ return {
 `g:started_by_homerow` is set before your config runs, on both the warm server
 and a cold start. Nothing breaks without it — the box is just taller.
 
-The box is as tall as the *text*, not as tall as the field — a minimum of
-three rows, growing with the content. Matching the field exactly gave a
-one-line box for a one-line field, which looks right and edits badly: a line
-that wraps, or a field holding a paragraph, leaves you typing through a slot
-with no sight of the lines above or below. The window floats over the page
-anyway, so it may be taller than the thing it sits on; it just should not be
-taller than it needs to be.
+The box is as tall as the *text*, not as tall as the field, growing with the
+content. A row with nothing in it is
+just a black strip, so there are none: padding a one-line field out to three
+rows left two dead rows under the text, which reads worse than a box that
+fits. The statusline row is the exception, and it earns its place by saying
+which mode you are in — which is why leaving it on beats winning the row
+back.
 
-The count can only be taken with a UI attached: probed directly, lualine sets
-`laststatus` back to 3 the moment one is, whatever it was told before, and the
-warm server is headless. So the daemon attaches a throwaway UI over a bare pty
-at warm-up and asks then — a few hundred milliseconds where nobody is waiting,
-rather than a box that is a row out until the first field corrects it. On this
-desktop, with the statusline standing down, a one-line field gets a 46px box
-holding one row of your text, which is the field.
+The count is measured at daemon start, on a throwaway editor of its own — and
+getting that right took three tries, each wrong in an instructive way.
+Attaching a probe UI to the *warm server* poisons it: nvim keeps the phantom
+UI's geometry after the process goes, so the real editor then opened at the
+phantom's 80x24 instead of the field's size, `&lines` came back 24 for a
+two-row window, and only the statusline drew. Starting the probe editor with
+no file lands it on a dashboard, where a statusline plugin commonly hides
+itself, so it answers "no chrome". And the *order* is the whole measurement: a
+statusline plugin re-asserts its row when a UI **arrives**, so told to stand
+down while one is already attached it simply obeys. Probed both ways —
+apply-then-attach ends at `laststatus=3`, attach-then-apply stays at 0, and
+only the first is what a field actually gets. The probe now mirrors a real
+session exactly: headless, apply, attach, ask.
 
 | Key | Action |
 |---|---|
@@ -295,6 +309,15 @@ in every app, which is why the field's current contents come out without a
 kindaVim needs a hand-maintained per-app override list for the equivalent
 choice, because macOS applications advertise accessibility support they do not
 have. AT-SPI applications answer honestly, so this asks each element instead.
+
+**The browser's own fields count too.** Edit mode narrows to the foreground
+document so that a browser keeping five tabs alive does not offer five pages
+of fields on one viewport — and that narrowing used to throw the browser's
+chrome out with them. Reported live on Google Drive: the page's search box got
+a hint and the address bar beside it did not, because the address bar is not
+inside any document. Every tab's document reports the same viewport rectangle,
+so what gets rejected is "inside the viewport but not in the foreground
+document", and chrome — outside the viewport entirely — is kept.
 
 **What counts as a field** is the AT-SPI `EDITABLE` state, not a list of
 roles. A role list was tried first and kept missing things — GitHub's "Go to

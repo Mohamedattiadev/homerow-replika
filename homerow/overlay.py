@@ -716,20 +716,35 @@ def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
     slightly-overlapping chip beats one that never got drawn.
     """
     gap = config.HINT_GAP
-    candidates = [
+    # On the element first, overlapping its own top-left corner. Beside it was
+    # tried first for years and is what makes a label ambiguous: a chip in the
+    # gap between two controls belongs to whichever one you assume, and on a
+    # toolbar or a row of links the assumption is wrong about half the time.
+    # Reported live -- chips reading as though they labelled the neighbour.
+    # A chip sitting *on* a thing cannot be misread, which is why Homerow and
+    # Vimium both put it there and accept covering a few pixels of the target.
+    on_element = (element.x, element.y)
+    beside = [
         (element.x - w - gap, element.y + (element.h - h) // 2),  # left
         (element.x + element.w + gap, element.y + (element.h - h) // 2),  # right
         (element.x, element.y - h - gap),  # above
         (element.x, element.y + element.h + gap),  # below
-        (element.x, element.y),  # inside, last resort
     ]
 
-    fallback = None
-    for x, y in candidates:
-        x = min(max(x, 0), max(screen_w - w, 0))
-        y = min(max(y, 0), max(screen_h - h, 0))
-        if fallback is None:
-            fallback = (x, y)
+    def clamp(spot):
+        return (min(max(spot[0], 0), max(screen_w - w, 0)),
+                min(max(spot[1], 0), max(screen_h - h, 0)))
+
+    # Only chip-versus-chip collisions can move it off its own element:
+    # covering part of the element it labels is the point, and an element
+    # nested inside another (a link inside a list item) would otherwise push
+    # every chip back out into the ambiguous gap.
+    x, y = clamp(on_element)
+    if not any(_rects_overlap((x, y, w, h), other) for other in placed):
+        return x, y
+
+    for spot in beside:
+        x, y = clamp(spot)
         rect = (x, y, w, h)
         if any(_rects_overlap(rect, other) for other in placed):
             continue
@@ -740,7 +755,9 @@ def place_chip(element, w, h, screen_w, screen_h, index, element_rects, placed):
         ):
             continue
         return x, y
-    return fallback
+    # Everywhere clean is taken. Back on the element, where at least it is
+    # unambiguous which thing it labels.
+    return clamp(on_element)
 
 
 def _rounded_rect(cr, x, y, w, h, r):

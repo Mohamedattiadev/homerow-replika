@@ -508,6 +508,59 @@ class ScrollAimCheck(unittest.TestCase):
         self.assertEqual(len(sent), 1)
 
 
+class ChipSitsOnItsElement(unittest.TestCase):
+    """A hint chip goes on the thing it labels, not in the gap beside it.
+
+    Beside was tried first for years, and it is what makes a label
+    ambiguous: a chip in the gap between two controls belongs to whichever
+    one you assume, and on a toolbar or a row of links the assumption is
+    wrong about half the time. Homerow and Vimium both put it on the target
+    and accept covering a few pixels.
+    """
+
+    def place(self, element, placed=(), others=None, screen=(1366, 768)):
+        from homerow import overlay
+        rects = others if others is not None else [
+            (element.x, element.y, element.w, element.h)]
+        return overlay.place_chip(element, 20, 14, screen[0], screen[1],
+                                  0, rects, list(placed))
+
+    def test_the_chip_lands_on_the_elements_own_corner(self):
+        element = Fake(x=400, y=300, w=200, h=40)
+        self.assertEqual(self.place(element), (400, 300))
+
+    def test_a_neighbour_does_not_push_it_off_its_element(self):
+        from homerow import overlay
+        # A link nested inside a list item overlaps it completely. Honouring
+        # that would push every chip back out into the ambiguous gap.
+        element = Fake(x=400, y=300, w=200, h=40)
+        others = [(400, 300, 200, 40), (395, 295, 220, 50)]
+        spot = overlay.place_chip(element, 20, 14, 1366, 768, 0, others, [])
+        self.assertEqual(spot, (400, 300))
+
+    def test_another_chip_does_move_it(self):
+        # Two chips on one spot means one of them is unreadable, which is
+        # worse than one of them sitting beside its element.
+        element = Fake(x=400, y=300, w=200, h=40)
+        spot = self.place(element, placed=[(400, 300, 20, 14)])
+        self.assertNotEqual(spot, (400, 300))
+
+    def test_it_stays_on_screen(self):
+        element = Fake(x=-30, y=-20, w=100, h=40)
+        x, y = self.place(element)
+        self.assertGreaterEqual(x, 0)
+        self.assertGreaterEqual(y, 0)
+
+    def test_a_packed_corner_falls_back_onto_the_element(self):
+        # Every alternative taken: better an overlapping chip on the right
+        # element than a clean one on the wrong element.
+        element = Fake(x=400, y=300, w=200, h=40)
+        blocked = [(x, y, 400, 400) for x, y in
+                   ((0, 0), (300, 200), (500, 200), (300, 400), (600, 300))]
+        spot = self.place(element, placed=blocked)
+        self.assertEqual(spot, (400, 300))
+
+
 class EditorHeight(unittest.TestCase):
     """The editor is as tall as the text, not as tall as the field.
 

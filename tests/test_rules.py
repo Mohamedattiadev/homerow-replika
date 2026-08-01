@@ -526,6 +526,72 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
                 self.assertNotIn("DWELL_TIMEOUT_S", source)
 
 
+class BrowserChromeIsEditableToo(unittest.TestCase):
+    """A browser's own address bar is a field, and used to be thrown away.
+
+    Edit mode narrowed to the foreground document to keep background tabs
+    from offering five pages of fields on one viewport. That narrowing threw
+    the browser's chrome out with them: reported live on Google Drive, the
+    page's search box got a hint and the address bar beside it did not,
+    because the address bar is not inside any document. Every tab's document
+    reports the same viewport rectangle, so the thing to reject is "inside
+    the viewport but not in the foreground document" -- and chrome, which is
+    outside the viewport entirely, is kept.
+    """
+
+    def test_a_field_outside_the_viewport_is_kept(self):
+        from homerow import edit
+        viewport = (0, 130, 1366, 640)
+        # The address bar, above the page.
+        self.assertFalse(edit._within(viewport, 683, 94))
+
+    def test_a_field_inside_the_viewport_is_subject_to_the_check(self):
+        from homerow import edit
+        viewport = (0, 130, 1366, 640)
+        self.assertTrue(edit._within(viewport, 683, 400))
+
+    def test_a_field_in_the_foreground_document_belongs_to_it(self):
+        import unittest.mock
+
+        from homerow import edit
+        document = unittest.mock.Mock()
+        parent = unittest.mock.Mock()
+        field = unittest.mock.Mock()
+        field.get_parent.return_value = parent
+        parent.get_parent.return_value = document
+        self.assertTrue(edit._belongs_to(field, document))
+
+    def test_a_field_in_a_background_document_does_not(self):
+        import unittest.mock
+
+        from homerow import edit
+        document = unittest.mock.Mock()
+        other, field = unittest.mock.Mock(), unittest.mock.Mock()
+        field.get_parent.return_value = other
+        other.get_parent.return_value = None
+        self.assertFalse(edit._belongs_to(field, document))
+
+    def test_a_parent_cycle_cannot_hang_the_daemon(self):
+        import unittest.mock
+
+        from homerow import edit
+        # A broken tree that is its own ancestor. Bounded, or the mode that is
+        # meant to feel instant never returns.
+        document = unittest.mock.Mock()
+        field = unittest.mock.Mock()
+        field.get_parent.return_value = field
+        self.assertFalse(edit._belongs_to(field, document))
+
+    def test_a_tree_that_will_not_answer_is_not_claimed(self):
+        import unittest.mock
+
+        from homerow import edit
+        document = unittest.mock.Mock()
+        field = unittest.mock.Mock()
+        field.get_parent.side_effect = RuntimeError("gone")
+        self.assertFalse(edit._belongs_to(field, document))
+
+
 class WarmServerHandover(unittest.TestCase):
     """The outgoing warm editor must be dead before its replacement starts.
 
