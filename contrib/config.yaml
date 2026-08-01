@@ -1,0 +1,175 @@
+# homerow -- ~/.config/homerow/config.yaml
+#
+# Everything here is commented out and shows the built-in default, so copying
+# this file changes nothing until you uncomment a line. `homerow
+# --write-config` puts it in the right place for you.
+#
+# Keys are the names from homerow/config.py, lowercased. They can be nested
+# under the prefix they share (`hint: {alphabet: ...}` is HINT_ALPHABET) or
+# written flat (`hint_alphabet: ...`) -- both work, so grouping is for
+# reading, never something to get right.
+#
+# config.py is the full list and the reason for every default. Anything named
+# there can be set here; nothing else can. Two commands to check yourself:
+#
+#   homerow --check-config      what it read, and what it could not use
+#   homerow --show-config       every setting and its value right now
+#
+# A bad value never takes the daemon down. An unknown key, a string where a
+# number belongs, a file that is not YAML at all -- each is reported in the
+# log and the built-in default stands.
+#
+# The daemon reads this once at startup: `homerow --restart` after editing it.
+
+
+# --- hint mode -------------------------------------------------------------
+hint:
+  # Characters labels are built from. Home row first. Lowercase and unique.
+  # alphabet: "asdfghjkl"
+
+  # Type a character outside the alphabet to narrow the hints by element name
+  # instead of reading every label. Labels are recomputed over the survivors.
+  # filter: true
+
+  # Label other windows too, in a second colour, so the same keypress that
+  # clicks a button can switch apps instead.
+  # windows: true
+
+  # Pixels between a chip and the element it labels.
+  # gap: 2
+
+# Elements smaller than this are almost always layout artefacts, and ones
+# larger than this fraction of the screen are almost always the page itself.
+# min_size: 4
+# max_fraction_of_screen: 0.9
+
+# Roles worth hinting, as Atspi.Role member names. Unknown names are skipped,
+# so this stays portable across atspi versions. `homerow --show-config` prints
+# the full default list; setting either of these recomputes the combined one
+# they feed.
+# container_roles: [LIST_ITEM, TABLE_CELL, TREE_ITEM]
+
+
+# --- scroll mode -----------------------------------------------------------
+scroll:
+  # How far j/k and d/u go, in wheel clicks.
+  # line_clicks: 1
+  # page_clicks: 6
+  # edge_clicks: 400
+
+  # Largest count prefix accepted: 50j, not 5000j.
+  # max_count: 50
+
+  # A whole-pass deadline for collecting regions. Atspi's own timeout bounds
+  # one call; a pass makes many, and they add up when the accessibility
+  # service is slow rather than hung.
+  # collect_budget_ms: 2500
+
+  # Regions that measure as scrollable are proven by scrolling them. Turning
+  # this off is faster and offers regions that may not move.
+  # verify: true
+
+  # Outline drawn around the region being scrolled.
+  # border: 2
+  # radius: 6
+
+
+# --- search and caret ------------------------------------------------------
+search:
+  # Digits, so every letter stays usable in the query -- that is what lets
+  # one prompt both filter and pick.
+  # labels: "123456789"
+  # min_query: 2
+  # max_outlines: 12
+
+caret:
+  # labels: "123456789"
+  # paste: "ctrl+v"
+  # Largest number of keystrokes the fallback write path will press at an
+  # application that publishes no EditableText.
+  # max_keystrokes: 400
+
+# caret_search:
+  # max_hits: 200
+
+
+# --- edit mode -------------------------------------------------------------
+edit:
+  # $VISUAL, then $EDITOR, then this.
+  # editor: "nvim"
+
+  # Extension of the temp file, which is what gives the buffer its filetype.
+  # suffix: ".md"
+
+  # Smallest editor box, in character cells rather than pixels, so it comes
+  # out as close to the field's own rectangle as an editor can be.
+  # min_cols: 32
+  # min_rows: 6
+
+  # A field shorter than this many rows is edited in "compact" nvim: no
+  # statusline, no line numbers, no sign column.
+  # compact_rows: 3
+  # compact_max_rows: 12
+
+  # Rows the editor keeps for itself, assumed rather than asked. Homerow
+  # measures what its own editor actually kept and sizes the *next* field for
+  # that, so this is only the first field's guess.
+  # chrome_rows: 2
+
+  # Keep a headless editor running so opening a field does not pay to load
+  # your config -- measured at 285ms. Turning it off costs that per open.
+  # warm_server: true
+
+  # Push the field on every `:w`, not only when the editor closes. Only ever
+  # where AT-SPI can write the field directly; a browser field still waits
+  # for the close, because writing it means stealing focus back off you.
+  # live_write: true
+
+  # Border drawn around the editor, so an undecorated box over a page still
+  # reads as something homerow put there.
+  # border: 2
+
+  # Fields never offered: a password has no business in a temp file, and a
+  # terminal is already an editor's worth of keyboard.
+  # skip_roles: ["password text", terminal]
+
+
+# --- colours ---------------------------------------------------------------
+# Colours come from the desktop theme, re-read on every press. These name
+# which slot of the palette each thing takes, not the colour itself.
+# follow_theme: true
+# chip_slot: green
+# chip_slot_matched: cyan
+# chip_slot_window: purple
+
+# Text on a chip is chosen by measuring contrast against it, so light themes
+# stay readable. This is the floor it has to clear.
+# ink_min_contrast: 4.5
+
+# Dim the rest of the screen while a mode is open.
+# dim_background: true
+# dim_alpha: 0.18
+# chip_alpha: 0.96
+
+# font_family: monospace
+# font_size: 13
+# radius: 3
+
+
+# --- timing ----------------------------------------------------------------
+# Every mode holds the keyboard exclusively, so one left open by accident is
+# indistinguishable from the keyboard breaking. These are the two ways out.
+# idle_timeout_s: 12     # nothing typed at all
+# dwell_timeout_s: 45    # typed, then abandoned
+
+# A cap on any single AT-SPI call, so one hung application cannot take the
+# daemon down with it.
+# atspi_call_timeout_ms: 3000
+
+# Ceiling on elements collected in one pass.
+# max_elements: 400
+# walk_budget_ms: 400
+
+# Log every keypress. Loud, and useful when a mode is not seeing your keys.
+# debug_keys: false
+# log_max_bytes: 524288

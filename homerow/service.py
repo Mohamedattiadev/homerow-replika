@@ -20,7 +20,7 @@ from gi.repository import Atspi, GLib, Gtk  # noqa: E402
 
 from . import (  # noqa: E402
     caret, click, config, edit, elements, hints, overlay as overlay_module,
-    scroll, search, windows, x11,
+    scroll, search, userconfig, windows, x11,
 )
 from .overlay import Overlay, screen_size  # noqa: E402
 
@@ -78,13 +78,18 @@ def is_running(path=None):
 
 
 class Daemon:
-    def __init__(self, debug=False):
+    def __init__(self, debug=False, config_path=None):
         self.debug = debug
+        self.config_path = config_path
         self.overlay = None
         self._desktop = None
         self._desktop_watch = None
         self.path = socket_path()
         self.log = _open_log()
+        # Before anything reads a setting. Layering it later would leave
+        # whatever had already been captured at module level holding a
+        # default the user had overridden.
+        self.settings = userconfig.load(config_path)
 
     def run(self):
         if is_running(self.path):
@@ -100,6 +105,9 @@ class Daemon:
         self._clear_mode()
         # Likewise any edit buffer: a daemon killed mid-edit leaves the
         # contents of a field sitting in /tmp with nothing to clean it up.
+        for problem in self.settings.problems:
+            self._log(f"config: {problem}")
+        self._log(f"config: {self.settings.summary()}")
         stale = edit.sweep_temp_files()
         if stale:
             self._log(f"removed {stale} stale edit buffer(s)")

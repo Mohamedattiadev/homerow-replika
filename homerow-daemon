@@ -1,71 +1,16 @@
-#!/usr/bin/env python3
-"""Resident homerow daemon.
+#!/bin/sh
+# Kept so existing autostarts and the shipped systemd unit do not break.
+# `homerow --daemon` is the same thing, and homerow-cli is the full surface.
+#
+# With no arguments, or with only the ones that shape how a daemon runs, this
+# means "be the daemon" -- which is what it always meant. Anything else
+# (--status, --log, --quit) is passed through as itself.
+CLI="$(dirname "$(readlink -f "$0")")/homerow-cli"
 
-    homerow-daemon              run in the foreground
-    homerow-daemon -d/--debug   log each request and its timing
-    homerow-daemon --status     report whether a daemon is answering
-    homerow-daemon --log        print the tail of the log
-    homerow-daemon --quit       ask a running daemon to exit
-    homerow-daemon -h/--help    this message
-    homerow-daemon -v/--version print the installed version
-"""
-
-import os
-import socket
-import sys
-import time
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from homerow import __version__, service  # noqa: E402
-
-
-def main():
-    if "-h" in sys.argv or "--help" in sys.argv:
-        print(__doc__.strip())
-        return 0
-    if "-v" in sys.argv or "--version" in sys.argv:
-        print(f"homerow {__version__}")
-        return 0
-
-    if "--status" in sys.argv:
-        running = service.is_running()
-        print(f"homerow daemon: {'running' if running else 'not running'} "
-              f"({service.socket_path()})")
-        print(f"log: {service.log_path()}")
-        return 0 if running else 1
-
-    if "--log" in sys.argv:
-        try:
-            with open(service.log_path(), encoding="utf-8") as handle:
-                lines = handle.readlines()
-            sys.stdout.writelines(lines[-40:])
-        except OSError as error:
-            print(f"homerow: no log ({error})", file=sys.stderr)
-            return 1
-        return 0
-
-    if "--quit" in sys.argv:
-        if not service.is_running():
-            print("homerow: no daemon running", file=sys.stderr)
-            return 1
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(1.0)
-            client.connect(service.socket_path())
-            client.sendall(b"quit\n")
-            client.recv(16)  # read the ack before hanging up
-        # Shutdown is asynchronous. Wait it out so that restarting immediately
-        # afterwards does not hit the outgoing daemon and abort.
-        for _ in range(50):
-            if not service.is_running():
-                return 0
-            time.sleep(0.05)
-        print("homerow: daemon did not exit", file=sys.stderr)
-        return 1
-
-    debug = "-d" in sys.argv or "--debug" in sys.argv
-    return service.Daemon(debug=debug).run()
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+for arg in "$@"; do
+    case "$arg" in
+        -d | --debug | --config | /* | ./*) ;;
+        *) exec python3 "$CLI" "$@" ;;
+    esac
+done
+exec python3 "$CLI" --daemon "$@"

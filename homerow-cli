@@ -1,62 +1,268 @@
 #!/usr/bin/env python3
-"""Standalone hint pass: show hints, then click whatever label you type.
+"""homerow -- keyboard control of an X11 desktop, over AT-SPI.
 
-Pays the ~435ms interpreter/PyGObject startup cost itself, unlike
-homerow-hint (the daemon client) which only pays it once. Used directly for
---list/--debug, and as what homerow-hint execs into for those same flags.
+The whole command surface lives here. `homerow` is a short shell script in
+front of it that handles the one case where startup cost is visible -- asking
+a running daemon for a mode -- and hands everything else straight to this.
+That split is a performance decision and nothing else: the flags are the same
+either way, and everything below works whether you type `homerow` or
+`homerow-cli`.
 
-    homerow-cli              hint and click
-    homerow-cli -d/--debug   also print timings and what was found
-    homerow-cli -l/--list    print elements without drawing anything
-    homerow-cli -h/--help    this message
-    homerow-cli -v/--version print the installed version
+    homerow                      hint and click
+    homerow --scroll             scroll the region under the pointer
+    homerow --edit               open an editable field in your editor
+
+    homerow --status             is a daemon answering?
+    homerow --restart            what you want after editing homerow/
+
+    homerow --show-config        every setting and its value now
+    homerow --check-config       parse and validate, change nothing
 """
 
+import argparse
 import os
-import subprocess
+import socket
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import gi  # noqa: E402
+from homerow import __version__, service, userconfig  # noqa: E402
 
-gi.require_version("Atspi", "2.0")
-gi.require_version("Gtk", "3.0")
-gi.require_version("Gdk", "3.0")  # without this, Gdk 4.0 loads and has no Screen
-from gi.repository import Atspi, Gdk  # noqa: E402
+MODES = {
+    "hint": "label everything clickable, and every other window",
+    "scroll": "scroll the region under the pointer, or the largest",
+    "search": "type to find an element by name, then click it",
+    "caret": "a text cursor driven by vim motions",
+    "caret-search": "type to find a word, and land the caret on it",
+    "edit": "open an editable field in your editor",
+}
 
-from homerow import __version__, click, elements, hints  # noqa: E402
-from homerow.overlay import Overlay, screen_size  # noqa: E402
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="homerow", add_help=False,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Keyboard control of an X11 desktop, over AT-SPI.",
+        epilog="Bind the modes to keys in your window manager; each one is "
+               "just a command. See the README for the qtile version.")
+
+    modes = parser.add_argument_group("modes (default: --hint)")
+    for name, help_text in MODES.items():
+        modes.add_argument(f"--{name}", dest="mode", action="store_const",
+                           const=name.replace("-", "_"), help=help_text)
+
+    daemon = parser.add_argument_group("daemon")
+    daemon.add_argument("--daemon", action="store_true",
+                        help="run a daemon in the foreground")
+    daemon.add_argument("--status", action="store_true",
+                        help="report whether a daemon is answering")
+    daemon.add_argument("--log", nargs="?", type=int, const=40, metavar="N",
+                        help="print the last N lines of the log (default 40)")
+    daemon.add_argument("--quit", action="store_true",
+                        help="ask a running daemon to exit")
+    daemon.add_argument("--restart", action="store_true",
+                        help="stop a running daemon and start another; the "
+                             "daemon holds homerow/ in memory, so this is "
+                             "what makes an edit to it take effect")
+
+    settings = parser.add_argument_group("configuration")
+    settings.add_argument("--config", metavar="PATH",
+                          help="read this file instead of "
+                               f"{userconfig.config_path()}")
+    settings.add_argument("--show-config", action="store_true",
+                          help="print every setting and its value now, as "
+                               "YAML this can read back")
+    settings.add_argument("--check-config", action="store_true",
+                          help="parse and validate the config file, report "
+                               "what it cannot use, and change nothing")
+    settings.add_argument("--write-config", action="store_true",
+                          help="write the documented example config to the "
+                               "default path, if nothing is there yet")
+
+    other = parser.add_argument_group("other")
+    other.add_argument("-l", "--list", action="store_true",
+                       help="print what would be hinted, and draw nothing")
+    other.add_argument("--standalone", action="store_true",
+                       help="run a hint pass in this process, without a "
+                            "daemon; slower, and useful when one will not "
+                            "start")
+    other.add_argument("-d", "--debug", action="store_true",
+                       help="with --daemon, mirror the log to stdout; "
+                            "otherwise print timings and what was found")
+    other.add_argument("-h", "--help", action="help", help="this message")
+    other.add_argument("-v", "--version", action="version",
+                       version=f"homerow {__version__}")
+    return parser
 
 
-def notify(message):
-    """Best-effort desktop notification; silence is fine if dunst is absent."""
+# --- daemon control --------------------------------------------------------
+
+def do_status():
+    running = service.is_running()
+    print(f"homerow daemon: {'running' if running else 'not running'} "
+          f"({service.socket_path()})")
+    print(f"log: {service.log_path()}")
+    path = userconfig.config_path()
+    print(f"config: {path}"
+          f"{'' if os.path.exists(path) else ' (none; built-in defaults)'}")
+    return 0 if running else 1
+
+
+def do_log(count):
     try:
-        subprocess.run(
-            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
-            timeout=1, check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
+        with open(service.log_path(), encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError as error:
+        print(f"homerow: no log ({error})", file=sys.stderr)
+        return 1
+    sys.stdout.writelines(lines[-count:])
+    return 0
 
 
-def main():
-    if "-h" in sys.argv or "--help" in sys.argv:
-        print(__doc__.strip())
+def do_quit(quiet=False):
+    if not service.is_running():
+        if not quiet:
+            print("homerow: no daemon running", file=sys.stderr)
+        return 1
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(1.0)
+            client.connect(service.socket_path())
+            client.sendall(b"quit\n")
+            client.recv(16)          # read the ack before hanging up
+    except OSError as error:
+        print(f"homerow: could not reach the daemon ({error})",
+              file=sys.stderr)
+        return 1
+    # Shutdown is asynchronous. Wait it out, so that starting another one
+    # immediately afterwards does not hit the outgoing daemon and abort.
+    for _ in range(50):
+        if not service.is_running():
+            return 0
+        time.sleep(0.05)
+    print("homerow: daemon did not exit", file=sys.stderr)
+    return 1
+
+
+def start_daemon(config_path=None):
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    argv = [sys.executable, os.path.join(here, "homerow-cli"), "--daemon"]
+    if config_path:
+        argv += ["--config", config_path]
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def do_restart(config_path):
+    do_quit(quiet=True)
+    start_daemon(config_path)
+    for _ in range(60):
+        if service.is_running():
+            print(f"homerow daemon: running ({service.socket_path()})")
+            return 0
+        time.sleep(0.05)
+    print("homerow: daemon did not come back", file=sys.stderr)
+    return 1
+
+
+# --- configuration ---------------------------------------------------------
+
+EXAMPLE = os.path.join("contrib", "config.yaml")
+
+
+def do_show_config(config_path):
+    result = userconfig.load(config_path)
+    for problem in result.problems:
+        print(f"# ignored -- {problem}", file=sys.stderr)
+    print(f"# homerow {__version__}: every setting, and its value right now.")
+    print(f"# {result.summary()}")
+    print("#")
+    print("# This is valid input -- saving it as your config file changes "
+          "nothing.")
+    print(userconfig.dump(userconfig.effective(), changed=result.applied),
+          end="")
+    return 0
+
+
+def do_check_config(config_path):
+    result = userconfig.load(config_path)
+    for problem in result.problems:
+        print(f"{result.path}: {problem}", file=sys.stderr)
+    print(result.summary())
+    if result.applied:
+        width = max(len(name) for name in result.applied)
+        for name, value in sorted(result.applied.items()):
+            print(f"  {name.lower():{width}}  {value!r}")
+    return 0 if result.ok else 1
+
+
+def do_write_config():
+    here = os.path.dirname(os.path.abspath(__file__))
+    target = userconfig.config_path()
+    if os.path.exists(target):
+        print(f"homerow: {target} already exists; leaving it alone",
+              file=sys.stderr)
+        return 1
+    try:
+        with open(os.path.join(here, EXAMPLE), encoding="utf-8") as handle:
+            text = handle.read()
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError as error:
+        print(f"homerow: could not write {target} ({error})", file=sys.stderr)
+        return 1
+    print(f"wrote {target}")
+    print("Every setting in it is commented out, so it changes nothing until "
+          "you uncomment one.")
+    return 0
+
+
+# --- modes -----------------------------------------------------------------
+
+def send(mode, config_path=None):
+    """Ask a running daemon for a mode; start one and retry if none answers."""
+    def poke():
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(1.0)
+                client.connect(service.socket_path())
+                client.sendall(mode.encode() + b"\n")
+                return client.recv(16).strip() == b"ok"
+        except OSError:
+            return False
+
+    if poke():
         return 0
-    if "-v" in sys.argv or "--version" in sys.argv:
-        print(f"homerow {__version__}")
-        return 0
+    start_daemon(config_path)
+    for _ in range(60):
+        if poke():
+            return 0
+        time.sleep(0.05)
+    print("homerow: daemon failed to start", file=sys.stderr)
+    notify("Daemon failed to start")
+    return 1
 
-    debug = "-d" in sys.argv or "--debug" in sys.argv
-    list_only = "-l" in sys.argv or "--list" in sys.argv
+
+def do_standalone(list_only, debug):
+    """A hint pass in this process. Pays the ~435ms import cost itself."""
+    import gi
+    gi.require_version("Atspi", "2.0")
+    gi.require_version("Gtk", "3.0")
+    # Without this, Gdk 4.0 loads and has no Screen.
+    gi.require_version("Gdk", "3.0")
+    from gi.repository import Atspi, Gdk
+
+    from homerow import click, elements, hints
+    from homerow.overlay import Overlay, screen_size
 
     started = time.perf_counter()
     Atspi.init()
-
     if Gdk.Display.get_default() is None:
-        print("No X display.", file=sys.stderr)
+        print("homerow: no X display.", file=sys.stderr)
         return 1
     width, height = screen_size()
 
@@ -71,12 +277,9 @@ def main():
                   f"@{element.x},{element.y} {element.w}x{element.h}")
     if list_only:
         return 0
-
     if not found:
         notify("No hintable elements — this app exposes no accessibility tree.")
         return 0
-
-    labels = hints.assign(found)
 
     def on_choose(element, button, modifiers):
         method = click.perform(element, button, modifiers)
@@ -84,8 +287,47 @@ def main():
             print(f"clicked {element.role} {element.name[:40]!r} "
                   f"button={button} mods={modifiers} via {method}")
 
-    Overlay(found, labels, on_choose).run()
+    Overlay(found, hints.assign(found), on_choose).run()
     return 0
+
+
+def notify(message):
+    """Best-effort desktop notification; silence is fine if dunst is absent."""
+    import subprocess
+    try:
+        subprocess.run(
+            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
+            timeout=1, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+
+    if args.show_config:
+        return do_show_config(args.config)
+    if args.check_config:
+        return do_check_config(args.config)
+    if args.write_config:
+        return do_write_config()
+    if args.status:
+        return do_status()
+    if args.log is not None:
+        return do_log(args.log)
+    if args.quit:
+        return do_quit()
+    if args.restart:
+        return do_restart(args.config)
+    if args.daemon:
+        return service.Daemon(debug=args.debug, config_path=args.config).run()
+
+    # A mode. --standalone and --list run it here; everything else is the
+    # daemon's, which has loaded the settings already.
+    if args.standalone or args.list:
+        userconfig.load(args.config)
+        return do_standalone(args.list, args.debug)
+    return send(args.mode or "hint", args.config)
 
 
 if __name__ == "__main__":

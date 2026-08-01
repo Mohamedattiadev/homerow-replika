@@ -1,0 +1,54 @@
+#!/bin/sh
+# homerow -- the one command. Bind this to your keys.
+#
+# It is a shell script because of the fast path and nothing else: asking a
+# running daemon for a mode happens on a keypress, and python3 plus the
+# PyGObject imports cost ~435ms, which was the entire reason hints felt
+# sluggish. sh plus nc costs ~12ms. Everything else -- daemon control,
+# configuration, --list, --help -- happens at human speed and is handed
+# straight to homerow-cli, which is where the whole command surface lives.
+#
+# So this deliberately understands only the six mode flags. Anything else
+# goes to homerow-cli unread, which means a flag added there needs no change
+# here and can never be swallowed by the wrong half.
+#
+#   homerow                  hint and click
+#   homerow --edit           open an editable field in your editor
+#   homerow --help           everything else
+
+set -eu
+
+DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
+SOCK="${XDG_RUNTIME_DIR:-/tmp}/homerow.sock"
+
+COMMAND=hint
+for arg in "$@"; do
+    case "$arg" in
+        --hint)         COMMAND=hint ;;
+        --scroll)       COMMAND=scroll ;;
+        --search)       COMMAND=search ;;
+        --caret)        COMMAND=caret ;;
+        --caret-search) COMMAND=caret_search ;;
+        --edit)         COMMAND=edit ;;
+        *)              exec python3 "$DIR/homerow-cli" "$@" ;;
+    esac
+done
+
+send() {
+    printf '%s\n' "$COMMAND" | nc -U -N -w 1 "$SOCK" 2>/dev/null
+}
+
+[ "$(send)" = "ok" ] && exit 0
+
+# No daemon answering. Start one detached, then retry until it binds.
+setsid python3 "$DIR/homerow-cli" --daemon >/dev/null 2>&1 &
+
+n=0
+while [ "$n" -lt 60 ]; do
+    [ "$(send)" = "ok" ] && exit 0
+    n=$((n + 1))
+    sleep 0.05
+done
+
+notify-send -a homerow "Homerow" "Daemon failed to start" 2>/dev/null || true
+exit 1

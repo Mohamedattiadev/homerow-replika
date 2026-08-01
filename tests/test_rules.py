@@ -8,12 +8,17 @@ an exact match ranked below a substring.
 """
 
 import os
+import re
 import sys
+import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from homerow import config, elements, hints, search, windows  # noqa: E402
+from homerow import (  # noqa: E402
+    config, elements, hints, search, userconfig, windows,
+)
 
 
 class MatchGrading(unittest.TestCase):
@@ -1195,6 +1200,150 @@ class ModeSwitching(unittest.TestCase):
              unittest.mock.patch.object(service, "_notify"):
             instance.dispatch("scroll")
         idle.assert_not_called()
+
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def uncomment(text):
+    """The example config with its settings switched on.
+
+    Every setting in contrib/config.yaml ships commented out, so the file
+    changes nothing until somebody uncomments a line. That is also what makes
+    it impossible to notice it has gone stale by reading it -- so the tests
+    uncomment it and load it, which is the only way a renamed setting or a
+    default that has moved on shows up as a failure.
+    """
+    lines, continuing = [], False
+    for line in text.splitlines():
+        match = re.match(r"^(\s*)# ?(.*)$", line)
+        if match is None:
+            lines.append(line)
+            continuing = False
+            continue
+        indent, body = match.groups()
+        if continuing or re.match(r"^[a-z_0-9]+:", body):
+            lines.append(indent + body)
+            continuing = body.count("[") > body.count("]")
+        else:
+            continuing = False
+    return "\n".join(lines)
+
+
+class ShippedExampleConfig(unittest.TestCase):
+    """contrib/config.yaml is documentation that can go out of date silently.
+
+    It names settings and states their defaults, and nothing about writing it
+    stops it drifting from config.py. These load it for real.
+    """
+
+    def setUp(self):
+        self.addCleanup(userconfig.reset)
+        with open(os.path.join(ROOT, "contrib", "config.yaml"),
+                  encoding="utf-8") as handle:
+            self.text = handle.read()
+
+    def test_it_is_valid_yaml(self):
+        self.assertIsInstance(userconfig.parse(self.text), dict)
+
+    def test_shipped_as_it_is_it_changes_nothing(self):
+        applied, problems = userconfig.apply(userconfig.parse(self.text))
+        self.assertEqual(applied, {})
+        self.assertEqual(problems, [])
+
+    def test_every_setting_it_names_exists(self):
+        _, problems = userconfig.apply(userconfig.parse(uncomment(self.text)))
+        self.assertEqual(problems, [])
+
+    def test_every_default_it_states_is_the_real_one(self):
+        applied, _ = userconfig.apply(userconfig.parse(uncomment(self.text)))
+        self.assertTrue(applied, "the example set nothing; check uncomment()")
+        stale = {name: (shown, userconfig.defaults()[name])
+                 for name, shown in applied.items()
+                 if shown != userconfig.defaults()[name]}
+        self.assertEqual(stale, {}, "contrib/config.yaml states a default "
+                                    "config.py no longer has")
+
+    def test_the_fallback_reader_agrees_with_pyyaml(self):
+        """The reader used where PyYAML is absent has to read this file the
+        same way, or the install without it is quietly a different program."""
+        try:
+            import yaml                                          # noqa: F401
+        except ImportError:
+            self.skipTest("PyYAML is not installed; nothing to compare with")
+        text = uncomment(self.text)
+        self.assertEqual(userconfig._parse_simple(text),
+                         userconfig.parse(text))
+
+
+class ConfigFallsBackRatherThanCrashing(unittest.TestCase):
+    """A config file is edited by hand, usually in a hurry. Nothing in one may
+    take the daemon down -- see homerow/userconfig.py."""
+
+    def setUp(self):
+        self.addCleanup(userconfig.reset)
+
+    def load(self, text):
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml",
+                                         delete=False) as handle:
+            handle.write(text)
+        self.addCleanup(os.unlink, handle.name)
+        return userconfig.load(handle.name)
+
+    def test_a_file_that_is_not_yaml_leaves_every_default_standing(self):
+        result = self.load("this is: not: yaml: at: all\n\t- ?")
+        self.assertFalse(result.ok)
+        self.assertEqual(config.HINT_ALPHABET,
+                         userconfig.defaults()["HINT_ALPHABET"])
+
+    def test_a_missing_file_is_not_a_problem_unless_it_was_asked_for(self):
+        self.assertTrue(userconfig.load("/nonexistent/homerow.yaml").problems)
+        missing = os.path.join(ROOT, "no", "such", "config.yaml")
+        result = userconfig.load()
+        with unittest.mock.patch.object(userconfig, "config_path",
+                                        lambda _=None: missing):
+            result = userconfig.load()
+        self.assertTrue(result.ok)
+        self.assertFalse(result.found)
+
+    def test_one_bad_setting_does_not_cost_the_good_ones(self):
+        result = self.load("hint:\n  alphabet: qwerty\n  gap: wide\n")
+        self.assertEqual(config.HINT_ALPHABET, "qwerty")
+        self.assertEqual(config.HINT_GAP, userconfig.defaults()["HINT_GAP"])
+        self.assertEqual(len(result.problems), 1)
+
+    def test_a_setting_that_would_break_a_mode_is_refused(self):
+        """An empty alphabet or a zero timeout does not configure a mode
+        differently, it stops the mode working at all."""
+        result = self.load('hint:\n  alphabet: ""\nidle_timeout_s: 0\n')
+        self.assertEqual(len(result.problems), 2)
+        self.assertEqual(config.HINT_ALPHABET,
+                         userconfig.defaults()["HINT_ALPHABET"])
+        self.assertEqual(config.IDLE_TIMEOUT_S,
+                         userconfig.defaults()["IDLE_TIMEOUT_S"])
+
+    def test_a_computed_setting_is_refused_rather_than_half_applied(self):
+        result = self.load("hint_roles: [LINK]\n")
+        self.assertFalse(result.ok)
+        self.assertNotEqual(config.HINT_ROLES, ["LINK"])
+
+    def test_overriding_an_ingredient_recomputes_what_reads_it(self):
+        """Hinting reads HINT_ROLES, so setting actionable_roles and leaving
+        HINT_ROLES holding the old list would be an override that half-lands."""
+        self.load("actionable_roles: [LINK]\ncontainer_roles: [TABLE_CELL]\n")
+        self.assertEqual(config.HINT_ROLES, ["LINK", "TABLE_CELL"])
+
+    def test_what_it_prints_is_what_it_can_read_back(self):
+        """`homerow --show-config > config.yaml` has to produce a file that
+        loads, and loads back to the same desktop."""
+        before = userconfig.effective()
+        applied, problems = userconfig.apply(
+            userconfig.parse(userconfig.dump(before)))
+        self.assertEqual(problems, [])
+        self.assertEqual(userconfig.effective(), before)
+        # Everything settable, and nothing computed -- those are shown as
+        # comments, because setting one is refused.
+        self.assertEqual(set(applied), set(before) - set(userconfig.DERIVED))
 
 
 if __name__ == "__main__":
