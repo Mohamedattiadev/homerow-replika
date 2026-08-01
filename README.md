@@ -172,47 +172,21 @@ and nothing is written.
 
 The window is measured in character cells off the running terminal, so it
 comes out the width of the field and as few rows as the editor can work in.
-A one-line field gets as few rows as the editor will actually work in. How
-few is **measured, not assumed**: the editor is asked to give its chrome back
-and then asked what it kept, because the answer depends on your plugins.
-LazyVim sets `laststatus=3` and lualine then owns that row for good, so the
-box ends up with more chrome in it than text. Tell your statusline to stand
-down and it does not:
+A one-line field gets a small box, and it grows with the content — wrapping
+counted — up to a cap. Two rows are budgeted for whatever the editor keeps for
+itself (a statusline, a command line), so your text is visible whatever your
+config does.
 
-```lua
--- lua/plugins/lualine.lua, the same condition firenvim already uses
-return {
-  "nvim-lualine/lualine.nvim",
-  enabled = function()
-    return not vim.g.started_by_firenvim and not vim.g.started_by_homerow
-  end,
-}
-```
-
-`g:started_by_homerow` is set before your config runs, on both the warm server
-and a cold start. Nothing breaks without it — the box is just taller.
-
-The box is as tall as the *text*, not as tall as the field, growing with the
-content. A row with nothing in it is
-just a black strip, so there are none: padding a one-line field out to three
-rows left two dead rows under the text, which reads worse than a box that
-fits. The statusline row is the exception, and it earns its place by saying
-which mode you are in — which is why leaving it on beats winning the row
-back.
-
-The count is measured at daemon start, on a throwaway editor of its own — and
-getting that right took three tries, each wrong in an instructive way.
-Attaching a probe UI to the *warm server* poisons it: nvim keeps the phantom
-UI's geometry after the process goes, so the real editor then opened at the
-phantom's 80x24 instead of the field's size, `&lines` came back 24 for a
-two-row window, and only the statusline drew. Starting the probe editor with
-no file lands it on a dashboard, where a statusline plugin commonly hides
-itself, so it answers "no chrome". And the *order* is the whole measurement: a
-statusline plugin re-asserts its row when a UI **arrives**, so told to stand
-down while one is already attached it simply obeys. Probed both ways —
-apply-then-attach ends at `laststatus=3`, attach-then-apply stays at 0, and
-only the first is what a field actually gets. The probe now mirrors a real
-session exactly: headless, apply, attach, ask.
+**Nothing has to be added to your editor config for this.** An earlier version
+announced homerow to nvim as `g:started_by_homerow` and asked you to add a
+condition to your statusline plugin so it would stand its row down. That is
+the wrong shape for a tool whose promise is that it works with your editor as
+it is, and it was fragile in three separate ways besides — measuring a phantom
+UI's geometry, measuring a dashboard where the statusline hides itself, and
+measuring its own write. What is left asks nothing of your config: two rows
+are assumed, and homerow asks *its own* editor over its own socket what it
+actually kept, then sizes the **next** field for that. Being one row generous
+for one field is cheaper than resizing a window somebody has started reading.
 
 | Key | Action |
 |---|---|

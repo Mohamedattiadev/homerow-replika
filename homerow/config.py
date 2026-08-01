@@ -353,47 +353,24 @@ EDIT_LIVE_WRITE = True
 # still anchored on the field either way.
 EDIT_COMPACT_MIN_ROWS = 5
 
-# Told to the editor before the user's config runs, so a config can react to
-# being launched here. A statusline plugin standing down is the useful case:
-# LazyVim sets laststatus=3 and lualine then owns that row for good, which is
-# why a one-line field gets a box with more chrome in it than text. Add
-# homerow to the condition your statusline already uses for firenvim --
-#
-#     enabled = function()
-#       return not vim.g.started_by_firenvim and not vim.g.started_by_homerow
-#     end,
-#
-# -- and the editor comes out the size of the field. Nothing breaks without
-# it; the box is just taller. See EDIT_CHROME_ROWS_ASSUMED.
-EDIT_ANNOUNCE = ["--cmd", "let g:started_by_homerow = 1"]
+# Rows the editor keeps for itself: a statusline and a command line. Assumed
+# rather than measured, and deliberately so. An earlier version asked the
+# editor -- which meant announcing homerow to the user's config, asking them
+# to add a condition to their statusline plugin, and three separate probes
+# that each measured the wrong thing (a phantom UI's geometry, a dashboard
+# where the statusline hides itself, our own write). None of that belongs in
+# a tool whose whole promise is that it works with your editor as it is. Two
+# rows is the worst case, so the text is visible whatever the config does;
+# where the real cost is lower the box is one row roomier than it had to be,
+# which is a better failure than a box you cannot see your line in.
+EDIT_CHROME_ROWS = 2
+# How long after the editor is up before asking it what it actually kept, for
+# the benefit of the next field (see edit.learn_chrome). Long enough that a
+# statusline plugin reacting to the new UI has finished doing so.
+EDIT_LEARN_DELAY_MS = 600
 
-# Rows the editor spends on things that are not your text: a statusline row
-# plus the command line. Measured from the running editor rather than assumed
-# (see edit.chrome_rows) -- this is only the answer used when there is no warm
-# server to ask, and it is the pessimistic one, which is what the layout
-# assumed before it could ask at all.
-EDIT_CHROME_ROWS_ASSUMED = 2
-# Rows of actual text a compact editor should be able to show. The box is
-# this plus whatever chrome the editor turns out to cost.
-# Rows of text a compact editor shows at minimum. One, because the box grows
-# with the content anyway (wrapping counted) and a row with nothing in it is
-# just a black strip -- padding a one-line field out to three left two dead
-# rows under the text, which reads worse than a box that fits. Contrast the
-# statusline: that row is also "not your text", but it says which mode you
-# are in, so it earns its place. See EDIT_ANNOUNCE.
 EDIT_COMPACT_TEXT_ROWS = 1
 EDIT_COMPACT_MAX_ROWS = 12
-# How long after the editor attaches before its chrome is measured again. The
-# warm server is headless and a statusline plugin may only appear once a UI
-# does, so the first answer sizes the window and this one corrects it.
-EDIT_REFIT_DELAY_MS = 350
-# How long a throwaway UI is left attached while measuring the editor's chrome
-# at warm-up (see edit.probe_chrome). Probed directly: lualine has re-asserted
-# laststatus within 300ms of a UI attaching and does not change after.
-EDIT_PROBE_ATTACH_MS = 400
-# How long after the warm server starts before it is probed; it has to
-# finish loading the user's config first.
-EDIT_PROBE_DELAY_MS = 1500
 
 # How long after a write-back before the field is read again to check it
 # landed. The paste path is asynchronous -- it focuses the window and presses
@@ -414,11 +391,6 @@ EDIT_WARM_STOP_MS = 2000
 # to. Bounded so a tree with a parent cycle cannot hang the daemon.
 EDIT_ANCESTOR_LIMIT = 24
 
-# How long to wait for the throwaway probe editor to create its socket.
-EDIT_PROBE_READY_MS = 5000
-# How long to let plugins react to the compact settings before reading
-# back what they kept. Measured: lualine re-asserts within ~300ms.
-EDIT_PROBE_SETTLE_MS = 500
 # Editors the compact settings above are valid for; anything else is launched
 # untouched rather than handed flags it will not understand.
 EDIT_VIM_LIKE = {"nvim", "vim", "gvim", "vi"}
