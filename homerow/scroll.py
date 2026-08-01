@@ -49,13 +49,26 @@ def collect(screen_w, screen_h):
     """
     origin = _pointer_position()
     try:
-        return _collect(screen_w, screen_h)
+        return _collect(screen_w, screen_h, origin)
     finally:
         if origin:
             _restore_pointer(origin)
 
 
-def _collect(screen_w, screen_h):
+class Regions(list):
+    """The regions found, plus the candidates whose rescue probe was deferred.
+
+    A plain list everywhere it is passed around, so nothing that only wants
+    the regions has to know this exists; the leftovers ride along for the
+    session that may later want to finish the job (see _collect's rescue pass).
+    """
+
+    def __init__(self, items=(), deferred=()):
+        super().__init__(items)
+        self.deferred = list(deferred)
+
+
+def _collect(screen_w, screen_h, origin=None):
     """The actual pass; see collect() for why it is wrapped.
 
     Atspi.set_timeout() (see service.py) bounds each individual D-Bus call,
@@ -144,6 +157,7 @@ def _collect(screen_w, screen_h):
     # DevDocs' sidebar scrolls hundreds of entries and looks static. The only
     # way to know is to scroll it, so probe a couple of the biggest rejects,
     # and only when too little was found to be plausible.
+    deferred = []
     if len(regions) < config.SCROLL_RESCUE_BELOW and time.monotonic() < deadline:
         # Only candidates that sit *beside* what was already found are worth
         # probing. Ranking by area alone put the page-level wrappers first --
@@ -165,13 +179,38 @@ def _collect(screen_w, screen_h):
         # still put a wrapper right after the real thing, and it would
         # otherwise "rescue" the same scroller a second time.
         shortlist = rejected[:config.SCROLL_RESCUE_MAX]
+        # Probing is the whole cost of entering scroll mode: each candidate is
+        # scrolled and scrolled back, which the user watches happen. Measured
+        # live on a Wikipedia article in Chromium, this pass alone was 666ms
+        # and six wheel events of the page jumping before the outline was even
+        # drawn -- and it rescued nothing, as it usually does not.
+        #
+        # It serves two ends, and only one of them is due now. Entering on the
+        # right region needs the candidate under the pointer tested, because
+        # best() is about to choose. Offering the others as Tab stops is not
+        # needed until Tab is pressed, so it is left to the session to finish
+        # (see ScrollSession._rescue_deferred). That keeps the devdocs.io case
+        # -- pointer resting on a virtualised sidebar nothing else can see --
+        # working at entry, while paying for the rest only when asked.
+        wanted = origin or _pointer_position()
+        # Only a candidate under the pointer can change best()'s answer, and
+        # only when nothing already found is under it -- if something is,
+        # best() has what it needs and no probe is owed at all. Of the
+        # candidates that do contain the pointer, probe the innermost: every
+        # wrapper around the real scroller contains the pointer just as truly,
+        # and spending the budget on wrappers is exactly how devdocs.io's
+        # content pane went undiscovered. One probe, or none. The rest are
+        # Tab's problem.
+        entry = []
+        if wanted and not any(_inside(kept, *wanted) for kept in regions):
+            entry = sorted((region for region in shortlist
+                            if _inside(region, *wanted)),
+                           key=lambda e: e.w * e.h)[:1]
         rescued = []
         for region in shortlist:
-            if time.monotonic() > deadline:
-                break
-            if any(_overlapping(region, kept) for kept in rescued):
-                continue
-            if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
+            if region not in entry or time.monotonic() > deadline:
+                deferred.append(region)
+            elif _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
                 region.scroll_y = True
                 region.scroll_x = False
                 rescued.append(region)
@@ -202,7 +241,9 @@ def _collect(screen_w, screen_h):
     distinct.sort(key=lambda e: e.w * e.h, reverse=True)
     if config.SCROLL_VERIFY:
         distinct = verify(distinct, deadline)
-    return distinct
+    return Regions(distinct, [region for region in deferred
+                              if not any(_overlapping(region, kept)
+                                         for kept in distinct)])
 
 
 def _probe_child(region):
@@ -287,6 +328,22 @@ def _overlapping(a, b, threshold=None):
     return bool(smaller) and shared / smaller >= threshold
 
 
+# Where to aim the wheel, in the order the aim is escalated through: cheapest
+# and least disruptive first. See ScrollSession._aim_point for what each means.
+_AIMS = ("pointer", "center_x", "center")
+
+
+def _moved(watchers, before):
+    """True if any watcher's position differs from the sample in `before`.
+
+    A couple of pixels of slop: a watcher's extents can wobble by a rounding
+    error between two reads without anything having scrolled.
+    """
+    after = [_position(w) for w in watchers]
+    return any(b is not None and a is not None and abs(a - b) > 2
+               for b, a in zip(before, after))
+
+
 def _scrolls(region, both_ways=False):
     """Scroll the region a little and see whether anything inside moved.
 
@@ -315,11 +372,10 @@ def _scrolls_at(region, x, y, both_ways=False):
         before = [_position(w) for w in watchers]
         _wheel(x, y, forward, config.SCROLL_PROBE_CLICKS)
         time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
-        after = [_position(w) for w in watchers]
+        shifted = _moved(watchers, before)
         _wheel(x, y, back, config.SCROLL_PROBE_CLICKS)
         time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
-        if any(b is not None and a is not None and abs(a - b) > 2
-               for b, a in zip(before, after)):
+        if shifted:
             return True
     return False
 
@@ -689,12 +745,15 @@ class ScrollSession:
         "edge": config.SCROLL_EDGE_CLICKS,
     }
 
-    def __init__(self, region, on_done=None, regions=None):
+    def __init__(self, region, on_done=None, regions=None, deferred=None):
         self.region = region
         self.on_done = on_done or (lambda: None)
         # Tab cycles the other candidates, so skipping the picker never means
         # being stuck with the wrong guess.
         self.regions = list(regions) if regions else [region]
+        # Candidates that could only be confirmed by scrolling them, which is
+        # what Tab is for. See _rescue_deferred.
+        self.deferred = list(deferred) if deferred else []
         try:
             self.index = self.regions.index(region)
         except ValueError:
@@ -750,10 +809,7 @@ class ScrollSession:
             # the outline appeared but nothing moved.
             gdk_window.input_shape_combine_region(cairo.Region(), 0, 0)
         GLib.idle_add(self._grab)
-        # After the grab, not before: the probe scrolls the page and puts it
-        # back, and doing that while the keyboard is still ungrabbed leaves a
-        # window where a keystroke reaches the app instead of us.
-        GLib.idle_add(self._check_aim)
+        GLib.idle_add(self._settle_aim)
         # Never hold the keyboard indefinitely. The grab is exclusive, so
         # while a session is open every other binding on the desktop is dead
         # -- including the ones that would close it. A session left open by
@@ -799,15 +855,15 @@ class ScrollSession:
             self._close()
             return True
 
-        if key in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab) \
-                and len(self.regions) > 1:
+        if key in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            self._rescue_deferred()
+            if len(self.regions) < 2:
+                return True
             step = -1 if key == Gdk.KEY_ISO_Left_Tab else 1
             self.index = (self.index + step) % len(self.regions)
             self.region = self.regions[self.index]
             self.window.queue_draw()
-            # Deferred so the new outline is drawn before the probe's jitter,
-            # which otherwise looks like Tab having done nothing for a moment.
-            GLib.idle_add(self._check_aim)
+            GLib.idle_add(self._settle_aim)
             return True
 
         # Digits accumulate into a count, so 3j scrolls three lines. 0 is only
@@ -856,6 +912,15 @@ class ScrollSession:
         clicks = self.AMOUNTS[amount]
         if amount != "edge":
             clicks *= max(1, min(repeat, config.SCROLL_MAX_COUNT))
+        # Until the aim is settled, read the watchers first so this scroll can
+        # double as the probe that settles it. Sideways scrolls are not used
+        # for that: _position watches one axis, so a horizontal move reads as
+        # no movement and would condemn a perfectly good aim.
+        watchers, before = [], []
+        if not getattr(self.region, "aim_fixed", False) \
+                and button in (WHEEL_UP, WHEEL_DOWN):
+            watchers = _probe_children(self.region)
+            before = [_position(w) for w in watchers]
         if config.DEBUG_KEYS:
             started = time.perf_counter()
             _wheel_paced(x, y, button, clicks)
@@ -866,6 +931,8 @@ class ScrollSession:
         else:
             _wheel_paced(x, y, button, clicks)
         self.window.queue_draw()
+        if watchers:
+            self._confirm_aim(watchers, before, button, clicks)
 
     def _wheel_target(self):
         """Where to land the synthetic wheel event.
@@ -894,7 +961,7 @@ class ScrollSession:
         is drawn around. Reported live on devdocs.io: with the pointer resting
         on the sidebar, both Tab entries scrolled the sidebar, so Tab looked
         broken. So step off any enclosed sibling first, and where the aim has
-        been checked against the region itself (see _check_aim), use what
+        been settled against the region itself (see _confirm_aim), use what
         actually worked.
         """
         aim = getattr(self.region, "aim", None)
@@ -905,7 +972,7 @@ class ScrollSession:
     def _aim_point(self, strategy):
         """Where `strategy` puts the wheel event for the current region.
 
-        Strategies, in the order _check_aim tries them:
+        Strategies, in the order the aim is escalated through:
 
         "pointer"   the pointer's own position, clamped into the region and
                     stepped off any enclosed sibling. Costs no cursor movement
@@ -932,38 +999,101 @@ class ScrollSession:
             return x, y
         return _clear_point(region, blockers, (px, py))
 
-    def _check_aim(self):
-        """Find an aim that really scrolls the current region, once per region.
+    def _rescue_deferred(self):
+        """Finish collect()'s rescue pass, the first time Tab asks for it.
 
-        The step-off above only works on scrollers AT-SPI actually reported.
-        qutebrowser (Qt WebEngine) reports a devdocs.io page as one
+        These are candidates that publish no measurable overflow -- a
+        virtualised pane renders only its visible rows, so DevDocs' sidebar
+        looks static however far it really scrolls. Only scrolling one proves
+        anything, and that is what made entering scroll mode a second of the
+        page visibly jumping. Nothing here is needed to enter: collect()
+        already probed whatever sat under the pointer, because best() had to
+        choose. The rest are Tab stops, so they are found when Tab is pressed
+        -- once, and with the outline already on screen, where a moment of
+        movement reads as the mode looking for somewhere to go rather than as
+        the page glitching before it opens.
+        """
+        pending, self.deferred = self.deferred, []
+        for region in pending:
+            if any(_overlapping(region, kept) for kept in self.regions):
+                continue
+            if _scrolls(region, both_ways=config.SCROLL_RESCUE_BOTH_WAYS):
+                region.scroll_y = True
+                region.scroll_x = False
+                self.regions.append(region)
+
+    def _settle_aim(self):
+        """Decide the aim for the current region as far as that is free.
+
+        Only the part that costs no scrolling happens here. A region with
+        nothing to watch -- the whole-window fallback has no accessible at
+        all -- can never be tested, so it takes "center_x" now: the fallback
+        is an approximation by nature, and aiming down its middle is a better
+        guess than trusting a cursor that may well be parked on a sidebar.
+        Anything else is left undecided, which means "pointer" until the
+        first real scroll says otherwise (see _confirm_aim).
+        """
+        region = self.region
+        if getattr(region, "aim_fixed", False):
+            return False
+        if not _probe_children(region):
+            region.aim = "center_x"
+            region.aim_fixed = True
+        return False
+
+    def _confirm_aim(self, watchers, before, button, clicks):
+        """Check the scroll just sent actually moved this region; retry if not.
+
+        The step-off in _aim_point only works on scrollers AT-SPI actually
+        reported. qutebrowser (Qt WebEngine) reports a devdocs.io page as one
         document and nothing else, so with the cursor resting on the sidebar
         there was no sibling to step off and every Tab entry scrolled the
         sidebar -- recorded live, the content pane never moved once. Geometry
-        cannot see a scroller that was never published, so the aim is tested
-        the only way that is toolkit-independent: scroll there and watch
-        whether *this* region moved. Cached on the region, so it costs one
-        probe per region per session and nothing per keystroke.
+        cannot see a scroller that was never published, so the aim has to be
+        tested the only way that is toolkit-independent: scroll, and watch
+        whether *this* region moved.
 
-        Regions with nothing to watch -- the whole-window fallback has no
-        accessible at all -- cannot be tested, so they take "center_x": the
-        fallback is an approximation by nature, and aiming down its middle is
-        a better guess than trusting a cursor that may well be parked on a
-        sidebar.
+        What changed is when. This used to run on entry, as a synthetic
+        scroll-and-undo at each candidate point in turn -- and measured live
+        on a Wikipedia article in Chromium, that was 12 wheel events over
+        1.14s of the page visibly jumping down and back before a single
+        keystroke could be typed, ending on "pointer": the default it would
+        have used anyway. The probe is the same measurement either way, so it
+        rides on the scroll the user actually asked for instead of a synthetic
+        one. Aiming right costs nothing at all; aiming wrong costs one settle
+        and a re-send at the next point, which is the scroll they wanted
+        anyway rather than a jump that undoes itself.
+
+        There is no undo here for the same reason: a wrong aim scrolled
+        something else, and scrolling that back is a second wrong scroll.
+        Whatever moved, moved -- as it would have if they had aimed the real
+        mouse there.
         """
         region = self.region
-        if getattr(region, "aim", None) is not None:
+        current = getattr(region, "aim", None) or "pointer"
+        time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+        if _moved(watchers, before):
+            region.aim = current
+            region.aim_fixed = True
             return
-        if not _probe_children(region):
-            region.aim = "center_x"
-            return
-        for strategy in ("pointer", "center_x", "center"):
-            if _scrolls_at(region, *self._aim_point(strategy), both_ways=True):
+
+        # Nothing moved. Either the aim is wrong, or the region is simply at
+        # the end it was asked to scroll towards -- and from here those look
+        # identical. Trying the next point tells them apart, so try; but if
+        # none of them move it either, leave the aim undecided rather than
+        # recording a verdict reached at a wall. Sitting at the bottom of a
+        # page and pressing j must not be what teaches a session that the
+        # pointer aim is wrong.
+        for strategy in _AIMS[_AIMS.index(current) + 1:]:
+            x, y = self._aim_point(strategy)
+            sample = [_position(w) for w in watchers]
+            _wheel_paced(x, y, button, clicks)
+            time.sleep(config.SCROLL_PROBE_SETTLE_MS / 1000)
+            if _moved(watchers, sample):
                 region.aim = strategy
+                region.aim_fixed = True
+                self.window.queue_draw()
                 return
-        # Nothing moved it anywhere, in either direction. Keep the cursor
-        # where it is rather than warping it for a scroll that cannot happen.
-        region.aim = "pointer"
 
     def _enclosed_siblings(self):
         """Other Tab candidates that live inside the current region.

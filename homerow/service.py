@@ -595,22 +595,26 @@ class Daemon:
         # recognise as scrollable) -- fold it into the Tab list so cycling
         # still reaches the regions that WERE detected, instead of Tab's
         # first press silently discarding the choice just made.
+        # Candidates collect() left untested rather than scroll the page to
+        # find out; the session finishes them if Tab ever asks.
+        deferred = getattr(regions, "deferred", [])
         if chosen not in regions:
             regions = [chosen] + regions
         regions = scroll.with_window_fallback(regions)
         self._log(f"{len(regions)} scrollable region(s) in "
-                  f"{(time.perf_counter() - started) * 1000:.0f}ms; "
+                  f"{(time.perf_counter() - started) * 1000:.0f}ms"
+                  f"{f', {len(deferred)} deferred' if deferred else ''}; "
                   f"entering scroll mode")
-        self._enter_scroll(chosen, regions)
+        self._enter_scroll(chosen, regions, deferred)
         return False
 
-    def _enter_scroll(self, region, regions=None):
+    def _enter_scroll(self, region, regions=None, deferred=None):
         # Deferred: when this comes from the picker, the picker's own on_done
         # runs after on_choose and would clear self.overlay right after we set
         # it, leaving the daemon unable to dismiss the session later.
         def start():
             self.overlay = scroll.ScrollSession(
-                region, self._finished, regions=regions)
+                region, self._finished, regions=regions, deferred=deferred)
             self._set_mode("scroll")
             self.overlay.show()
             return False

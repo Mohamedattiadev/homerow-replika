@@ -8,6 +8,7 @@ shipped a regression that a screenshot had to catch.
 Run with:  python3 -m unittest discover -s tests -v
 """
 
+import contextlib
 import os
 import sys
 import unittest
@@ -367,7 +368,7 @@ class ScrollBest(unittest.TestCase):
 
 
 class ScrollAimCheck(unittest.TestCase):
-    """ScrollSession._check_aim() settles where the wheel goes by testing it.
+    """The wheel's aim is settled by watching the user's own scroll land.
 
     Recorded live in qutebrowser (Qt WebEngine): AT-SPI publishes a devdocs.io
     page as one document and nothing else, so with the cursor resting on the
@@ -375,6 +376,13 @@ class ScrollAimCheck(unittest.TestCase):
     scrolled the sidebar -- the content pane did not move in a single frame.
     Geometry cannot see a scroller that was never published, so the aim has to
     be tested against the region itself.
+
+    That test used to run on entry, as a synthetic scroll-and-undo at each
+    candidate point: measured live on Wikipedia in Chromium, 12 wheel events
+    over 1.14s of the page jumping before a key could be pressed. So the same
+    measurement now rides on the scroll the user actually asked for, and these
+    tests drive it through _apply() -- the aim is a consequence of scrolling,
+    not a phase before it.
     """
 
     def session(self, region, regions=None):
@@ -382,23 +390,51 @@ class ScrollAimCheck(unittest.TestCase):
         instance = object.__new__(scroll.ScrollSession)
         instance.region = region
         instance.regions = list(regions) if regions else [region]
+        instance.count = ""
+        instance.window = unittest.mock.Mock()
         return instance
+
+    @contextlib.contextmanager
+    def world(self, scrolls_when, watchers=("watcher",), pointer=(150, 400)):
+        """A page that moves only when the wheel lands where `scrolls_when` says.
+
+        `_position` reads the offset the fake wheel maintains, so the aim logic
+        runs against real movement readings rather than a patched verdict.
+        """
+        from homerow import scroll
+        offset = {"y": 0}
+        sent = []
+
+        def wheel(x, y, button, clicks):
+            sent.append((x, y, button, clicks))
+            if scrolls_when(x, y):
+                # A click of the wheel is worth tens of pixels, well past the
+                # couple of pixels of slop _moved allows for.
+                offset["y"] += clicks * 50 * (
+                    1 if button == scroll.WHEEL_DOWN else -1)
+
+        with unittest.mock.patch.object(
+                scroll, "_probe_children", return_value=list(watchers)), \
+             unittest.mock.patch.object(
+                scroll, "_position", lambda _w: offset["y"]), \
+             unittest.mock.patch.object(scroll, "_wheel_paced", wheel), \
+             unittest.mock.patch.object(scroll.time, "sleep"), \
+             unittest.mock.patch.object(
+                scroll, "_pointer_position", return_value=pointer):
+            yield sent
 
     def test_pointer_aim_is_kept_when_it_scrolls_the_region(self):
         from homerow import scroll
         document = Fake(x=0, y=15, w=1366, h=736)
         instance = self.session(document)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=True) as scrolls, \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
             self.assertEqual(document.aim, "pointer")
             self.assertEqual(instance._wheel_target(), (150, 400))
-        # Tried the cheap, no-cursor-movement aim first.
-        self.assertEqual(scrolls.call_args_list[0].args[1:], (150, 400))
+        # One wheel event, at the cursor: a correct aim costs no extra motion
+        # and never moves the cursor.
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][:2], (150, 400))
 
     def test_aim_moves_off_the_pointer_when_the_region_does_not_move(self):
         from homerow import scroll
@@ -407,23 +443,18 @@ class ScrollAimCheck(unittest.TestCase):
         # region itself never moves and the aim must shift to its middle.
         document = Fake(x=0, y=15, w=1366, h=736)
         instance = self.session(document)
-
-        def only_away_from_the_sidebar(_region, x, _y, both_ways=False):
-            return x > 340
-
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", only_away_from_the_sidebar), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: x > 340) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
             self.assertEqual(document.aim, "center_x")
             x, y = instance._wheel_target()
         self.assertEqual(x, document.center[0])
         # The cursor keeps its height: leaving the sidebar is a sideways move,
         # so there is no reason to also drag it up or down the page.
         self.assertEqual(y, 400)
+        # The retry is the scroll the user asked for, re-sent where it works --
+        # and nothing is scrolled back, so there is no visible bounce.
+        self.assertEqual([event[2:] for event in sent],
+                         [(scroll.WHEEL_DOWN, scroll.config.SCROLL_LINE_CLICKS)] * 2)
 
     def test_unverifiable_region_aims_down_the_middle(self):
         from homerow import scroll
@@ -431,41 +462,117 @@ class ScrollAimCheck(unittest.TestCase):
         # watch and no way to test the aim.
         window = Fake(x=0, y=0, w=1366, h=768)
         instance = self.session(window)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=[]), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
+        with self.world(lambda x, y: True, watchers=()) as sent:
+            instance._settle_aim()
             self.assertEqual(window.aim, "center_x")
             self.assertEqual(instance._wheel_target(), (window.center[0], 400))
+            instance._apply(scroll.WHEEL_DOWN, "line")
+        # Settled without a probe, so scrolling sends exactly one wheel event.
+        self.assertEqual(len(sent), 1)
 
-    def test_an_unscrollable_region_leaves_the_cursor_alone(self):
+    def test_a_wall_does_not_settle_the_aim(self):
         from homerow import scroll
+        # Nothing moves anywhere: either the region does not scroll, or it is
+        # simply already at the end being scrolled towards. Those are
+        # indistinguishable, so no verdict is recorded -- pressing j at the
+        # bottom of a page must not teach the session a wrong aim -- and the
+        # cursor is left where it was.
         region = Fake(x=0, y=0, w=800, h=600)
         instance = self.session(region)
-        with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]), \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=False), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
-            self.assertEqual(region.aim, "pointer")
+        with self.world(lambda x, y: False):
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            self.assertFalse(getattr(region, "aim_fixed", False))
             self.assertEqual(instance._wheel_target(), (150, 400))
 
-    def test_the_check_runs_once_per_region(self):
+    def test_a_settled_aim_is_not_reprobed_per_keystroke(self):
         from homerow import scroll
         region = Fake(x=0, y=0, w=800, h=600)
         instance = self.session(region)
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            self.assertTrue(region.aim_fixed)
+            instance._apply(scroll.WHEEL_DOWN, "line")
+            instance._apply(scroll.WHEEL_DOWN, "line")
+        # Three keystrokes, three wheel events: the check is not repaid.
+        self.assertEqual(len(sent), 3)
+
+    def test_a_sideways_scroll_never_settles_the_aim(self):
+        from homerow import scroll
+        # _position watches one axis, so a horizontal scroll reads as no
+        # movement -- and would condemn an aim that is perfectly good.
+        region = Fake(x=0, y=0, w=800, h=600)
+        instance = self.session(region)
+        with self.world(lambda x, y: True) as sent:
+            instance._apply(scroll.WHEEL_RIGHT, "line")
+        self.assertFalse(getattr(region, "aim_fixed", False))
+        self.assertEqual(len(sent), 1)
+
+
+class ScrollDeferredRescue(unittest.TestCase):
+    """Candidates that can only be proved by scrolling them wait for Tab.
+
+    Rescuing a virtualised pane means scrolling it and putting it back, which
+    the user watches happen. Measured on a Wikipedia article in Chromium,
+    doing that for the whole shortlist on entry was ~1.25s of the page moving
+    before the outline appeared; probing only what best() actually needs cut
+    that to ~0.5s, and the rest happens on the keystroke that asks for it.
+    """
+
+    def session(self, region, regions, deferred):
+        from homerow import scroll
+        instance = object.__new__(scroll.ScrollSession)
+        instance.region = region
+        instance.regions = list(regions)
+        instance.deferred = list(deferred)
+        return instance
+
+    def test_tab_rescues_what_entry_left_alone(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content], [sidebar])
         with unittest.mock.patch.object(
-                scroll, "_probe_children", return_value=["watcher"]) as probe, \
-             unittest.mock.patch.object(
-                scroll, "_scrolls_at", return_value=True), \
-             unittest.mock.patch.object(
-                scroll, "_pointer_position", return_value=(150, 400)):
-            instance._check_aim()
-            instance._check_aim()
-        self.assertEqual(probe.call_count, 1)
+                scroll, "_scrolls", return_value=True):
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [content, sidebar])
+        self.assertTrue(sidebar.scroll_y)
+
+    def test_a_candidate_that_does_not_scroll_is_not_offered(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        banner = Fake(x=0, y=0, w=340, h=100)
+        instance = self.session(content, [content], [banner])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=False):
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [content])
+
+    def test_the_rescue_is_paid_for_once(self):
+        from homerow import scroll
+        content = Fake(x=340, y=0, w=1000, h=768)
+        sidebar = Fake(x=0, y=0, w=340, h=768)
+        instance = self.session(content, [content], [sidebar])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+            instance._rescue_deferred()
+        # Tab is pressed repeatedly to cycle; the probing is not.
+        self.assertEqual(scrolls.call_count, 1)
+
+    def test_a_candidate_already_covered_is_not_probed(self):
+        from homerow import scroll
+        # collect()'s own rescue found this one at entry, because the pointer
+        # was on it. Probing the wrapper around it again would offer a second
+        # Tab stop that scrolls the same thing.
+        pane = Fake(x=0, y=0, w=340, h=768)
+        wrapper = Fake(x=0, y=0, w=344, h=768)
+        instance = self.session(pane, [pane], [wrapper])
+        with unittest.mock.patch.object(
+                scroll, "_scrolls", return_value=True) as scrolls:
+            instance._rescue_deferred()
+        self.assertEqual(instance.regions, [pane])
+        self.assertEqual(scrolls.call_count, 0)
 
 
 class ScrollWindowFallbackTabStop(unittest.TestCase):
