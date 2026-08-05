@@ -1,15 +1,15 @@
 [Unit]
-Description=homerow keyboard hint daemon
-Documentation=file://%h/homerow-replika/README.md
+Description=hintium keyboard hint daemon
+Documentation=file://%h/hintium/README.md
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
 # Matches the clone path the README's Install section uses. Adjust both
-# lines if you cloned homerow-replika somewhere else.
-ExecStart=%h/homerow-replika/bin/homerow --daemon
-ExecStop=%h/homerow-replika/bin/homerow --quit
+# lines if you cloned hintium somewhere else.
+ExecStart=%h/hintium/bin/hintium --daemon
+ExecStop=%h/hintium/bin/hintium --quit
 Restart=on-failure
 RestartSec=2
 # The daemon needs the X display and the accessibility bus of the running

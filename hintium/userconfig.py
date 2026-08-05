@@ -1,4 +1,4 @@
-"""Layer ~/.config/homerow/config.yaml over the defaults in config.py.
+"""Layer ~/.config/hintium/config.yaml over the defaults in config.py.
 
 config.py stays the schema: every name that exists there can be set here,
 nothing else can, and the default's *type* is what a supplied value is checked
@@ -31,7 +31,7 @@ because of a stray tab is worse than one that ignores the line.
 
 import os
 
-from homerow import config
+from hintium import config
 
 # Names in config.py that are computed from other names. Overriding an
 # ingredient has to recompute them or the override half-lands: setting
@@ -69,7 +69,7 @@ def config_path(explicit=None):
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "homerow", "config.yaml")
+    return os.path.join(base, "hintium", "config.yaml")
 
 
 # --- reading YAML ----------------------------------------------------------

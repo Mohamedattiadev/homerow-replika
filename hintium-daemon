@@ -1,11 +1,11 @@
 #!/bin/sh
 # Kept so existing autostarts and the shipped systemd unit do not break.
-# `homerow --daemon` is the same thing, and homerow-cli is the full surface.
+# `hintium --daemon` is the same thing, and hintium-cli is the full surface.
 #
 # With no arguments, or with only the ones that shape how a daemon runs, this
 # means "be the daemon" -- which is what it always meant. Anything else
 # (--status, --log, --quit) is passed through as itself.
-CLI="$(dirname "$(readlink -f "$0")")/homerow-cli"
+CLI="$(dirname "$(readlink -f "$0")")/hintium-cli"
 
 for arg in "$@"; do
     case "$arg" in

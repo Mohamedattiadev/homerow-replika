@@ -1033,7 +1033,7 @@ class CaretSearchPrompt:
                 return False
         self._attempts += 1
         if self._attempts > 40:
-            print("homerow: could not grab keyboard", file=sys.stderr)
+            print("hintium: could not grab keyboard", file=sys.stderr)
             self._close()
             return False
         GLib.timeout_add(50, self._grab)

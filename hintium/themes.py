@@ -1,6 +1,6 @@
 """Named colour palettes, for desktops that have no theme to follow.
 
-homerow's colours normally come from the desktop itself -- theme-apply's
+hintium's colours normally come from the desktop itself -- theme-apply's
 `current_palette.json`, else pywal's `colors.json` -- and are re-read on every
 press, so changing the wallpaper changes the hints without restarting
 anything. That is the good path and it stays the default.

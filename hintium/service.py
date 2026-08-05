@@ -33,14 +33,14 @@ def log_path():
     The daemon now always logs, so a report can be answered from the record.
     """
     base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    directory = os.path.join(base, "homerow")
+    directory = os.path.join(base, "hintium")
     os.makedirs(directory, exist_ok=True)
-    return os.path.join(directory, "homerow.log")
+    return os.path.join(directory, "hintium.log")
 
 
 def socket_path():
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    return os.path.join(runtime, "homerow.sock")
+    return os.path.join(runtime, "hintium.sock")
 
 
 def mode_path():
@@ -55,7 +55,7 @@ def mode_path():
     because run() below clears it unconditionally on every startup.
     """
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    return os.path.join(runtime, "homerow-mode")
+    return os.path.join(runtime, "hintium-mode")
 
 
 _MODE_COMMANDS = frozenset(
@@ -93,7 +93,7 @@ class Daemon:
 
     def run(self):
         if is_running(self.path):
-            print("homerow: daemon already running", file=sys.stderr)
+            print("hintium: daemon already running", file=sys.stderr)
             return 1
 
         # Nothing answered, so any socket file left behind is stale.
@@ -317,13 +317,13 @@ class Daemon:
         try:
             found = elements.collect(width, height)
         except Exception as error:
-            print(f"homerow: collect failed: {error!r}", file=sys.stderr)
+            print(f"hintium: collect failed: {error!r}", file=sys.stderr)
             found = []
 
         try:
             switchable = windows.collect(width, height, _active_window_id())
         except Exception as error:
-            print(f"homerow: window scan failed: {error!r}", file=sys.stderr)
+            print(f"hintium: window scan failed: {error!r}", file=sys.stderr)
             switchable = []
         found = found + switchable
 
@@ -362,7 +362,7 @@ class Daemon:
         try:
             found = elements.collect(width, height)
         except Exception as error:
-            print(f"homerow: collect failed: {error!r}", file=sys.stderr)
+            print(f"hintium: collect failed: {error!r}", file=sys.stderr)
             return False
         if not found:
             self._log("nothing to search")
@@ -430,7 +430,7 @@ class Daemon:
         try:
             blocks = caret.collect(width, height)
         except Exception as error:
-            print(f"homerow: caret scan failed: {error!r}", file=sys.stderr)
+            print(f"hintium: caret scan failed: {error!r}", file=sys.stderr)
             return False
 
         if not blocks:
@@ -479,7 +479,7 @@ class Daemon:
         try:
             blocks = caret.collect(width, height)
         except Exception as error:
-            print(f"homerow: caret scan failed: {error!r}", file=sys.stderr)
+            print(f"hintium: caret scan failed: {error!r}", file=sys.stderr)
             return False
 
         if not blocks:
@@ -535,7 +535,7 @@ class Daemon:
         try:
             fields = edit.collect(width, height)
         except Exception as error:
-            print(f"homerow: edit scan failed: {error!r}", file=sys.stderr)
+            print(f"hintium: edit scan failed: {error!r}", file=sys.stderr)
             return False
 
         if not fields:
@@ -679,7 +679,7 @@ class Daemon:
         try:
             regions = scroll.collect(width, height)
         except Exception as error:
-            print(f"homerow: scroll scan failed: {error!r}", file=sys.stderr)
+            print(f"hintium: scroll scan failed: {error!r}", file=sys.stderr)
             return False
 
         if not regions and config.SCROLL_FALLBACK_TO_WINDOW:
@@ -750,7 +750,7 @@ class Daemon:
         chain of clicks in the *same* window -- but a focused text field needs
         those letters to be letters, and a window switch is just as much "done
         with the chord" as that: h/s/f in a freshly-focused window are still
-        going to want to be homerow's own bindings again from a fresh alt+space,
+        going to want to be hintium's own bindings again from a fresh alt+space,
         not silently reopen a chord this window never asked for. Reopening
         the chord in either case is worse than leaving it, so this exits it --
         and only in these two cases.
@@ -800,7 +800,7 @@ class Daemon:
                  + f".{int(now * 1000) % 1000:03d}")
         line = f"{stamp} {message}"
         if self.debug:
-            print(f"homerow: {message}", flush=True)
+            print(f"hintium: {message}", flush=True)
         if self.log is not None:
             try:
                 self.log.write(line + "\n")
@@ -875,7 +875,7 @@ def _notify(message):
     import subprocess
     try:
         subprocess.run(
-            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
+            ["notify-send", "-t", "1500", "-a", "hintium", "Hintium", message],
             timeout=1, check=False,
         )
     except (OSError, subprocess.SubprocessError):

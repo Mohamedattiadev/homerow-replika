@@ -16,7 +16,7 @@ import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from homerow import (  # noqa: E402
+from hintium import (  # noqa: E402
     config, elements, hints, search, userconfig, windows,
 )
 
@@ -151,7 +151,7 @@ class SignalHandlersExist(unittest.TestCase):
         import ast
         import pathlib
 
-        root = pathlib.Path(__file__).resolve().parent.parent / "homerow"
+        root = pathlib.Path(__file__).resolve().parent.parent / "hintium"
         missing = []
         for path in sorted(root.glob("*.py")):
             tree = ast.parse(path.read_text())
@@ -187,7 +187,7 @@ class ModuleNamesResolve(unittest.TestCase):
         import ast
         import pathlib
 
-        root = pathlib.Path(__file__).resolve().parent.parent / "homerow"
+        root = pathlib.Path(__file__).resolve().parent.parent / "hintium"
         siblings = {p.stem for p in root.glob("*.py")} - {"__init__"}
         offenders = []
         for path in sorted(root.glob("*.py")):
@@ -217,23 +217,23 @@ class LayoutContainerRule(unittest.TestCase):
     """
 
     def box(self, x, y, w, h):
-        from homerow.elements import Element
+        from hintium.elements import Element
         return Element(None, x, y, w, h)
 
     def test_wrapper_encloses_its_children(self):
-        from homerow import elements
+        from hintium import elements
         outer = self.box(200, 100, 950, 580)
         inner = self.box(220, 120, 40, 40)
         self.assertTrue(elements._encloses(outer, inner))
         self.assertFalse(elements._encloses(inner, outer))
 
     def test_equal_boxes_do_not_enclose_each_other(self):
-        from homerow import elements
+        from hintium import elements
         a, b = self.box(0, 0, 100, 100), self.box(0, 0, 100, 100)
         self.assertFalse(elements._encloses(a, b))
 
     def test_overlapping_but_not_containing_is_not_enclosing(self):
-        from homerow import elements
+        from hintium import elements
         a, b = self.box(0, 0, 100, 100), self.box(50, 50, 100, 100)
         self.assertFalse(elements._encloses(a, b))
 
@@ -247,11 +247,11 @@ class SearchOverlapRule(unittest.TestCase):
     """service._overlaps stops a link and its own text both being numbered."""
 
     def box(self, x, y, w, h):
-        from homerow.elements import Element
+        from hintium.elements import Element
         return Element(None, x, y, w, h)
 
     def setUp(self):
-        from homerow import service
+        from hintium import service
         self.overlaps = service._overlaps
 
     def test_text_inside_its_link_is_the_same_target(self):
@@ -283,23 +283,23 @@ class NestedScrollerRule(unittest.TestCase):
     """
 
     def region(self, x, y, w, h):
-        from homerow.elements import Element
+        from hintium.elements import Element
         return Element(None, x, y, w, h)
 
     def test_content_column_inside_viewport_is_one_scroller(self):
-        from homerow import scroll
+        from hintium import scroll
         viewport = self.region(0, 118, 1366, 650)
         column = self.region(396, 187, 766, 560)
         self.assertTrue(scroll._same_scroller(viewport, column))
 
     def test_sidebar_and_content_pane_stay_separate(self):
-        from homerow import scroll
+        from hintium import scroll
         sidebar = self.region(0, 65, 336, 672)
         content = self.region(334, 65, 1033, 632)
         self.assertFalse(scroll._same_scroller(sidebar, content))
 
     def test_a_small_widget_inside_a_pane_survives(self):
-        from homerow import scroll
+        from hintium import scroll
         pane = self.region(0, 0, 1000, 800)
         widget = self.region(100, 100, 200, 150)
         self.assertFalse(scroll._same_scroller(pane, widget))
@@ -349,31 +349,31 @@ class WindowScopeRule(unittest.TestCase):
             return self.frames[index]
 
     def test_active_frame_wins_outright(self):
-        from homerow import elements
+        from hintium import elements
         wanted = self.Frame(0, 38, 1366, 730, active=True)
         app = self.App([self.Frame(0, 38, 1366, 730), wanted,
                         self.Frame(0, 38, 1366, 730)])
         self.assertIs(elements.active_frame(app, (0, 38, 1366, 730)), wanted)
 
     def test_geometry_decides_when_none_is_marked_active(self):
-        from homerow import elements
+        from hintium import elements
         wanted = self.Frame(204, 111, 952, 580)
         app = self.App([self.Frame(0, 38, 1366, 730), wanted])
         self.assertIs(elements.active_frame(app, (204, 111, 952, 580)), wanted)
 
     def test_single_frame_needs_no_scoping(self):
-        from homerow import elements
+        from hintium import elements
         app = self.App([self.Frame(0, 38, 1366, 730)])
         self.assertIsNone(elements.active_frame(app, (0, 38, 1366, 730)))
 
     def test_no_close_match_falls_back_to_the_whole_app(self):
-        from homerow import elements
+        from hintium import elements
         app = self.App([self.Frame(0, 0, 100, 100),
                         self.Frame(500, 500, 100, 100)])
         self.assertIsNone(elements.active_frame(app, (0, 38, 1366, 730)))
 
     def test_hidden_frames_are_ignored(self):
-        from homerow import elements
+        from hintium import elements
         visible = self.Frame(0, 38, 1366, 730)
         app = self.App([self.Frame(0, 38, 1366, 730, showing=False), visible])
         self.assertIs(elements.active_frame(app, (0, 38, 1366, 730)), visible)
@@ -390,7 +390,7 @@ class WorkspaceWatch(unittest.TestCase):
     def daemon(self, desktop, overlay=None):
         import unittest.mock
 
-        from homerow import service
+        from hintium import service
         instance = object.__new__(service.Daemon)
         instance.debug = False
         instance._desktop = desktop
@@ -406,7 +406,7 @@ class WorkspaceWatch(unittest.TestCase):
     def test_a_changed_workspace_dismisses_the_overlay(self):
         import unittest.mock
 
-        from homerow import service, x11
+        from hintium import service, x11
         instance = self.daemon(2)
         with unittest.mock.patch.object(x11, "current_desktop",
                                         return_value=5), \
@@ -418,7 +418,7 @@ class WorkspaceWatch(unittest.TestCase):
     def test_the_same_workspace_leaves_it_alone(self):
         import unittest.mock
 
-        from homerow import x11
+        from hintium import x11
         instance = self.daemon(2)
         with unittest.mock.patch.object(x11, "current_desktop",
                                         return_value=2):
@@ -429,7 +429,7 @@ class WorkspaceWatch(unittest.TestCase):
     def test_no_overlay_stops_the_watch(self):
         import unittest.mock
 
-        from homerow import x11
+        from hintium import x11
         instance = self.daemon(2)
         instance.overlay = None
         with unittest.mock.patch.object(x11, "current_desktop",
@@ -440,7 +440,7 @@ class WorkspaceWatch(unittest.TestCase):
     def test_a_wm_that_publishes_no_desktop_is_not_treated_as_a_switch(self):
         import unittest.mock
 
-        from homerow import x11
+        from hintium import x11
         instance = self.daemon(2)
         with unittest.mock.patch.object(x11, "current_desktop",
                                         return_value=None):
@@ -459,14 +459,14 @@ class CaretMinimumIsAPreference(unittest.TestCase):
     """
 
     def test_the_floor_is_lower_than_the_preference(self):
-        from homerow import config
+        from hintium import config
         self.assertLess(config.CARET_MIN_CHARS_FLOOR, config.CARET_MIN_CHARS)
         self.assertGreaterEqual(config.CARET_MIN_CHARS_FLOOR, 1)
 
     def test_a_short_field_is_offered_when_nothing_longer_exists(self):
         import unittest.mock
 
-        from homerow import caret, config
+        from hintium import caret, config
         # _shape is what applies the length rule; the retry has to reach it
         # with the floor rather than the preference.
         seen = []
@@ -506,13 +506,13 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
     """
 
     def test_the_dwell_timeout_is_the_longer_one(self):
-        from homerow import config
+        from hintium import config
         self.assertGreater(config.DWELL_TIMEOUT_S, config.IDLE_TIMEOUT_S)
 
     def test_the_modes_you_read_in_use_it(self):
         import inspect
 
-        from homerow import caret, scroll
+        from hintium import caret, scroll
         for cls in (scroll.ScrollSession, caret.CaretSession):
             with self.subTest(mode=cls.__name__):
                 source = inspect.getsource(cls)
@@ -522,7 +522,7 @@ class ModesYouReadInStayOpenLonger(unittest.TestCase):
     def test_the_modes_you_type_through_do_not(self):
         import inspect
 
-        from homerow import caret, overlay, search
+        from hintium import caret, overlay, search
         for cls in (overlay.Overlay, search.SearchPrompt,
                     caret.CaretSearchPrompt):
             with self.subTest(mode=cls.__name__):
@@ -545,20 +545,20 @@ class BrowserChromeIsEditableToo(unittest.TestCase):
     """
 
     def test_a_field_outside_the_viewport_is_kept(self):
-        from homerow import edit
+        from hintium import edit
         viewport = (0, 130, 1366, 640)
         # The address bar, above the page.
         self.assertFalse(edit._within(viewport, 683, 94))
 
     def test_a_field_inside_the_viewport_is_subject_to_the_check(self):
-        from homerow import edit
+        from hintium import edit
         viewport = (0, 130, 1366, 640)
         self.assertTrue(edit._within(viewport, 683, 400))
 
     def test_a_field_in_the_foreground_document_belongs_to_it(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         document = unittest.mock.Mock()
         parent = unittest.mock.Mock()
         field = unittest.mock.Mock()
@@ -569,7 +569,7 @@ class BrowserChromeIsEditableToo(unittest.TestCase):
     def test_a_field_in_a_background_document_does_not(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         document = unittest.mock.Mock()
         other, field = unittest.mock.Mock(), unittest.mock.Mock()
         field.get_parent.return_value = other
@@ -579,7 +579,7 @@ class BrowserChromeIsEditableToo(unittest.TestCase):
     def test_a_parent_cycle_cannot_hang_the_daemon(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         # A broken tree that is its own ancestor. Bounded, or the mode that is
         # meant to feel instant never returns.
         document = unittest.mock.Mock()
@@ -590,7 +590,7 @@ class BrowserChromeIsEditableToo(unittest.TestCase):
     def test_a_tree_that_will_not_answer_is_not_claimed(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         document = unittest.mock.Mock()
         field = unittest.mock.Mock()
         field.get_parent.side_effect = RuntimeError("gone")
@@ -612,7 +612,7 @@ class WarmServerHandover(unittest.TestCase):
     def test_stopping_waits_for_the_process_to_die(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         proc = unittest.mock.Mock()
         proc.poll.return_value = None
         with unittest.mock.patch.dict(edit._warm, {"proc": proc}), \
@@ -625,7 +625,7 @@ class WarmServerHandover(unittest.TestCase):
         import subprocess
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         proc = unittest.mock.Mock()
         proc.poll.return_value = None
         proc.wait.side_effect = [subprocess.TimeoutExpired("nvim", 2), None]
@@ -637,7 +637,7 @@ class WarmServerHandover(unittest.TestCase):
     def test_the_reference_is_dropped_even_if_stopping_fails(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         proc = unittest.mock.Mock()
         proc.terminate.side_effect = OSError("gone")
         with unittest.mock.patch.dict(edit._warm, {"proc": proc}), \
@@ -656,7 +656,7 @@ class AnEmptyingWriteKeepsTheText(unittest.TestCase):
     """
 
     def test_the_previous_contents_are_saved(self):
-        from homerow import edit
+        from hintium import edit
         path = edit.keep_buffer("fifty four characters of somebody's actual work")
         self.assertIsNotNone(path)
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
@@ -665,11 +665,11 @@ class AnEmptyingWriteKeepsTheText(unittest.TestCase):
                              "fifty four characters of somebody's actual work")
 
     def test_what_it_leaves_is_swept_at_the_next_start(self):
-        from homerow import config, edit
+        from hintium import config, edit
         # Otherwise it is somebody's field contents sitting in /tmp forever.
         path = edit.keep_buffer("something")
         self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
-        self.assertTrue(os.path.basename(path).startswith("homerow-"))
+        self.assertTrue(os.path.basename(path).startswith("hintium-"))
         self.assertTrue(path.endswith(config.EDIT_SUFFIX))
 
 
@@ -688,7 +688,7 @@ class TheWriteIsChecked(unittest.TestCase):
     def test_matching_text_confirms(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         target = unittest.mock.Mock()
         with unittest.mock.patch.object(edit, "read", return_value="hello"):
             self.assertIs(edit.verify(target, "hello"), True)
@@ -696,7 +696,7 @@ class TheWriteIsChecked(unittest.TestCase):
     def test_different_text_is_reported(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         target = unittest.mock.Mock()
         with unittest.mock.patch.object(edit, "read", return_value="old text"):
             self.assertIs(edit.verify(target, "new text"), False)
@@ -704,7 +704,7 @@ class TheWriteIsChecked(unittest.TestCase):
     def test_a_field_that_cannot_be_read_is_not_a_failure(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         # Unknown is not the same as wrong; claiming the edit failed when the
         # field simply will not answer would cry wolf on every such app.
         target = unittest.mock.Mock()
@@ -715,7 +715,7 @@ class TheWriteIsChecked(unittest.TestCase):
     def test_trailing_whitespace_does_not_count_as_a_mismatch(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         # The editor adds a trailing newline; the field will not have one.
         target = unittest.mock.Mock()
         with unittest.mock.patch.object(edit, "read", return_value="hello"):
@@ -737,7 +737,7 @@ class TheAnswerArrivesWhenItIsTrue(unittest.TestCase):
 
         from gi.repository import GLib
 
-        from homerow import edit
+        from hintium import edit
         answers = list(reads)
         result = {}
         loop = GLib.MainLoop()
@@ -792,35 +792,35 @@ class ColoursCanBeAskedForByName(unittest.TestCase):
     """
 
     def setUp(self):
-        from homerow import config
+        from hintium import config
         self.addCleanup(setattr, config, "THEME_PRESET", config.THEME_PRESET)
         self.addCleanup(setattr, config, "THEME_COLORS",
                         dict(config.THEME_COLORS))
         self.addCleanup(setattr, config, "FOLLOW_THEME", config.FOLLOW_THEME)
 
     def test_following_the_desktop_is_still_the_default(self):
-        from homerow import config
+        from hintium import config
         self.assertEqual(config.THEME_PRESET, "")
         self.assertEqual(config.THEME_COLORS, {})
         self.assertTrue(config.FOLLOW_THEME)
 
     def test_a_named_preset_is_used_instead_of_the_desktop(self):
-        from homerow import config, theme, themes
+        from hintium import config, theme, themes
         config.THEME_PRESET = "nord"
         self.assertEqual(theme._named()["bg"], themes.PRESETS["nord"]["bg"])
 
     def test_names_are_forgiving_about_case_and_separators(self):
-        from homerow import themes
+        from hintium import themes
         for spelling in ("tokyo-night", "Tokyo Night", "TOKYO_NIGHT"):
             self.assertEqual(themes.get(spelling), themes.PRESETS["tokyo-night"])
 
     def test_an_unknown_name_falls_back_rather_than_failing(self):
-        from homerow import config, theme
+        from hintium import config, theme
         config.THEME_PRESET = "no-such-theme"
         self.assertIn("bg", theme._named())
 
     def test_one_colour_can_be_overridden_without_naming_the_rest(self):
-        from homerow import config, theme
+        from hintium import config, theme
         config.THEME_PRESET = "nord"
         config.THEME_COLORS = {"purple": "#ff8800"}
         named = theme._named()
@@ -828,7 +828,7 @@ class ColoursCanBeAskedForByName(unittest.TestCase):
         self.assertEqual(named["green"], "#a3be8c")   # nord's, untouched
 
     def test_a_bad_colour_costs_only_that_colour(self):
-        from homerow import config, theme
+        from hintium import config, theme
         # A typo in one hex value should not take every hint on screen with it.
         config.THEME_PRESET = "nord"
         config.THEME_COLORS = {"purple": "not a colour", "green": "#00ff00"}
@@ -837,7 +837,7 @@ class ColoursCanBeAskedForByName(unittest.TestCase):
         self.assertEqual(named["green"], "#00ff00")
 
     def test_every_preset_builds_a_usable_palette(self):
-        from homerow import config, theme, themes
+        from hintium import config, theme, themes
         # A preset that cannot be turned into a palette is worse than one that
         # is not offered, and light themes are the ones that break ink choice.
         for name in themes.names():
@@ -858,12 +858,12 @@ class ScrollKeysCanBeRebound(unittest.TestCase):
     """
 
     def setUp(self):
-        from homerow import config
+        from hintium import config
         self.addCleanup(setattr, config, "SCROLL_KEYS",
                         dict(config.SCROLL_KEYS))
 
     def test_the_shipped_defaults_all_resolve(self):
-        from homerow import scroll
+        from hintium import scroll
         # Every default has to name a real key and a real action, or the mode
         # ships with a binding that silently does nothing.
         problems = []
@@ -874,7 +874,7 @@ class ScrollKeysCanBeRebound(unittest.TestCase):
     def test_a_rebind_takes_effect(self):
         from gi.repository import Gdk
 
-        from homerow import config, scroll
+        from hintium import config, scroll
         config.SCROLL_KEYS = {"e": "down", "y": "up"}
         resolved = scroll.keymap()
         self.assertEqual(resolved[Gdk.KEY_e], (scroll.WHEEL_DOWN, "line"))
@@ -884,7 +884,7 @@ class ScrollKeysCanBeRebound(unittest.TestCase):
     def test_a_bad_line_costs_only_that_line(self):
         from gi.repository import Gdk
 
-        from homerow import config, scroll
+        from hintium import config, scroll
         config.SCROLL_KEYS = {"j": "down", "k": "sideways-ish",
                               "NoSuchKey": "up"}
         problems = []
@@ -893,7 +893,7 @@ class ScrollKeysCanBeRebound(unittest.TestCase):
         self.assertEqual(len(problems), 2)
 
     def test_the_amounts_are_read_when_the_key_is_pressed(self):
-        from homerow import config, scroll
+        from hintium import config, scroll
         # They used to be captured in the class body, which runs at import --
         # before the config file is read -- so scroll.line_clicks was accepted,
         # reported as applied, and then ignored for the life of the daemon.
@@ -916,7 +916,7 @@ class EmptyingAFieldIsAKeystrokeNotAPaste(unittest.TestCase):
     def write(self, text):
         from gi.repository import GLib
 
-        from homerow import edit
+        from hintium import edit
         combos = []
         clipboard = unittest.mock.Mock()
         clipboard.wait_for_text.return_value = "the user's own clipboard"
@@ -940,7 +940,7 @@ class EmptyingAFieldIsAKeystrokeNotAPaste(unittest.TestCase):
         return combos, clipboard
 
     def test_emptying_presses_the_key_that_empties(self):
-        from homerow import config
+        from hintium import config
         combos, _clipboard = self.write("")
         self.assertEqual(combos, [config.EDIT_SELECT_ALL, config.EDIT_CLEAR])
 
@@ -952,7 +952,7 @@ class EmptyingAFieldIsAKeystrokeNotAPaste(unittest.TestCase):
         clipboard.request_text.assert_not_called()
 
     def test_an_ordinary_write_still_pastes(self):
-        from homerow import config
+        from hintium import config
         combos, clipboard = self.write("something to say")
         self.assertEqual(combos, [config.EDIT_SELECT_ALL, config.EDIT_PASTE])
         clipboard.set_text.assert_any_call("something to say", -1)
@@ -968,7 +968,7 @@ class TheClipboardIsNotWaitedOn(unittest.TestCase):
     """
 
     def borrow(self, request, ours="the field's new contents"):
-        from homerow import edit
+        from hintium import edit
         clipboard = unittest.mock.Mock()
         clipboard.request_text = request
         return edit._borrow_clipboard(clipboard, ours=ours,
@@ -1021,7 +1021,7 @@ class TheReplacementServerIsBuiltInTheBackground(unittest.TestCase):
         import threading
         import time
 
-        from homerow import edit
+        from hintium import edit
         started = threading.Event()
         release = threading.Event()
 
@@ -1047,7 +1047,7 @@ class TheReplacementServerIsBuiltInTheBackground(unittest.TestCase):
     def test_the_next_open_waits_for_it(self):
         import threading
 
-        from homerow import edit
+        from hintium import edit
         # The wait did not disappear, it moved to the only thing that needs
         # the answer -- and attaching an editor to a half-built server is
         # worse than waiting for a finished one.
@@ -1066,7 +1066,7 @@ class TheReplacementServerIsBuiltInTheBackground(unittest.TestCase):
     def test_a_second_replacement_does_not_start_a_second_server(self):
         import threading
 
-        from homerow import edit
+        from hintium import edit
         release = threading.Event()
         with unittest.mock.patch.object(edit, "stop_warm"), \
              unittest.mock.patch.object(edit, "start_warm") as started, \
@@ -1082,7 +1082,7 @@ class TheReplacementServerIsBuiltInTheBackground(unittest.TestCase):
     def test_the_daemon_leaving_stops_one_being_built(self):
         import threading
 
-        from homerow import edit
+        from hintium import edit
         # Otherwise the last close of the session leaves a headless nvim
         # behind, owned by a daemon that is gone.
         release = threading.Event()
@@ -1116,7 +1116,7 @@ class LeavingTheChordIsGuarded(unittest.TestCase):
     def run_click(self, role):
         import unittest.mock
 
-        from homerow import service
+        from hintium import service
         instance = object.__new__(service.Daemon)
         instance.debug = False
         instance.log = None
@@ -1128,7 +1128,7 @@ class LeavingTheChordIsGuarded(unittest.TestCase):
         return ran
 
     def test_the_ungrab_is_conditional_on_a_chord_being_active(self):
-        from homerow import config
+        from hintium import config
         role = next(iter(config.TEXT_ENTRY_ROLES))
         ran = self.run_click(role)
         ran.assert_called_once()
@@ -1162,16 +1162,16 @@ class EditModeAsksLess(unittest.TestCase):
         return element
 
     def test_the_focused_field_is_the_answer(self):
-        from homerow import edit
+        from hintium import edit
         wanted = self.field(True)
         self.assertIs(edit.focused([self.field(False), wanted]), wanted)
 
     def test_nothing_focused_means_pick_one(self):
-        from homerow import edit
+        from hintium import edit
         self.assertIsNone(edit.focused([self.field(False), self.field(False)]))
 
     def test_two_focused_fields_is_not_an_answer(self):
-        from homerow import edit
+        from hintium import edit
         # No toolkit should claim it, and guessing between them is worse than
         # hinting: hinting is at least honest about not knowing.
         self.assertIsNone(edit.focused([self.field(True), self.field(True)]))
@@ -1179,7 +1179,7 @@ class EditModeAsksLess(unittest.TestCase):
     def test_a_field_that_will_not_answer_is_skipped_not_trusted(self):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         broken = unittest.mock.Mock()
         broken.accessible.get_state_set.side_effect = RuntimeError("gone")
         wanted = self.field(True)
@@ -1192,7 +1192,7 @@ class CaretOpensTheEditor(unittest.TestCase):
     def session(self):
         import unittest.mock
 
-        from homerow import caret
+        from hintium import caret
         instance = object.__new__(caret.CaretSession)
         instance.element = "the block"
         instance.offset = 42
@@ -1209,7 +1209,7 @@ class CaretOpensTheEditor(unittest.TestCase):
     def test_closing_to_edit_hands_over_the_block_and_the_offset(self):
         import unittest.mock
 
-        from homerow import caret
+        from hintium import caret
         instance = self.session()
         with unittest.mock.patch.object(caret.Gtk, "events_pending",
                                         return_value=False), \
@@ -1220,7 +1220,7 @@ class CaretOpensTheEditor(unittest.TestCase):
     def test_an_ordinary_close_opens_nothing(self):
         import unittest.mock
 
-        from homerow import caret
+        from hintium import caret
         instance = self.session()
         with unittest.mock.patch.object(caret.Gtk, "events_pending",
                                         return_value=False), \
@@ -1231,7 +1231,7 @@ class CaretOpensTheEditor(unittest.TestCase):
     def test_text_that_cannot_be_written_back_is_refused(self):
         import unittest.mock
 
-        from homerow import service
+        from hintium import service
         # Opening page prose in an editor that could never return it is a
         # dead end dressed up as a feature.
         instance = object.__new__(service.Daemon)
@@ -1261,14 +1261,14 @@ class InkIsReadable(unittest.TestCase):
              ("chip_window", "ink_window", "ink_dim_window")]
 
     def palettes(self):
-        from homerow import theme
+        from hintium import theme
         # The live theme and the built-in fallback: the fallback is what a
         # desktop with no theme file gets, and it goes through the same path.
         return [("live", theme.palette()),
                 ("fallback", theme._build(dict(theme.FALLBACK)))]
 
     def test_every_ink_clears_the_readable_floor_on_its_own_chip(self):
-        from homerow import config, theme
+        from hintium import config, theme
         for name, palette in self.palettes():
             for chip, ink, dim in self.PAIRS:
                 for key in (ink, dim):
@@ -1278,7 +1278,7 @@ class InkIsReadable(unittest.TestCase):
                             config.INK_MIN_CONTRAST)
 
     def test_a_meaning_recedes_from_its_key_where_it_can_afford_to(self):
-        from homerow import theme
+        from hintium import theme
         # The whole point of the fade is hierarchy. A floor that swallowed it
         # everywhere would be a legend with no hierarchy left.
         for name, palette in self.palettes():
@@ -1289,7 +1289,7 @@ class InkIsReadable(unittest.TestCase):
                         theme._contrast(palette[ink], palette[chip]))
 
     def test_receding_backs_off_until_the_floor_is_met(self):
-        from homerow import theme
+        from hintium import theme
         # A fade of 0.9 would be nearly invisible; it has to come back up.
         ink, chip = (0.0, 0.0, 0.0), (0.9, 0.9, 0.9)
         faded = theme._recede(ink, chip, 0.9, 4.5)
@@ -1297,7 +1297,7 @@ class InkIsReadable(unittest.TestCase):
         self.assertNotEqual(faded, ink)      # it did still recede
 
     def test_a_chip_that_cannot_afford_any_fade_gets_none(self):
-        from homerow import theme
+        from hintium import theme
         # Black on mid-grey is 4.41:1 -- under the floor before any fade at
         # all. There is nothing better available, so the answer is the ink
         # itself rather than something worse in pursuit of a number that
@@ -1306,7 +1306,7 @@ class InkIsReadable(unittest.TestCase):
         self.assertEqual(theme._recede(ink, chip, 0.9, 4.5), ink)
 
     def test_the_themes_own_colours_are_preferred_over_black_and_white(self):
-        from homerow import theme
+        from hintium import theme
         # Black and white are the last resort. A theme whose foreground reads
         # perfectly well on a chip should get its foreground.
         palette = theme._build(dict(theme.FALLBACK, fg="#f0f0f0", bg="#101010"))
@@ -1327,7 +1327,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         import tempfile
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         instance = object.__new__(edit.EditSession)
         instance.field = unittest.mock.Mock()
         instance.original = "before"
@@ -1341,7 +1341,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         instance.on_done = lambda: None
         instance.written = []
         instance.on_write = instance.written.append
-        handle, instance.path = tempfile.mkstemp(prefix="homerow-test-")
+        handle, instance.path = tempfile.mkstemp(prefix="hintium-test-")
         with os.fdopen(handle, "w", encoding="utf-8") as temp:
             temp.write(on_disk)
         self.addCleanup(lambda: os.path.exists(instance.path)
@@ -1352,7 +1352,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
     def leave(self, instance):
         import unittest.mock
 
-        from homerow import edit
+        from hintium import edit
         with unittest.mock.patch.object(
                 edit, "strategy", return_value=self._strategy), \
              unittest.mock.patch.object(edit, "replace_warm"), \
@@ -1361,7 +1361,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         return kept, saved
 
     def test_a_quiet_field_is_written_before_closing(self):
-        from homerow import edit
+        from hintium import edit
         # AT-SPI can write this one directly, which needs no focus -- so the
         # text lands without dragging the user back to the workspace they
         # just left.
@@ -1373,7 +1373,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         self.assertFalse(os.path.exists(instance.path))
 
     def test_a_field_needing_focus_keeps_the_text_on_disk(self):
-        from homerow import edit
+        from hintium import edit
         # Writing this one means focusing its window and typing at it, which
         # would haul the user back. The buffer stays, and the daemon says so.
         instance = self.session(edit.PASTE, "after")
@@ -1385,7 +1385,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
             self.assertEqual(temp.read(), "after")
 
     def test_an_unchanged_buffer_writes_nothing_and_keeps_nothing(self):
-        from homerow import edit
+        from hintium import edit
         instance = self.session(edit.PASTE, "before")
         kept, _ = self.leave(instance)
         self.assertIsNone(kept)
@@ -1393,7 +1393,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         self.assertFalse(os.path.exists(instance.path))
 
     def test_the_warm_server_is_asked_to_save_first(self):
-        from homerow import edit
+        from hintium import edit
         # The file on disk is only as new as the last :w. Closing on a
         # workspace change must not take a stale copy and call it their work.
         instance = self.session(edit.EDITABLE_TEXT, "after", warm=True)
@@ -1401,7 +1401,7 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
         saved.assert_called_once()
 
     def test_the_editors_own_exit_cannot_write_again(self):
-        from homerow import edit
+        from hintium import edit
         # Closing kills the editor, so child-exited fires on the way out.
         # That is not the user saving, and it must not write a second time.
         instance = self.session(edit.EDITABLE_TEXT, "after")
@@ -1411,19 +1411,19 @@ class EditorLeavesOnWorkspaceChange(unittest.TestCase):
     def test_the_daemon_reports_a_kept_buffer(self):
         import unittest.mock
 
-        from homerow import service, x11
+        from hintium import service, x11
         overlay = unittest.mock.Mock(spec=["close_for_workspace"])
-        overlay.close_for_workspace.return_value = "/tmp/homerow-x.txt"
+        overlay.close_for_workspace.return_value = "/tmp/hintium-x.txt"
         instance = WorkspaceWatch.daemon(self, 2, overlay)
         with unittest.mock.patch.object(x11, "current_desktop",
                                         return_value=5), \
              unittest.mock.patch.object(service, "_notify") as told:
             instance._check_workspace()
         overlay.close_for_workspace.assert_called_once()
-        self.assertIn("/tmp/homerow-x.txt", told.call_args.args[0])
+        self.assertIn("/tmp/hintium-x.txt", told.call_args.args[0])
 
     def test_escape_is_bound_to_write_and_close(self):
-        from homerow import config
+        from hintium import config
         # A one-key exit that discards is the worse mistake to make, so Esc
         # writes -- the same argument q is bound on.
         escapes = [m for m in config.EDIT_KEYMAPS if "<Esc>" in m]
@@ -1456,7 +1456,7 @@ class ModeSwitching(unittest.TestCase):
     def switcher(self):
         import unittest.mock
 
-        from homerow import overlay
+        from hintium import overlay
         seen = unittest.mock.Mock()
         overlay.set_mode_switcher(seen)
         self.addCleanup(overlay.set_mode_switcher, None)
@@ -1465,7 +1465,7 @@ class ModeSwitching(unittest.TestCase):
     def test_a_mode_hotkey_asks_for_that_mode(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         seen = self.switcher()
         self.assertTrue(overlay.mode_switch(self.alt(Gdk.KEY_j)))
         seen.assert_called_once_with("scroll")
@@ -1473,7 +1473,7 @@ class ModeSwitching(unittest.TestCase):
     def test_shift_picks_the_other_caret_mode(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         seen = self.switcher()
         overlay.mode_switch(self.alt(Gdk.KEY_c))
         overlay.mode_switch(self.alt(Gdk.KEY_C, shift=True))
@@ -1483,7 +1483,7 @@ class ModeSwitching(unittest.TestCase):
     def test_a_plain_letter_is_left_to_the_mode(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         seen = self.switcher()
         # j scrolls, c is a hint label, e is a word motion. Requiring the
         # modifier is what keeps all of that reachable.
@@ -1494,7 +1494,7 @@ class ModeSwitching(unittest.TestCase):
     def test_caps_lock_does_not_switch_modes(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         # Caps Lock is bound as the launch modifier and is easy to leave on by
         # accident (see normalize_key). Honouring it here would turn every j
         # into a mode switch.
@@ -1506,7 +1506,7 @@ class ModeSwitching(unittest.TestCase):
     def test_an_unbound_key_with_the_modifier_is_not_a_switch(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         seen = self.switcher()
         self.assertFalse(overlay.mode_switch(self.alt(Gdk.KEY_z)))
         seen.assert_not_called()
@@ -1514,14 +1514,14 @@ class ModeSwitching(unittest.TestCase):
     def test_without_a_daemon_the_keys_fall_through(self):
         from gi.repository import Gdk
 
-        from homerow import overlay
+        from hintium import overlay
         # The standalone CLI runs a mode with no daemon behind it, so there is
         # nothing to switch to and the key belongs to the mode.
         overlay.set_mode_switcher(None)
         self.assertFalse(overlay.mode_switch(self.alt(Gdk.KEY_j)))
 
     def test_every_switchable_mode_is_a_command_the_daemon_runs(self):
-        from homerow import overlay, service
+        from hintium import overlay, service
         # Structural: a typo in either table would be a hotkey that silently
         # does nothing, which is indistinguishable from the mode ignoring it.
         self.assertTrue(
@@ -1531,7 +1531,7 @@ class ModeSwitching(unittest.TestCase):
     def test_every_mode_reads_the_switch_keys(self):
         import inspect
 
-        from homerow import caret, overlay, scroll, search
+        from hintium import caret, overlay, scroll, search
         # Any key handler that grabs the keyboard and does not check would be
         # a mode you cannot switch out of.
         handlers = [
@@ -1548,7 +1548,7 @@ class ModeSwitching(unittest.TestCase):
 
         from gi.repository import Gdk
 
-        from homerow import scroll
+        from hintium import scroll
         # Driving the real handler, not just checking it mentions the switch:
         # alt+j must ask for scroll mode and must not ALSO be read as scroll
         # mode's own j, which would scroll the page on the way out.
@@ -1567,7 +1567,7 @@ class ModeSwitching(unittest.TestCase):
     def test_an_open_editor_still_refuses_to_be_replaced(self):
         import unittest.mock
 
-        from homerow import service
+        from hintium import service
         # The one exception, and it has to survive this route too: an overlay
         # holds nothing and may be replaced freely, an editor holds text that
         # has not been written back.
@@ -1666,7 +1666,7 @@ class ShippedExampleConfig(unittest.TestCase):
 
 class ConfigFallsBackRatherThanCrashing(unittest.TestCase):
     """A config file is edited by hand, usually in a hurry. Nothing in one may
-    take the daemon down -- see homerow/userconfig.py."""
+    take the daemon down -- see hintium/userconfig.py."""
 
     def setUp(self):
         self.addCleanup(userconfig.reset)
@@ -1685,7 +1685,7 @@ class ConfigFallsBackRatherThanCrashing(unittest.TestCase):
                          userconfig.defaults()["HINT_ALPHABET"])
 
     def test_a_missing_file_is_not_a_problem_unless_it_was_asked_for(self):
-        self.assertTrue(userconfig.load("/nonexistent/homerow.yaml").problems)
+        self.assertTrue(userconfig.load("/nonexistent/hintium.yaml").problems)
         missing = os.path.join(ROOT, "no", "such", "config.yaml")
         result = userconfig.load()
         with unittest.mock.patch.object(userconfig, "config_path",
@@ -1722,7 +1722,7 @@ class ConfigFallsBackRatherThanCrashing(unittest.TestCase):
         self.assertEqual(config.HINT_ROLES, ["LINK", "TABLE_CELL"])
 
     def test_what_it_prints_is_what_it_can_read_back(self):
-        """`homerow --show-config > config.yaml` has to produce a file that
+        """`hintium --show-config > config.yaml` has to produce a file that
         loads, and loads back to the same desktop."""
         before = userconfig.effective()
         applied, problems = userconfig.apply(

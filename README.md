@@ -1,4 +1,4 @@
-# homerow-replika
+# hintium
 
 Keyboard control of the whole desktop on X11 — click anything, scroll anything,
 search anything, put a cursor in text. Modelled on
@@ -288,7 +288,7 @@ It only grows: shrinking when a line is deleted is the resize that has
 nothing to offer and moves the text under your cursor.
 
 nvim reports the rows it needs on every change, through a `<buffer>` autocmd
-homerow adds to its own session — the same way its `<buffer>` mappings work,
+hintium adds to its own session — the same way its `<buffer>` mappings work,
 and still nothing added to your config. The alternative was asking over the
 socket on a timer, which is a process spawn per ask for an answer that is
 usually the same as last time.
@@ -298,17 +298,17 @@ editor: a compact box opens at five, which leaves room to see what you are
 writing.
 
 Sizing it means counting three things and getting all three right: the cell,
-the frame homerow draws, and the padding the terminal widget keeps for
+the frame hintium draws, and the padding the terminal widget keeps for
 itself. Missing the third cost exactly one row — see the note at the end.
 
 **Nothing has to be added to your editor config for this.** An earlier version
-announced homerow to nvim as `g:started_by_homerow` and asked you to add a
+announced hintium to nvim as `g:started_by_hintium` and asked you to add a
 condition to your statusline plugin so it would stand its row down. That is
 the wrong shape for a tool whose promise is that it works with your editor as
 it is, and it was fragile in three separate ways besides — measuring a phantom
 UI's geometry, measuring a dashboard where the statusline hides itself, and
 measuring its own write. What is left asks nothing of your config: two rows
-are assumed, and homerow asks *its own* editor over its own socket what it
+are assumed, and hintium asks *its own* editor over its own socket what it
 actually kept, then sizes the **next** field for that. Being one row generous
 for one field is cheaper than resizing a window somebody has started reading.
 
@@ -329,7 +329,7 @@ Then, inside the editor:
 
 `Esc` leaves, the way it leaves every other mode here — from insert that is
 two presses, one to leave insert and one to leave, which is the shape the
-rest of homerow already has. All three are mapped `<buffer>`-locally, so `q`
+rest of hintium already has. All three are mapped `<buffer>`-locally, so `q`
 is still macro recording, `<Space>` is still your leader, and `Esc` is still
 just `Esc` everywhere else in the same nvim. They write rather than
 discarding, because an edit thrown away silently is the worse mistake to make
@@ -463,7 +463,7 @@ the application says which field has focus, that is the one, and the picker is
 a question with a known answer. Measured over this desktop's log, half of all
 edit sessions had exactly two fields on screen, so the hint step was asking
 which of two things you meant when one of them was the box the cursor was
-already in. While an editor is open no other homerow mode will
+already in. While an editor is open no other hintium mode will
 open — an overlay may be replaced freely, an editor holding unsaved text
 may not.
 
@@ -547,8 +547,8 @@ and keeps the other five.
 ### 2. Clone, and check
 
 ```sh
-git clone <this repo> ~/homerow-replika
-~/homerow-replika/bin/homerow --doctor
+git clone <this repo> ~/hintium
+~/hintium/bin/hintium --doctor
 ```
 
 `--doctor` is the install instructions in executable form. It checks every
@@ -562,16 +562,16 @@ also the first thing to run when a mode is not seeing anything.
 They are just commands, so any window manager works. qtile:
 
 ```python
-HOMEROW = os.path.expanduser("~/homerow-replika/bin/homerow")
-Key([mod2], "space",        lazy.spawn(HOMEROW)),
-Key([mod2], "j",            lazy.spawn(HOMEROW + " --scroll")),
-Key([mod2], "slash",        lazy.spawn(HOMEROW + " --search")),
-Key([mod2], "c",            lazy.spawn(HOMEROW + " --caret")),
-Key([mod2, "shift"], "c",   lazy.spawn(HOMEROW + " --caret-search")),
-Key([mod2], "e",            lazy.spawn(HOMEROW + " --edit")),
+HINTIUM = os.path.expanduser("~/hintium/bin/hintium")
+Key([mod2], "space",        lazy.spawn(HINTIUM)),
+Key([mod2], "j",            lazy.spawn(HINTIUM + " --scroll")),
+Key([mod2], "slash",        lazy.spawn(HINTIUM + " --search")),
+Key([mod2], "c",            lazy.spawn(HINTIUM + " --caret")),
+Key([mod2, "shift"], "c",   lazy.spawn(HINTIUM + " --caret-search")),
+Key([mod2], "e",            lazy.spawn(HINTIUM + " --edit")),
 ```
 
-That is the only file of yours homerow asks you to touch, and it asks
+That is the only file of yours hintium asks you to touch, and it asks
 because binding a key is your window manager's job and nobody else's.
 Nothing needs adding to your nvim config, your GTK settings or your shell —
 if a version of this ever asks you to, that is a bug, and one this project
@@ -579,12 +579,12 @@ has already made and removed once (see Edit).
 
 ### 4. Start the daemon at login
 
-A line in your autostart, or the unit in `contrib/homerow.service`:
+A line in your autostart, or the unit in `contrib/hintium.service`:
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp ~/homerow-replika/contrib/homerow.service ~/.config/systemd/user/
-systemctl --user enable --now homerow
+cp ~/hintium/contrib/hintium.service ~/.config/systemd/user/
+systemctl --user enable --now hintium
 ```
 
 If it is not running, the client starts it and retries, so nothing breaks
@@ -607,17 +607,17 @@ VS Code additionally switches into "Screen Reader Optimized" mode with the
 flag; `"editor.accessibilitySupport": "off"` in its settings keeps hints
 without that.
 
-`homerow --doctor` checks both of these and prints the exact line to add.
+`hintium --doctor` checks both of these and prints the exact line to add.
 
 ## Configure
 
 Everything is tunable, and none of it requires editing the source.
 
 ```sh
-homerow --write-config      # ~/.config/homerow/config.yaml, fully commented
-homerow --check-config      # what it read, and what it could not use
-homerow --show-config       # every setting and its value right now
-homerow --restart           # the daemon reads the file once, at startup
+hintium --write-config      # ~/.config/hintium/config.yaml, fully commented
+hintium --check-config      # what it read, and what it could not use
+hintium --show-config       # every setting and its value right now
+hintium --restart           # the daemon reads the file once, at startup
 ```
 
 The file layers over the built-in defaults, so it only has to name what you
@@ -640,7 +640,7 @@ theme:
 idle_timeout_s: 20
 ```
 
-Keys are the names from `homerow/config.py`, lowercased. They can be grouped
+Keys are the names from `hintium/config.py`, lowercased. They can be grouped
 under the prefix they share, as above, or written flat (`hint_alphabet:`) —
 both work, so the grouping is there to read, never to get right.
 `config.py` stays the schema and the reason for every default: anything named
@@ -676,7 +676,7 @@ single letters are themselves, everything else is a name like `Down`,
 `Page_Up`, `Home`, `End`. The actions are `down`, `up`, `left`, `right`,
 `page down`, `page up`, `top` and `bottom`. Writing the map replaces it
 wholesale — what you write is what the mode answers to — so copy the defaults
-from `homerow --show-config` and change the lines you care about. A line that
+from `hintium --show-config` and change the lines you care about. A line that
 names a key X does not know, or an action that does not exist, is reported and
 skipped: a typo costs that binding and nothing else.
 
@@ -695,7 +695,7 @@ is the default and it stays the default. If you have neither, there are
 presets:
 
 ```sh
-homerow --list-themes       # every palette, with its colours
+hintium --list-themes       # every palette, with its colours
 ```
 
 ```yaml
@@ -723,46 +723,46 @@ is tested for exactly that.
 ## How it runs
 
 A resident daemon holds the Python interpreter, the PyGObject imports and the
-AT-SPI connection. `bin/homerow` is a shell script that writes one line to a
+AT-SPI connection. `bin/hintium` is a shell script that writes one line to a
 unix socket and exits — deliberately not Python, because the interpreter alone
 cost more than all the real work combined. Measured here: 35ms through the
 shell, 645ms for the identical request through `python3`.
 
 ```
 alt+space
-  └─ bin/homerow (sh + nc, ~12ms)
-       └─ $XDG_RUNTIME_DIR/homerow.sock
+  └─ bin/hintium (sh + nc, ~12ms)
+       └─ $XDG_RUNTIME_DIR/hintium.sock
             └─ the daemon ── collect ~25ms ── overlay ~2ms
 ```
 
-So `bin/homerow` understands the six mode flags and nothing else. Everything
-that happens at human speed goes to `homerow-cli` unread, which is where the
-whole surface lives — one command, `homerow --help`:
+So `bin/hintium` understands the six mode flags and nothing else. Everything
+that happens at human speed goes to `hintium-cli` unread, which is where the
+whole surface lives — one command, `hintium --help`:
 
 ```sh
-homerow                  # hint and click
-homerow --edit           # …and the other five modes
+hintium                  # hint and click
+hintium --edit           # …and the other five modes
 
-homerow --status         # is one answering?
-homerow --log 40         # tail the log
-homerow --quit           # stop it
-homerow --restart        # stop it and start another
-homerow --daemon         # run one in the foreground
-homerow --doctor         # check the install
+hintium --status         # is one answering?
+hintium --log 40         # tail the log
+hintium --quit           # stop it
+hintium --restart        # stop it and start another
+hintium --daemon         # run one in the foreground
+hintium --doctor         # check the install
 
-homerow --config PATH    # use this file instead of the default
-homerow --show-config    # …see Configure above
-homerow -l/--list        # print what would be hinted, draw nothing
-homerow --standalone     # a hint pass without a daemon, when one won't start
-homerow -h/-v/-d         # help, version, debug
+hintium --config PATH    # use this file instead of the default
+hintium --show-config    # …see Configure above
+hintium -l/--list        # print what would be hinted, draw nothing
+hintium --standalone     # a hint pass without a daemon, when one won't start
+hintium -h/-v/-d         # help, version, debug
 ```
 
-`homerow-hint` and `homerow-daemon` still work — they are two-line shims now,
+`hintium-hint` and `hintium-daemon` still work — they are two-line shims now,
 kept because somebody has them in their keybindings.
 
-The daemon always logs to `$XDG_STATE_HOME/homerow/homerow.log`. It holds the
-modules in memory, so `homerow --restart` is what makes an edit under
-`homerow/` take effect.
+The daemon always logs to `$XDG_STATE_HOME/hintium/hintium.log`. It holds the
+modules in memory, so `hintium --restart` is what makes an edit under
+`hintium/` take effect.
 
 ## Theming
 
@@ -798,9 +798,9 @@ contrast logic. `follow_theme: false` pins it, and every shipped preset —
 including the light ones, which are what break ink choice — is tested to
 produce a readable palette.
 
-Everything tunable lives in `homerow/config.py` — named settings, no magic
+Everything tunable lives in `hintium/config.py` — named settings, no magic
 numbers left in the modules — and every one of them can be set from
-`~/.config/homerow/config.yaml` without touching the source. See Configure.
+`~/.config/hintium/config.yaml` without touching the source. See Configure.
 
 ## Coverage
 
@@ -847,7 +847,7 @@ Things that were not obvious, kept because they will bite again:
 and answers in one trip. Names and roles are lazy for the same reason.
 
 **Don't shell out on a hot path.** Every `xdotool` call is an ~11ms process
-spawn. `homerow/x11.py` binds what is actually needed through ctypes: active
+spawn. `hintium/x11.py` binds what is actually needed through ctypes: active
 window lookup went 11ms → 0.3ms, window enumeration 114ms → 1ms.
 
 **Scope to the window, then the tab.** An app reports every window it has, and
@@ -864,7 +864,7 @@ animations, or hints slide in from the top instead of appearing on their
 targets.
 
 **A cleanup call that fails open can strand the whole desktop.** Clicking a
-text field makes homerow leave the qtile chord, so `h`/`s`/`f` go back to
+text field makes hintium leave the qtile chord, so `h`/`s`/`f` go back to
 being letters. qtile's `ungrab_chord()` calls `ungrab_keys()` *first* and only
 then checks whether a chord was actually active — when none was, it logs a
 debug line and returns without re-grabbing anything. Launch hint mode from the

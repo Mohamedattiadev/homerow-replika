@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # No actions/setup-python here on purpose: PyGObject and the AT-SPI
-      # bindings tests import (homerow/elements.py, homerow/search.py, ...)
+      # bindings tests import (hintium/elements.py, hintium/search.py, ...)
       # come from apt, not pip, and only line up with the distro's own
       # python3 -- a venv'd interpreter would not see them.
       - name: Install system dependencies
@@ -25,7 +25,7 @@ jobs:
         run: pip install --user ruff
 
       - name: Lint
-        run: ~/.local/bin/ruff check homerow/ tests/
+        run: ~/.local/bin/ruff check hintium/ tests/
 
       - name: Test
         run: python3 -m unittest discover -s tests -v
