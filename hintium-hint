@@ -1,5 +1,5 @@
 #!/bin/sh
 # Kept so existing keybindings and autostarts do not break: this used to be
-# the entry point, and `bin/homerow` is the same thing under the name that
+# the entry point, and `bin/hintium` is the same thing under the name that
 # actually describes it. Nothing new should reference this.
-exec "$(dirname "$(readlink -f "$0")")/bin/homerow" "$@"
+exec "$(dirname "$(readlink -f "$0")")/bin/hintium" "$@"

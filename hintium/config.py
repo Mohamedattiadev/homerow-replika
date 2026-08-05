@@ -384,7 +384,7 @@ EDIT_COMPACT_SETTINGS = f"autocmd VimEnter * ++once silent! {EDIT_COMPACT_SET}"
 # editor leaves a modified buffer behind, and the next `:edit` into it fails
 # with E37. Restarting costs nothing that is on the critical path.
 EDIT_WARM_SERVER = True
-EDIT_WARM_SOCKET = "homerow-nvim.sock"
+EDIT_WARM_SOCKET = "hintium-nvim.sock"
 
 # Push the field's new contents on every `:w`, not only when the editor
 # closes. Only ever done where AT-SPI can write the field directly: the paste
@@ -402,7 +402,7 @@ EDIT_COMPACT_MIN_ROWS = 5
 
 # Rows the editor keeps for itself: a statusline and a command line. Assumed
 # rather than measured, and deliberately so. An earlier version asked the
-# editor -- which meant announcing homerow to the user's config, asking them
+# editor -- which meant announcing hintium to the user's config, asking them
 # to add a condition to their statusline plugin, and three separate probes
 # that each measured the wrong thing (a phantom UI's geometry, a dashboard
 # where the statusline hides itself, our own write). None of that belongs in
@@ -436,10 +436,10 @@ EDIT_COMPACT_MAX_ROWS = 12
 # case the original reasoning was actually about.
 EDIT_GROW = True
 
-# nvim writes the rows it needs here whenever the buffer changes, and homerow
+# nvim writes the rows it needs here whenever the buffer changes, and hintium
 # watches the file. The alternative is asking over the socket on a timer,
 # which is a process spawn per ask (~65ms) for an answer that is usually the
-# same as last time. This is homerow's own buffer-local autocmd, applied the
+# same as last time. This is hintium's own buffer-local autocmd, applied the
 # same way its <buffer> mappings are -- nothing is added to the user's
 # config, and nothing is asked of it.
 EDIT_ROWS_SUFFIX = ".rows"
@@ -496,7 +496,7 @@ EDIT_KEYMAPS = [
     "nnoremap <buffer> <Space>w :wq<CR>",
     # Esc leaves, the way it leaves every other mode here. In normal mode it
     # otherwise does nothing, and pressing it twice from insert -- once to
-    # leave insert, once to leave -- is the shape the rest of homerow already
+    # leave insert, once to leave -- is the shape the rest of hintium already
     # has. It writes rather than discards, like q: this is a one-key exit and
     # a silently thrown-away edit is the worse mistake to make on one of
     # those. :q! is still there for actually discarding.
@@ -505,11 +505,11 @@ EDIT_KEYMAPS = [
 
 EDIT_BORDER = 2
 
-# WM_WINDOW_ROLE on the editor window. WM_CLASS is `homerow` for every window
+# WM_WINDOW_ROLE on the editor window. WM_CLASS is `hintium` for every window
 # this process opens, so a compositor or tiling rule that wants to treat the
 # editor differently from the hint overlay has to match on something, and
 # this is it.
-EDIT_WM_ROLE = "homerow-edit"
+EDIT_WM_ROLE = "hintium-edit"
 
 # Paste-path timings. Focus is polled rather than waited out: the keystrokes
 # go wherever focus actually is, so guessing an interval was slow when it
@@ -690,8 +690,8 @@ RADIUS = 3
 # palette below instead.
 FOLLOW_THEME = True
 
-# A named palette from homerow/themes.py -- "nord", "gruvbox-dark",
-# "catppuccin-mocha", and so on; `homerow --list-themes` prints them all.
+# A named palette from hintium/themes.py -- "nord", "gruvbox-dark",
+# "catppuccin-mocha", and so on; `hintium --list-themes` prints them all.
 # Empty means "follow the desktop", which is the default and what a machine
 # running theme-apply or pywal wants.
 #
@@ -752,7 +752,7 @@ LEGEND_MEANING_MIN_CONTRAST = 4.5
 INK_TYPED_MIN_CONTRAST = 3.0
 
 # There is deliberately no palette of literal colors here. Every color the
-# overlay draws is derived from the active theme by homerow/theme.py, including
+# overlay draws is derived from the active theme by hintium/theme.py, including
 # the last-resort fallback -- see theme.FALLBACK, which is hex named colors run
 # through the same slot and contrast logic rather than a second hardcoded set
 # that could drift out of step.
@@ -762,7 +762,7 @@ DIM_BACKGROUND = True
 # X11 class of the overlay window. picom matches on this to exempt the overlay
 # from compositor animations -- without that, hints slide in from the top
 # instead of appearing on their targets.
-WM_CLASS = "homerow"
+WM_CLASS = "hintium"
 
 # "action" tries the element's own accessible action first and falls back to
 # the pointer; "pointer_only" always warps the real cursor. Action first is the
@@ -813,6 +813,6 @@ WORKSPACE_POLL_MS = 250
 
 DEBUG_KEYS = False
 
-# The daemon always logs to $XDG_STATE_HOME/homerow/homerow.log, rotating at
+# The daemon always logs to $XDG_STATE_HOME/hintium/hintium.log, rotating at
 # this size. --debug additionally mirrors it to stdout.
 LOG_MAX_BYTES = 512 * 1024

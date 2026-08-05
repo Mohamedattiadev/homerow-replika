@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""homerow -- keyboard control of an X11 desktop, over AT-SPI.
+"""hintium -- keyboard control of an X11 desktop, over AT-SPI.
 
-The whole command surface lives here. `homerow` is a short shell script in
+The whole command surface lives here. `hintium` is a short shell script in
 front of it that handles the one case where startup cost is visible -- asking
 a running daemon for a mode -- and hands everything else straight to this.
 That split is a performance decision and nothing else: the flags are the same
-either way, and everything below works whether you type `homerow` or
-`homerow-cli`.
+either way, and everything below works whether you type `hintium` or
+`hintium-cli`.
 
-    homerow                      hint and click
-    homerow --scroll             scroll the region under the pointer
-    homerow --edit               open an editable field in your editor
+    hintium                      hint and click
+    hintium --scroll             scroll the region under the pointer
+    hintium --edit               open an editable field in your editor
 
-    homerow --status             is a daemon answering?
-    homerow --restart            what you want after editing homerow/
+    hintium --status             is a daemon answering?
+    hintium --restart            what you want after editing hintium/
 
-    homerow --show-config        every setting and its value now
-    homerow --check-config       parse and validate, change nothing
+    hintium --show-config        every setting and its value now
+    hintium --check-config       parse and validate, change nothing
 """
 
 import argparse
@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from homerow import __version__, config, service, userconfig  # noqa: E402
+from hintium import __version__, config, service, userconfig  # noqa: E402
 
 MODES = {
     "hint": "label everything clickable, and every other window",
@@ -41,7 +41,7 @@ MODES = {
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="homerow", add_help=False,
+        prog="hintium", add_help=False,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Keyboard control of an X11 desktop, over AT-SPI.",
         epilog="Bind the modes to keys in your window manager; each one is "
@@ -63,7 +63,7 @@ def build_parser():
                         help="ask a running daemon to exit")
     daemon.add_argument("--restart", action="store_true",
                         help="stop a running daemon and start another; the "
-                             "daemon holds homerow/ in memory, so this is "
+                             "daemon holds hintium/ in memory, so this is "
                              "what makes an edit to it take effect")
 
     settings = parser.add_argument_group("configuration")
@@ -85,7 +85,7 @@ def build_parser():
 
     other = parser.add_argument_group("other")
     other.add_argument("--doctor", action="store_true",
-                       help="check everything homerow needs is installed and "
+                       help="check everything hintium needs is installed and "
                             "working, and say what to do about anything that "
                             "is not")
     other.add_argument("-l", "--list", action="store_true",
@@ -99,7 +99,7 @@ def build_parser():
                             "otherwise print timings and what was found")
     other.add_argument("-h", "--help", action="help", help="this message")
     other.add_argument("-v", "--version", action="version",
-                       version=f"homerow {__version__}")
+                       version=f"hintium {__version__}")
     return parser
 
 
@@ -107,7 +107,7 @@ def build_parser():
 
 def do_status():
     running = service.is_running()
-    print(f"homerow daemon: {'running' if running else 'not running'} "
+    print(f"hintium daemon: {'running' if running else 'not running'} "
           f"({service.socket_path()})")
     print(f"log: {service.log_path()}")
     path = userconfig.config_path()
@@ -121,7 +121,7 @@ def do_log(count):
         with open(service.log_path(), encoding="utf-8") as handle:
             lines = handle.readlines()
     except OSError as error:
-        print(f"homerow: no log ({error})", file=sys.stderr)
+        print(f"hintium: no log ({error})", file=sys.stderr)
         return 1
     sys.stdout.writelines(lines[-count:])
     return 0
@@ -130,7 +130,7 @@ def do_log(count):
 def do_quit(quiet=False):
     if not service.is_running():
         if not quiet:
-            print("homerow: no daemon running", file=sys.stderr)
+            print("hintium: no daemon running", file=sys.stderr)
         return 1
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -139,7 +139,7 @@ def do_quit(quiet=False):
             client.sendall(b"quit\n")
             client.recv(16)          # read the ack before hanging up
     except OSError as error:
-        print(f"homerow: could not reach the daemon ({error})",
+        print(f"hintium: could not reach the daemon ({error})",
               file=sys.stderr)
         return 1
     # Shutdown is asynchronous. Wait it out, so that starting another one
@@ -148,14 +148,14 @@ def do_quit(quiet=False):
         if not service.is_running():
             return 0
         time.sleep(0.05)
-    print("homerow: daemon did not exit", file=sys.stderr)
+    print("hintium: daemon did not exit", file=sys.stderr)
     return 1
 
 
 def start_daemon(config_path=None):
     import subprocess
     here = os.path.dirname(os.path.abspath(__file__))
-    argv = [sys.executable, os.path.join(here, "homerow-cli"), "--daemon"]
+    argv = [sys.executable, os.path.join(here, "hintium-cli"), "--daemon"]
     if config_path:
         argv += ["--config", config_path]
     subprocess.Popen(argv, stdin=subprocess.DEVNULL,
@@ -168,10 +168,10 @@ def do_restart(config_path):
     start_daemon(config_path)
     for _ in range(60):
         if service.is_running():
-            print(f"homerow daemon: running ({service.socket_path()})")
+            print(f"hintium daemon: running ({service.socket_path()})")
             return 0
         time.sleep(0.05)
-    print("homerow: daemon did not come back", file=sys.stderr)
+    print("hintium: daemon did not come back", file=sys.stderr)
     return 1
 
 
@@ -184,7 +184,7 @@ def do_show_config(config_path):
     result = userconfig.load(config_path)
     for problem in result.problems:
         print(f"# ignored -- {problem}", file=sys.stderr)
-    print(f"# homerow {__version__}: every setting, and its value right now.")
+    print(f"# hintium {__version__}: every setting, and its value right now.")
     print(f"# {result.summary()}")
     print("#")
     print("# This is valid input -- saving it as your config file changes "
@@ -202,7 +202,7 @@ def do_list_themes():
     without: before, such a desktop had a single hardcoded palette and no way
     to choose another.
     """
-    from homerow import themes
+    from hintium import themes
     print("# Built-in colour presets. Use one with:")
     print("#")
     print("#     theme:")
@@ -250,7 +250,7 @@ def do_write_config():
     here = os.path.dirname(os.path.abspath(__file__))
     target = userconfig.config_path()
     if os.path.exists(target):
-        print(f"homerow: {target} already exists; leaving it alone",
+        print(f"hintium: {target} already exists; leaving it alone",
               file=sys.stderr)
         return 1
     try:
@@ -260,7 +260,7 @@ def do_write_config():
         with open(target, "w", encoding="utf-8") as handle:
             handle.write(text)
     except OSError as error:
-        print(f"homerow: could not write {target} ({error})", file=sys.stderr)
+        print(f"hintium: could not write {target} ({error})", file=sys.stderr)
         return 1
     print(f"wrote {target}")
     print("Every setting in it is commented out, so it changes nothing until "
@@ -269,11 +269,11 @@ def do_write_config():
 
 
 # --- doctor ----------------------------------------------------------------
-# What homerow needs is spread across three package managers' worth of names
+# What hintium needs is spread across three package managers' worth of names
 # and two settings that are not packages at all, and every one of them fails
 # in its own way -- a missing xdotool is a mode that half-works, a Chromium
 # without its flag is a browser that reports no elements and looks exactly
-# like homerow being broken. Answering "is this installed correctly" by
+# like hintium being broken. Answering "is this installed correctly" by
 # reading a README and checking by hand is how a stranger gives up on it.
 
 REQUIRED_BINARIES = {
@@ -318,7 +318,7 @@ def do_doctor():
     import subprocess
 
     doctor = Doctor()
-    print(f"homerow {__version__}")
+    print(f"hintium {__version__}")
 
     print("\npython")
     doctor.report(sys.version_info >= (3, 9), "python3",
@@ -373,7 +373,7 @@ def do_doctor():
     print("\nsession")
     display = os.environ.get("DISPLAY")
     doctor.report(bool(display), "DISPLAY", display or "not set",
-                  "homerow is X11 only")
+                  "hintium is X11 only")
     try:
         answer = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.interface",
@@ -413,20 +413,20 @@ def do_doctor():
     if not flag_files:
         print("     (no *-flags.conf found; nothing to check)")
 
-    print("\nhomerow")
+    print("\nhintium")
     doctor.report(service.is_running(), "daemon",
                   service.socket_path() if service.is_running()
                   else "not running",
-                  "homerow --restart, or start it from your autostart",
+                  "hintium --restart, or start it from your autostart",
                   required=False)
     result = userconfig.load()
     doctor.report(result.ok, "config", result.summary(),
-                  "homerow --check-config", required=False)
+                  "hintium --check-config", required=False)
 
     if doctor.failed:
         print("\nSomething required is missing; the marked lines say what.")
         return 1
-    print("\nEverything homerow needs is here.")
+    print("\nEverything hintium needs is here.")
     return 0
 
 
@@ -451,7 +451,7 @@ def send(mode, config_path=None):
         if poke():
             return 0
         time.sleep(0.05)
-    print("homerow: daemon failed to start", file=sys.stderr)
+    print("hintium: daemon failed to start", file=sys.stderr)
     notify("Daemon failed to start")
     return 1
 
@@ -465,13 +465,13 @@ def do_standalone(list_only, debug):
     gi.require_version("Gdk", "3.0")
     from gi.repository import Atspi, Gdk
 
-    from homerow import click, elements, hints
-    from homerow.overlay import Overlay, screen_size
+    from hintium import click, elements, hints
+    from hintium.overlay import Overlay, screen_size
 
     started = time.perf_counter()
     Atspi.init()
     if Gdk.Display.get_default() is None:
-        print("homerow: no X display.", file=sys.stderr)
+        print("hintium: no X display.", file=sys.stderr)
         return 1
     width, height = screen_size()
 
@@ -505,7 +505,7 @@ def notify(message):
     import subprocess
     try:
         subprocess.run(
-            ["notify-send", "-t", "1500", "-a", "homerow", "Homerow", message],
+            ["notify-send", "-t", "1500", "-a", "hintium", "Hintium", message],
             timeout=1, check=False)
     except (OSError, subprocess.SubprocessError):
         pass

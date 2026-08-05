@@ -1,10 +1,10 @@
-# homerow -- ~/.config/homerow/config.yaml
+# hintium -- ~/.config/hintium/config.yaml
 #
 # Everything here is commented out and shows the built-in default, so copying
-# this file changes nothing until you uncomment a line. `homerow
+# this file changes nothing until you uncomment a line. `hintium
 # --write-config` puts it in the right place for you.
 #
-# Keys are the names from homerow/config.py, lowercased. They can be nested
+# Keys are the names from hintium/config.py, lowercased. They can be nested
 # under the prefix they share (`hint: {alphabet: ...}` is HINT_ALPHABET) or
 # written flat (`hint_alphabet: ...`) -- both work, so grouping is for
 # reading, never something to get right.
@@ -12,14 +12,14 @@
 # config.py is the full list and the reason for every default. Anything named
 # there can be set here; nothing else can. Two commands to check yourself:
 #
-#   homerow --check-config      what it read, and what it could not use
-#   homerow --show-config       every setting and its value right now
+#   hintium --check-config      what it read, and what it could not use
+#   hintium --show-config       every setting and its value right now
 #
 # A bad value never takes the daemon down. An unknown key, a string where a
 # number belongs, a file that is not YAML at all -- each is reported in the
 # log and the built-in default stands.
 #
-# The daemon reads this once at startup: `homerow --restart` after editing it.
+# The daemon reads this once at startup: `hintium --restart` after editing it.
 
 
 # --- hint mode -------------------------------------------------------------
@@ -44,7 +44,7 @@ hint:
 # max_fraction_of_screen: 0.9
 
 # Roles worth hinting, as Atspi.Role member names. Unknown names are skipped,
-# so this stays portable across atspi versions. `homerow --show-config` prints
+# so this stays portable across atspi versions. `hintium --show-config` prints
 # the full default list; setting either of these recomputes the combined one
 # they feed.
 # container_roles: [LIST_ITEM, TABLE_CELL, TREE_ITEM]
@@ -151,7 +151,7 @@ edit:
   # Grow the box as the buffer grows. It never shrinks -- see config.py.
   # grow: true
 
-  # Rows the editor keeps for itself, assumed rather than asked. Homerow
+  # Rows the editor keeps for itself, assumed rather than asked. Hintium
   # measures what its own editor actually kept and sizes the *next* field for
   # that, so this is only the first field's guess.
   # chrome_rows: 2
@@ -166,7 +166,7 @@ edit:
   # live_write: true
 
   # Border drawn around the editor, so an undecorated box over a page still
-  # reads as something homerow put there.
+  # reads as something hintium put there.
   # border: 2
 
   # Fields never offered: a password has no business in a temp file, and a
@@ -181,7 +181,7 @@ edit:
 # named preset first, then individual colours over the top of it.
 
 theme:
-  # A built-in palette by name. `homerow --list-themes` prints them all with
+  # A built-in palette by name. `hintium --list-themes` prints them all with
   # their colours: doom-one, gruvbox-dark, gruvbox-light, nord, dracula,
   # catppuccin-mocha, catppuccin-latte, tokyo-night, solarized-dark,
   # solarized-light, everforest-dark, rose-pine.

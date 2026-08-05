@@ -591,7 +591,7 @@ def _wheel_paced(x, y, button, times):
     them, and that per-event server-side sleep blocks the server's *entire*
     synthetic-input queue while it works through them, not just this
     request. Confirmed live: the very next synthetic input sent by anyone
-    -- including homerow's own next keypress, or the Escape that closes this
+    -- including hintium's own next keypress, or the Escape that closes this
     session -- gets stuck behind the batch and does not actually fire until
     it finishes draining, seconds later. That is the "feels laggy, then
     suddenly catches up" symptom, not a rendering problem.

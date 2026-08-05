@@ -412,7 +412,7 @@ def prime_warm(log=None):
     editor = resolve_editor()
     if not is_vim_like(editor):
         return False
-    handle, path = tempfile.mkstemp(prefix="homerow-prime-",
+    handle, path = tempfile.mkstemp(prefix="hintium-prime-",
                                     suffix=config.EDIT_SUFFIX)
     os.close(handle)
     try:
@@ -470,7 +470,7 @@ def replace_warm(log=None):
             stop_warm()
 
     _restart["stopping"] = False
-    thread = threading.Thread(target=run, name="homerow-warm", daemon=True)
+    thread = threading.Thread(target=run, name="hintium-warm", daemon=True)
     _restart["thread"] = thread
     thread.start()
     return True
@@ -556,7 +556,7 @@ def rows_path(path):
 def rows_watch(path):
     """The autocmd that makes the editor report its height as it is typed in.
 
-    Buffer-local, like the mappings beside it, and homerow's own -- see
+    Buffer-local, like the mappings beside it, and hintium's own -- see
     config.EDIT_GROW. Returns None when growing is switched off.
     """
     if not config.EDIT_GROW:
@@ -647,8 +647,8 @@ def sweep_temp_files():
     # That one ends in its own suffix rather than EDIT_SUFFIX, so the single
     # pattern never found it and it was left behind -- harmless in content,
     # but litter that accumulates once per killed daemon.
-    patterns = [f"homerow-*{config.EDIT_SUFFIX}",
-                f"homerow-*{config.EDIT_SUFFIX}{config.EDIT_ROWS_SUFFIX}"]
+    patterns = [f"hintium-*{config.EDIT_SUFFIX}",
+                f"hintium-*{config.EDIT_SUFFIX}{config.EDIT_ROWS_SUFFIX}"]
     for pattern in patterns:
         for path in glob.glob(os.path.join(tempfile.gettempdir(), pattern)):
             try:
@@ -864,9 +864,9 @@ def learn_chrome(editor=None, log=None):
     is already up is a jump under the eye of somebody who has started
     reading, and being one row generous for one session is cheaper than that.
 
-    This only ever talks to the editor homerow itself started, over its own
+    This only ever talks to the editor hintium itself started, over its own
     socket. Nothing is asked of the user's config and nothing has to be added
-    to it -- an earlier version announced homerow to the config and asked for
+    to it -- an earlier version announced hintium to the config and asked for
     a line in the statusline plugin, which is the opposite of the point.
     """
     log = log or (lambda _m: None)
@@ -904,7 +904,7 @@ def keep_buffer(text, log=None):
     """
     log = log or (lambda _m: None)
     try:
-        handle, path = tempfile.mkstemp(prefix="homerow-kept-",
+        handle, path = tempfile.mkstemp(prefix="hintium-kept-",
                                         suffix=config.EDIT_SUFFIX)
         with os.fdopen(handle, "w", encoding="utf-8") as temp:
             temp.write(text)
@@ -1246,7 +1246,7 @@ class EditSession:
         self._sent = original
 
         handle, self.path = tempfile.mkstemp(
-            prefix="homerow-", suffix=config.EDIT_SUFFIX)
+            prefix="hintium-", suffix=config.EDIT_SUFFIX)
         with os.fdopen(handle, "w", encoding="utf-8") as temp:
             temp.write(original)
 
@@ -1279,7 +1279,7 @@ class EditSession:
         self.terminal.connect("child-exited", self._on_child_exited)
 
         # A border, so an undecorated editor over a page still reads as
-        # something homerow put there rather than as part of the page.
+        # something hintium put there rather than as part of the page.
         frame = Gtk.Frame()
         frame.set_shadow_type(Gtk.ShadowType.NONE)
         frame.add(self.terminal)
@@ -1323,7 +1323,7 @@ class EditSession:
         self.compact = compact_rows(
             self.field.h, char_h, config.EDIT_COMPACT_ROWS)
         # The editor keeps a couple of rows for itself, and how many is
-        # assumed rather than asked. Asking meant announcing homerow to the
+        # assumed rather than asked. Asking meant announcing hintium to the
         # user's editor config and asking them to change it, which is the
         # opposite of what this is for -- see config.EDIT_CHROME_ROWS.
         # What the window spends on everything that is not grid: our own

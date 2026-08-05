@@ -103,7 +103,7 @@ def mode_switch(event):
 
 
 def set_identity():
-    """Give our windows a stable WM_CLASS of `homerow`.
+    """Give our windows a stable WM_CLASS of `hintium`.
 
     Compositor rules match on this. Without it the class is derived from the
     process name, which differs between the daemon and the standalone CLI, so
@@ -320,7 +320,7 @@ class Overlay:
 
         self._grab_attempts += 1
         if self._grab_attempts > 40:  # ~2s
-            print("homerow: could not grab keyboard", file=sys.stderr)
+            print("hintium: could not grab keyboard", file=sys.stderr)
             self._close()
             return False
         GLib.timeout_add(50, self._grab)
@@ -344,7 +344,7 @@ class Overlay:
         if config.DEBUG_KEYS:
             unicode_point = Gdk.keyval_to_unicode(event.keyval)
             char = chr(unicode_point) if unicode_point else ""
-            print(f"homerow: key {key} {char!r} typed={self.typed!r}",
+            print(f"hintium: key {key} {char!r} typed={self.typed!r}",
                   flush=True)
             x11.debug_log(f"[hint] key={char!r} typed={self.typed!r} "
                           f"pointer={x11.pointer_position()}")
